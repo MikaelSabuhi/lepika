@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from ezai import config, detect, express
 from ezai.detect import SystemInfo
 
+# Advisory, not a hard failure: `cli.doctor` matches on this name, not a literal.
+RAM_CHECK = "RAM"
+
 
 @dataclass(frozen=True)
 class CheckResult:
@@ -46,7 +49,7 @@ def run_checks(
             f"Run `ezai up`; if the port is busy, change webui_port in {config.config_path()}",
         ),
         CheckResult(
-            "RAM",
+            RAM_CHECK,
             info.ram_gb >= 8.0,
             f"{info.ram_gb:.0f} GB detected — 8 GB+ recommended; stick to small "
             "models like qwen3:0.6b or llama3.2:3b",

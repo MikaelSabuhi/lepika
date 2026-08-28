@@ -52,7 +52,7 @@ def test_low_ram_is_flagged(isolated_home: Path) -> None:
         api_up=lambda url, **k: True,
         webui_up=lambda port, **k: True,
     )
-    ram_check = next(r for r in results if r.name == "RAM")
+    ram_check = next(r for r in results if r.name == doctor.RAM_CHECK)
     assert ram_check.ok is False
 
 
@@ -87,7 +87,7 @@ def test_doctor_command_ram_warning_does_not_fail(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(
         doctor,
         "run_checks",
-        lambda i, **k: [doctor.CheckResult("RAM", False, "4 GB detected")],
+        lambda i, **k: [doctor.CheckResult(doctor.RAM_CHECK, False, "4 GB detected")],
     )
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0

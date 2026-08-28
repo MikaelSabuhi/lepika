@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import shutil
 import webbrowser
 
 import typer
@@ -99,7 +100,7 @@ def logs(lines: int = typer.Option(50, help="Lines per log file.")) -> None:
 @app.command()
 def doctor() -> None:
     """Diagnose the local setup."""
-    # Imported here, not at module scope: keeps `ezai` startup off the check path.
+    # Imported here, not at module scope: this command function shadows the name.
     from ezai import doctor as doctor_mod
 
     info = detect.detect()
@@ -110,10 +111,34 @@ def doctor() -> None:
         console.print(f"{mark} {r.name}")
         if not r.ok:
             console.print(f"  [yellow]→ {escape(r.hint)}[/yellow]")
-            if r.name != "RAM":
+            if r.name != doctor_mod.RAM_CHECK:
                 core_failed = True
     if core_failed:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def update() -> None:
+    """Upgrade Ollama and OpenWebUI to their latest versions."""
+    info = detect.detect()
+    console.print("Upgrading Ollama…")
+    # check=False on the package managers: "already up to date" exits nonzero on some.
+    if info.os == "macos":
+        if shutil.which("brew") is not None:
+            proc.run_logged(["brew", "upgrade", "ollama"], check=False)
+        else:
+            console.print("Ollama.app updates itself — skipping engine upgrade.")
+    elif info.os == "linux":
+        # Re-running the official script upgrades in place. Reused rather than
+        # restated: it must stream, because it may prompt for sudo.
+        express.install_ollama(info)
+    else:
+        proc.run_logged(["winget", "upgrade", "--id", "Ollama.Ollama", "-e"], check=False)
+    console.print("Upgrading OpenWebUI…")
+    proc.run_logged(["uv", "tool", "upgrade", "open-webui"], check=False)
+    express.stop_openwebui(info.os)
+    express.ensure_openwebui(config.load())
+    console.print("[green]✓ Everything is up to date and running.[/green]")
 
 
 model_app = typer.Typer(help="Add, list, or remove local models.")
@@ -151,7 +176,7 @@ def model_list() -> None:
     if result.returncode != 0:
         # An unreachable engine looks identical to an empty list without this.
         console.print("Could not reach Ollama — run `ezai doctor`.", markup=False)
-        return
+        raise typer.Exit(code=1)
     console.print(result.stdout or "No models yet — run `ezai model add`.", markup=False)
 
 

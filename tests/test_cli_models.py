@@ -71,6 +71,7 @@ def test_model_list_failure_points_at_doctor(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr(proc, "run_logged", fake_run)
     result = runner.invoke(cli.app, ["model", "list"])
+    assert result.exit_code == 1
     assert "ezai doctor" in result.output
     assert "No models yet" not in result.output
 

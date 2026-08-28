@@ -105,6 +105,7 @@ to install Docker.
 | `lepika doctor` | Diagnose the local setup; every ✗ comes with a one-line fix |
 | `lepika update` | Upgrade Ollama and OpenWebUI to their latest versions |
 | `lepika connect <url> [--key K]` | Use an engine on another machine (`--local` to go back) |
+| `lepika expose [--off\|--show\|--rotate]` | Share the engine + UI on your network behind a generated API key (Server mode) |
 | `lepika model add [ref]` | Download a model and make it the default (no ref → browse) |
 | `lepika model list` | List downloaded models (size, default marked) |
 | `lepika model rm <name>` | Remove a downloaded model |
@@ -132,6 +133,12 @@ Docker volumes and survive `lepika down`.
 Both modes serve the UI on the same port, so switching between them stops the stack
 you're leaving before it starts the one you're moving to.
 
+**Security.** Nothing listens beyond localhost until you run `lepika expose`. Then the
+chat UI needs a sign-in (first sign-up is the admin) and the engine API needs the
+generated key. The key lives only in `~/.lepika/stack/.env` (mode `0600`) on the box and
+in `~/.lepika/config.toml` (`0600`) on machines you connected from; it is never written
+to logs.
+
 ## Pick any model
 
 One field, three shapes. The wizard and `lepika model add` both take all of them:
@@ -153,10 +160,15 @@ RAM, so there is no guessing whether a 27B fits in 16 GB.
 The chat UI runs where you are; the models run where the GPU is.
 
 ```sh
-lepika connect http://gpu-box:11435 --key <key>   # printed by `lepika expose` on the box
-lepika up                                          # UI here, models there
-lepika connect --local                             # back to this machine
+lepika expose                                     # on the box: prints the key and the exact connect line
+lepika connect http://gpu-box:11435 --key <key>   # on your laptop: paste that line
+lepika up                                         # UI here, models there
+lepika connect --local                            # back to this machine
 ```
+
+`lepika expose` (Server mode) puts a small Caddy proxy in front of the engine on port
+`11435`: only requests carrying the generated key get through. `--show` reprints the
+line, `--rotate` issues a new key, `--off` goes back to localhost only.
 
 LePika never installs or starts anything on an engine it didn't set up — it only
 checks that it answers, and says so plainly when it doesn't. If the chat UI is
@@ -195,8 +207,6 @@ Python in [`src/lepika/`](src/lepika): three dependencies, no magic.
 Both modes above are v0.1 and work today. Next up:
 
 - **A vLLM profile** — full-weight Hugging Face repos in Server mode, on Linux + NVIDIA.
-- **`lepika expose`** — serve the API to your network behind a generated API key
-  (Caddy Bearer auth), instead of localhost only.
 - **A published package** — so installing is a plain name instead of a repo URL.
   The install one-liners already work today either way.
 

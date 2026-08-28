@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from lepika import config, detect, engine, express, log, models, server
+from lepika import config, detect, engine, express, log, models, paths, server
 from lepika.errors import FriendlyError
 
 app = typer.Typer(
@@ -223,6 +223,52 @@ def connect(
         console.print(f"[green]✓ Connected to[/green] {escape(url)} — OpenWebUI restarted.")
     else:
         console.print(f"[green]✓ Connected to[/green] {escape(url)}. Run `lepika up`.")
+
+
+@app.command()
+def expose(
+    off: bool = typer.Option(False, "--off", help="Back to localhost only."),
+    show: bool = typer.Option(False, "--show", help="Print the key and connect line again."),
+    rotate: bool = typer.Option(False, "--rotate", help="Generate a new key."),
+) -> None:
+    """Share the engine (and the chat UI) with your network behind a generated API key."""
+    cfg = config.load()
+    if cfg.mode != "server":
+        raise FriendlyError(
+            "`lepika expose` needs Server mode (it runs a small Caddy proxy in the stack).",
+            "Run `lepika --mode server` on this machine first.",
+        )
+    if off:
+        cfg.exposed = False
+        config.save(cfg)
+        server.start_stack(detect.detect(), cfg)
+        log.get_logger().info("expose.off")
+        console.print("[green]✓ Back to localhost only.[/green]")
+        return
+    # Written before the stack starts: `start_stack` refuses to run the `expose`
+    # profile with an empty key, because Caddy would then match a bare `Bearer `.
+    key = server.api_key(paths.stack_dir() / server.ENV_FILE, rotate=rotate)
+    # A rotation always restarts, --show or not: Caddy reads the key once, at
+    # startup, so skipping the restart would leave the old key the working one.
+    if not show or rotate:
+        cfg.exposed = True
+        config.save(cfg)
+        server.start_stack(detect.detect(), cfg)
+        log.get_logger().info("expose.on", api_port=cfg.api_port)
+    ip = server.lan_ip()
+    if cfg.exposed:
+        console.print(f"[green]✓ Exposed.[/green] Chat UI: http://{ip}:{cfg.webui_port}")
+    else:
+        console.print("Not exposed yet — run `lepika expose` to turn it on.")
+        console.print(f"Chat UI once it is on: http://{ip}:{cfg.webui_port}")
+    console.print("The chat UI asks for a sign-in; the engine API wants the key below.")
+    console.print(f"Engine API: http://{ip}:{cfg.api_port}")
+    console.print("On another machine:")
+    # soft_wrap: this line is meant to be copied, and an 80-column wrap breaks it.
+    console.print(
+        f"  lepika connect http://{ip}:{cfg.api_port} --key {key}", markup=False, soft_wrap=True
+    )
+    console.print("Keep the key private; `lepika expose --rotate` replaces it.")
 
 
 model_app = typer.Typer(help="Add, list, or remove local models.")

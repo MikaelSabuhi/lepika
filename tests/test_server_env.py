@@ -4,6 +4,7 @@ import os
 import stat
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -121,3 +122,37 @@ def test_hf_token_from_the_shell_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HF_TOKEN", "from-shell")
     values = server.env_values(config.Config(mode="server"), INFO, existing={"HF_TOKEN": "old"})
     assert values["HF_TOKEN"] == "from-shell"
+
+
+def test_api_key_is_generated_once_and_reused(tmp_path: Path) -> None:
+    env = tmp_path / ".env"
+    first = server.api_key(env)
+    assert len(first) >= 32
+    assert server.api_key(env) == first
+    assert server.read_env(env)["LEPIKA_API_KEY"] == first
+
+
+def test_api_key_rotate_replaces_it(tmp_path: Path) -> None:
+    env = tmp_path / ".env"
+    first = server.api_key(env)
+    assert server.api_key(env, rotate=True) != first
+
+
+def test_api_key_keeps_the_rest_of_the_env(tmp_path: Path) -> None:
+    env = tmp_path / ".env"
+    server.write_env(env, {"OLLAMA_IMAGE": "ollama/ollama:0.11.4"})
+    server.api_key(env, rotate=True)
+    assert server.read_env(env)["OLLAMA_IMAGE"] == "ollama/ollama:0.11.4"
+
+
+def test_lan_ip_reports_the_address_the_socket_picked() -> None:
+    # Binding stands in for the real UDP connect: either way the answer is the
+    # local address the kernel chose, read back with getsockname.
+    assert server.lan_ip(connect=lambda sock: sock.bind(("127.0.0.1", 0))) == "127.0.0.1"
+
+
+def test_lan_ip_falls_back_to_a_placeholder() -> None:
+    def boom(sock: Any) -> None:
+        raise OSError("no route")
+
+    assert server.lan_ip(connect=boom) == "<this machine's IP>"

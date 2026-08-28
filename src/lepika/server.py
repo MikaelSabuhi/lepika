@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib.resources
 import json
 import os
+import secrets
+import socket
 import subprocess
 import time
 from collections.abc import Callable
@@ -85,6 +87,32 @@ def write_env(path: Path, values: dict[str, str]) -> None:
     os.replace(tmp, path)
     # Key names only: the values are exactly what must never reach the log.
     log.get_logger().info("env.write", path=str(path), keys=sorted(values))
+
+
+def api_key(env_path: Path, rotate: bool = False) -> str:
+    """The key Caddy checks. Generated once, kept in .env (0600), never in LePika's log."""
+    current = read_env(env_path).get("LEPIKA_API_KEY", "")
+    if current and not rotate:
+        return current
+    key = secrets.token_urlsafe(32)
+    write_env(env_path, {"LEPIKA_API_KEY": key})
+    log.get_logger().info("expose.key", rotated=rotate)
+    return key
+
+
+def lan_ip(connect: Callable[[socket.socket], None] | None = None) -> str:
+    """The address other machines reach us on. A UDP connect picks the route; nothing is sent."""
+    # 10.255.255.255 needs no DNS and no reachable host: connecting a datagram
+    # socket only makes the kernel choose the outbound interface.
+    connect_fn = connect if connect is not None else (lambda s: s.connect(("10.255.255.255", 1)))
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            connect_fn(sock)
+            return str(sock.getsockname()[0])
+    except OSError:
+        # No route at all (offline, or a locked-down host): say so in the connect
+        # line rather than printing something that looks like an address.
+        return "<this machine's IP>"
 
 
 def container_engine_url(url: str) -> str:

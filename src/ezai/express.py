@@ -196,12 +196,19 @@ def stop_openwebui(
         # Truncated or garbage pid file: nothing to stop, just clear the stale file.
         pf.unlink(missing_ok=True)
         return False
+    if pid <= 0:
+        # `os.kill(0, SIGTERM)` signals our whole process group, and negatives
+        # signal a group too — neither is ever what a stale pid file meant.
+        pf.unlink(missing_ok=True)
+        return False
     try:
         if os_name == "windows":
             run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
         else:
             kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
+        # Gone, or recycled into a process we don't own (a truncated pid can
+        # parse to a live foreign pid) — either way, drop the stale file.
         pass
     pf.unlink(missing_ok=True)
     return True

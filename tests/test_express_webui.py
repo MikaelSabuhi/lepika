@@ -77,6 +77,33 @@ def test_stop_openwebui_malformed_pidfile_is_cleaned_up(isolated_home: Path) -> 
     assert not pf.exists()
 
 
+@pytest.mark.parametrize("content", ["0", "-5\n"])
+def test_stop_openwebui_nonpositive_pid_is_never_signalled(
+    isolated_home: Path, content: str
+) -> None:
+    """`os.kill(0, ...)` signals the whole process group; 0 and negatives never reach kill."""
+    pf = paths.pid_file("openwebui")
+    pf.write_text(content)
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("should not signal anything")
+
+    assert express.stop_openwebui("linux", kill=never) is False
+    assert not pf.exists()
+
+
+def test_stop_openwebui_permission_error_is_not_fatal(isolated_home: Path) -> None:
+    """A truncated pid can parse to a live foreign pid — refusing it is not a crash."""
+    pf = paths.pid_file("openwebui")
+    pf.write_text("1")
+
+    def denied(pid: int, sig: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    assert express.stop_openwebui("linux", kill=denied) is True
+    assert not pf.exists()
+
+
 def test_ensure_openwebui_noop_when_healthy(isolated_home: Path) -> None:
     """A healthy OpenWebUI must cost nothing: no install round-trip, no start."""
 

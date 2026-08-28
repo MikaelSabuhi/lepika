@@ -30,12 +30,18 @@ def _version_string() -> str:
 def main(
     ctx: typer.Context,
     version: bool = typer.Option(False, "--version", help="Show version and exit."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what the wizard would do without doing it."
+    ),
 ) -> None:
     if version:
         typer.echo(_version_string())
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
-        typer.echo("Setup wizard coming soon. Run `ezai --help` for available commands.")
+        # Imported here, not at module scope: `wizard` imports `cli._open_browser`.
+        from ezai import wizard
+
+        wizard.run_wizard(dry_run=dry_run)
 
 
 def _open_browser(url: str) -> None:

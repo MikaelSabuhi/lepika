@@ -190,7 +190,12 @@ def stop_openwebui(
     pf = pid_file("openwebui")
     if not pf.exists():
         return False
-    pid = int(pf.read_text().strip())
+    try:
+        pid = int(pf.read_text().strip())
+    except ValueError:
+        # Truncated or garbage pid file: nothing to stop, just clear the stale file.
+        pf.unlink(missing_ok=True)
+        return False
     try:
         if os_name == "windows":
             run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)

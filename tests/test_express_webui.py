@@ -65,6 +65,18 @@ def test_stop_openwebui_no_pidfile_returns_false(isolated_home: Path) -> None:
     assert express.stop_openwebui("linux") is False
 
 
+def test_stop_openwebui_malformed_pidfile_is_cleaned_up(isolated_home: Path) -> None:
+    """A truncated or garbage pid file means nothing to stop — never a traceback."""
+    pf = paths.pid_file("openwebui")
+    pf.write_text("not-a-pid\n")
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("should not signal anything")
+
+    assert express.stop_openwebui("linux", kill=never) is False
+    assert not pf.exists()
+
+
 def test_ensure_openwebui_noop_when_healthy(isolated_home: Path) -> None:
     """A healthy OpenWebUI must cost nothing: no install round-trip, no start."""
 

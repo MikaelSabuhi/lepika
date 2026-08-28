@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import importlib.metadata
+import webbrowser
 
 import typer
 from rich.console import Console
 from rich.markup import escape
+from rich.table import Table
 
+from ezai import config, detect, express, paths
 from ezai.errors import FriendlyError
 
 app = typer.Typer(
@@ -15,6 +18,7 @@ app = typer.Typer(
     add_completion=False,
 )
 
+console = Console()
 err_console = Console(stderr=True)
 
 
@@ -32,6 +36,58 @@ def main(
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
         typer.echo("Setup wizard coming soon. Run `ezai --help` for available commands.")
+
+
+def _open_browser(url: str) -> None:
+    webbrowser.open(url)
+
+
+@app.command()
+def up() -> None:
+    """Start the local AI stack and open the browser."""
+    info = detect.detect()
+    console.print(detect.plan_sentence(info))
+    cfg = config.load()
+    express.ensure_ollama(info)
+    express.ensure_openwebui(cfg)
+    url = express.webui_url(cfg.webui_port)
+    console.print(f"[green]✓ Ready:[/green] {url}")
+    _open_browser(url)
+
+
+@app.command()
+def down() -> None:
+    """Stop OpenWebUI (Ollama keeps running as a shared service)."""
+    info = detect.detect()
+    if express.stop_openwebui(info.os):
+        console.print("[green]✓ OpenWebUI stopped.[/green]")
+    else:
+        console.print("OpenWebUI was not running.")
+
+
+@app.command()
+def status() -> None:
+    """Show what's running."""
+    cfg = config.load()
+    table = Table(title="ezai status")
+    table.add_column("Service")
+    table.add_column("State")
+    ollama_ok = detect.api_up(detect.OLLAMA_URL)
+    webui_ok = express.webui_up(cfg.webui_port)
+    table.add_row("Ollama API", "[green]up[/green]" if ollama_ok else "[red]down[/red]")
+    table.add_row("OpenWebUI", "[green]up[/green]" if webui_ok else "[red]down[/red]")
+    table.add_row("Model", cfg.model or "[dim]not set[/dim]")
+    console.print(table)
+
+
+@app.command()
+def logs(lines: int = typer.Option(50, help="Lines per log file.")) -> None:
+    """Print the tail of ezai's log files."""
+    for log_file in sorted(paths.logs_dir().glob("*.log")):
+        console.rule(str(log_file.name))
+        content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        for line in content[-lines:]:
+            console.print(line, markup=False)
 
 
 def run() -> None:

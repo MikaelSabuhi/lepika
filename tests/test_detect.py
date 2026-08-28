@@ -65,18 +65,42 @@ def test_windows_ram_raises_when_the_memory_api_fails() -> None:
 
 
 def test_api_up_true_and_false() -> None:
-    def ok(url: str, timeout: float = 0) -> Any:
+    def ok(req: Any, timeout: float = 0) -> Any:
         class R:
             def read(self) -> bytes:
                 return b"{}"
 
         return R()
 
-    def boom(url: str, timeout: float = 0) -> Any:
+    def boom(req: Any, timeout: float = 0) -> Any:
         raise OSError("refused")
 
     assert detect.api_up("http://x", urlopen=ok) is True
     assert detect.api_up("http://x", urlopen=boom) is False
+
+
+def test_api_up_sends_bearer_key_when_given() -> None:
+    seen: list[Any] = []
+
+    def opener(req: Any, timeout: float = 0) -> Any:
+        seen.append(req)
+        return object()
+
+    assert detect.api_up("http://x", urlopen=opener, key="s3cret") is True
+    request = seen[0]
+    assert request.full_url == "http://x/api/version"
+    assert request.get_header("Authorization") == "Bearer s3cret"
+
+
+def test_api_up_without_key_sends_no_authorization_header() -> None:
+    seen: list[Any] = []
+
+    def opener(req: Any, timeout: float = 0) -> Any:
+        seen.append(req)
+        return object()
+
+    assert detect.api_up("http://x", urlopen=opener) is True
+    assert seen[0].get_header("Authorization") is None
 
 
 def test_plan_sentence_mentions_gpu_and_mode() -> None:

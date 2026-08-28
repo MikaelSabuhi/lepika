@@ -113,10 +113,18 @@ def detect_ram_gb(
     return _windows_ram_gb()
 
 
-def api_up(url: str, timeout: float = 1.0, urlopen: UrlOpenFn | None = None) -> bool:
+def api_up(
+    url: str,
+    timeout: float = 1.0,
+    urlopen: UrlOpenFn | None = None,
+    key: str = "",
+) -> bool:
     opener: UrlOpenFn = urlopen if urlopen is not None else urllib.request.urlopen
+    request = urllib.request.Request(f"{url}/api/version")
+    if key:
+        request.add_header("Authorization", f"Bearer {key}")
     try:
-        opener(f"{url}/api/version", timeout=timeout)
+        opener(request, timeout=timeout)
     except Exception:
         return False
     return True

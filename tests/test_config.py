@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+import stat
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -37,16 +41,19 @@ def test_save_keeps_previous_config_when_write_fails(
     config.save(original)
     before = config.config_path().read_text()
 
-    real_write_text = Path.write_text
+    real_fdopen = os.fdopen
 
-    def exploding_write_text(self: Path, data: str, **kwargs: object) -> int:
-        real_write_text(self, "half-written garbage", **kwargs)  # type: ignore[arg-type]
+    def exploding_fdopen(fd: int, *args: Any, **kwargs: Any) -> Any:
+        # Half-write the temp file, then die before `save` can rename it into place.
+        monkeypatch.setattr(os, "fdopen", real_fdopen)
+        with real_fdopen(fd, *args, **kwargs) as handle:
+            handle.write("half-written garbage")
         raise OSError("disk full")
 
-    # Only write_text is patched, so the reads below still work; do NOT call
+    # `save` writes through os.fdopen, so that is the seam to break; do NOT call
     # monkeypatch.undo() here — it would also revert the autouse LEPIKA_HOME fixture
     # and point these assertions at the real ~/.lepika.
-    monkeypatch.setattr(Path, "write_text", exploding_write_text)
+    monkeypatch.setattr(os, "fdopen", exploding_fdopen)
     with pytest.raises(OSError, match="disk full"):
         config.save(config.Config(model="never-lands"))
 
@@ -73,3 +80,32 @@ def test_load_raises_friendly_error_on_corrupt_file(isolated_home: Path) -> None
         config.load()
     assert "corrupted" in excinfo.value.problem
     assert "lepika" in excinfo.value.fix
+
+
+def test_defaults_describe_a_managed_local_engine(isolated_home: Path) -> None:
+    cfg = config.load()
+    assert cfg.engine_managed is True
+    assert cfg.engine_key == ""
+    assert cfg.engine_url == config.DEFAULT_ENGINE_URL
+    assert cfg.api_port == 11435
+    assert cfg.exposed is False
+
+
+def test_remote_engine_round_trips(isolated_home: Path) -> None:
+    cfg = config.Config(
+        engine_managed=False, engine_url="http://gpu-box:11435", engine_key="abc", exposed=True
+    )
+    config.save(cfg)
+    assert config.load() == cfg
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_config_file_is_private(isolated_home: Path) -> None:
+    """config.toml can hold an engine key; other users on the box must not read it."""
+    config.save(config.Config(engine_key="abc"))
+    assert stat.S_IMODE(os.stat(config.config_path()).st_mode) == 0o600
+
+    # A config written by an older version is world-readable; saving must tighten it.
+    os.chmod(config.config_path(), 0o644)
+    config.save(config.Config(engine_key="abc"))
+    assert stat.S_IMODE(os.stat(config.config_path()).st_mode) == 0o600

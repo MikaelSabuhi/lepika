@@ -13,14 +13,22 @@ from lepika.paths import lepika_home
 
 SCHEMA_VERSION = 1
 
+DEFAULT_ENGINE_URL = "http://127.0.0.1:11434"
+
 
 @dataclass
 class Config:
     schema_version: int = SCHEMA_VERSION
     mode: str = "express"
     model: str = ""
-    engine_url: str = "http://127.0.0.1:11434"
+    engine_url: str = DEFAULT_ENGINE_URL
+    # True: LePika installs/starts the engine (native in Express, a container in
+    # Server). False: `lepika connect` pointed us at an engine someone else runs.
+    engine_managed: bool = True
+    engine_key: str = ""
     webui_port: int = 3000
+    api_port: int = 11435
+    exposed: bool = False
 
 
 def config_path() -> Path:
@@ -47,7 +55,12 @@ def save(cfg: Config) -> None:
     """Write atomically so an interrupted save can't leave a half-written config."""
     path = config_path()
     tmp = path.with_suffix(".toml.tmp")
-    tmp.write_text(_dump_toml(dataclasses.asdict(cfg)), encoding="utf-8")
+    # The file can hold an engine key, so it is private from the first byte: the
+    # mode is set when the file is created, not chmod'ed after the key is already
+    # on disk under the process umask. Windows ignores the mode bits.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(_dump_toml(dataclasses.asdict(cfg)))
     os.replace(tmp, path)
 
 

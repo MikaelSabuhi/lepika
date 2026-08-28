@@ -22,6 +22,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ezai"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"models.toml" = "ezai/models.toml"
+
 [dependency-groups]
 dev = [
   "pytest>=8",

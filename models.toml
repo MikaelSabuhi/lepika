@@ -1,0 +1,54 @@
+# Curated "known good" models shown by the ezai wizard.
+# Keep this list short, current, and honest. min_ram_gb is the practical
+# minimum system memory (or VRAM) to run the default quantization comfortably.
+schema = 1
+
+[[models]]
+name = "Qwen 3 0.6B — tiny, instant"
+ref = "qwen3:0.6b"
+min_ram_gb = 2
+
+[[models]]
+name = "Llama 3.2 3B — light and quick"
+ref = "llama3.2:3b"
+min_ram_gb = 6
+
+[[models]]
+name = "Gemma 3 4B — great all-rounder"
+ref = "gemma3:4b"
+min_ram_gb = 6
+
+[[models]]
+name = "Qwen 3 8B — strong general model"
+ref = "qwen3:8b"
+min_ram_gb = 12
+
+[[models]]
+name = "DeepSeek-R1 8B — reasoning"
+ref = "deepseek-r1:8b"
+min_ram_gb = 12
+
+[[models]]
+name = "Gemma 3 12B — bigger, better answers"
+ref = "gemma3:12b"
+min_ram_gb = 16
+
+[[models]]
+name = "GPT-OSS 20B — OpenAI open-weight"
+ref = "gpt-oss:20b"
+min_ram_gb = 16
+
+[[models]]
+name = "Gemma 3 27B — high quality"
+ref = "gemma3:27b"
+min_ram_gb = 32
+
+[[models]]
+name = "DeepSeek-R1 32B — heavyweight reasoning"
+ref = "deepseek-r1:32b"
+min_ram_gb = 32
+
+[[models]]
+name = "Llama 3.3 70B — flagship class"
+ref = "llama3.3:70b"
+min_ram_gb = 48

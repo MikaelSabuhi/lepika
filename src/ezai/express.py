@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import signal
 import subprocess
 import time
-from collections.abc import Callable
+import urllib.request
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from ezai import detect, proc
+from ezai.config import Config
 from ezai.detect import SystemInfo
 from ezai.errors import FriendlyError
 from ezai.models import ModelRef
-from ezai.paths import logs_dir
+from ezai.paths import logs_dir, pid_file
 
 RunFn = Callable[..., Any]
 WhichFn = Callable[[str], str | None]
@@ -120,3 +124,95 @@ def pull_model(ref: ModelRef, call: CallFn = subprocess.call) -> None:
             "Check the model name/URL — e.g. qwen3:8b or hf.co/<org>/<repo>-GGUF — "
             "and your internet connection.",
         )
+
+
+def webui_url(port: int) -> str:
+    return f"http://localhost:{port}"
+
+
+def webui_up(port: int, urlopen: Callable[..., Any] | None = None) -> bool:
+    opener: Callable[..., Any] = urlopen if urlopen is not None else urllib.request.urlopen
+    try:
+        opener(f"http://127.0.0.1:{port}/health", timeout=1.0)
+    except Exception:
+        return False
+    return True
+
+
+def install_openwebui(run: RunFn = proc.run_logged) -> None:
+    # `uv tool install` is idempotent: a second run is a no-op upgrade check.
+    run(["uv", "tool", "install", "--python", "3.11", "open-webui"])
+
+
+def start_openwebui(
+    port: int,
+    engine_url: str,
+    popen: PopenFn = subprocess.Popen,
+    environ: Mapping[str, str] | None = None,
+) -> int:
+    env = dict(environ if environ is not None else os.environ)
+    env["OLLAMA_BASE_URL"] = engine_url
+    log = (logs_dir() / "openwebui.log").open("ab")
+    try:
+        proc_handle = popen(
+            [
+                "uv",
+                "tool",
+                "run",
+                "--from",
+                "open-webui",
+                "open-webui",
+                "serve",
+                "--port",
+                str(port),
+            ],
+            env=env,
+            stdout=log,
+            stderr=log,
+            **_detach_kwargs("windows" if os.name == "nt" else "posix"),
+        )
+    except FileNotFoundError as exc:
+        log.close()
+        raise FriendlyError(
+            "uv is required to run OpenWebUI but was not found.",
+            "Install uv: https://docs.astral.sh/uv/getting-started/installation/",
+        ) from exc
+    pid = int(proc_handle.pid)
+    pid_file("openwebui").write_text(str(pid))
+    return pid
+
+
+def stop_openwebui(
+    os_name: str,
+    run: RunFn = proc.run_logged,
+    kill: Callable[[int, int], None] = os.kill,
+) -> bool:
+    pf = pid_file("openwebui")
+    if not pf.exists():
+        return False
+    pid = int(pf.read_text().strip())
+    try:
+        if os_name == "windows":
+            run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
+        else:
+            kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    pf.unlink(missing_ok=True)
+    return True
+
+
+def ensure_openwebui(
+    cfg: Config,
+    run: RunFn = proc.run_logged,
+    popen: PopenFn = subprocess.Popen,
+    up: Callable[..., bool] = webui_up,
+    sleep: SleepFn = time.sleep,
+) -> None:
+    # Probe first: an already-healthy OpenWebUI must cost nothing — no resolver
+    # round-trip, and `ezai` keeps working offline.
+    if up(cfg.webui_port):
+        return
+    install_openwebui(run=run)
+    start_openwebui(cfg.webui_port, cfg.engine_url, popen=popen)
+    wait_for(lambda: up(cfg.webui_port), 180, "OpenWebUI", sleep=sleep)

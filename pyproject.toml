@@ -1,0 +1,56 @@
+[project]
+name = "ezai"
+version = "0.1.0"
+description = "One command → local AI chat in your browser. Self-host LLMs on your own GPU."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "Mikael Sabuhi" }]
+keywords = ["llm", "ollama", "openwebui", "self-host", "local-ai"]
+dependencies = ["typer>=0.12", "rich>=13.7"]
+
+[project.urls]
+Homepage = "https://github.com/MikaelSabuhi/ezaiselfhost"
+
+[project.scripts]
+ezai = "ezai.cli:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ezai"]
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "bandit[toml]>=1.7",
+  "pip-audit>=2.7",
+  "pre-commit>=3.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Ruff also lints/formats Python fenced in Markdown; docs snippets are
+# illustrative, not source, so keep Markdown out of scope.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.bandit]
+# ezai's job is orchestrating trusted local CLIs (ollama, uv, brew, winget).
+# All subprocess invocations are list-based and reviewed; no untrusted input
+# reaches a shell.
+skips = ["B404", "B603", "B607"]

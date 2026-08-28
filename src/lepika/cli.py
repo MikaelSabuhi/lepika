@@ -112,11 +112,21 @@ def status() -> None:
     table.add_column("State")
     # First row: every other row means something different in each mode.
     table.add_row("Mode", cfg.mode)
-    engine_ok = detect.api_up(cfg.engine_url, key=cfg.engine_key)
+    vllm = server.vllm_active(cfg)
+    engine_ok = (
+        engine.vllm_up(server.VLLM_URL)
+        if vllm
+        else detect.api_up(cfg.engine_url, key=cfg.engine_key)
+    )
     webui_ok = express.webui_up(cfg.webui_port)
-    table.add_row("Engine", "[green]up[/green]" if engine_ok else "[red]down[/red]")
+    table.add_row(
+        "Engine (vLLM)" if vllm else "Engine",
+        "[green]up[/green]" if engine_ok else "[red]down[/red]",
+    )
     # Which machine answered matters once the engine can live somewhere else.
     where = cfg.engine_url + ("" if cfg.engine_managed else " (remote)")
+    if vllm:
+        where = server.VLLM_URL
     table.add_row("Engine URL", escape(where))
     table.add_row("OpenWebUI", "[green]up[/green]" if webui_ok else "[red]down[/red]")
     table.add_row("Model", cfg.model or "[dim]not set[/dim]")
@@ -262,17 +272,42 @@ def expose(
         console.print("Not exposed yet — run `lepika expose` to turn it on.")
         console.print(f"Chat UI once it is on: http://{ip}:{cfg.webui_port}")
     console.print("The chat UI asks for a sign-in; the engine API wants the key below.")
-    console.print(f"Engine API: http://{ip}:{cfg.api_port}")
-    console.print("On another machine:")
-    # soft_wrap: this line is meant to be copied, and an 80-column wrap breaks it.
-    console.print(
-        f"  lepika connect http://{ip}:{cfg.api_port} --key {key}", markup=False, soft_wrap=True
-    )
+    # soft_wrap on the copied lines: an 80-column wrap breaks a URL or a key.
+    if server.vllm_active(cfg):
+        # `lepika connect` probes Ollama's /api/version, which Caddy in front of vLLM
+        # never answers — so point at the OpenAI-compatible URL OpenWebUI can add.
+        console.print(f"Engine API is vLLM (OpenAI-compatible): http://{ip}:{cfg.api_port}/v1")
+        console.print(
+            "On another machine, add that URL with the key as an OpenAI connection in "
+            "OpenWebUI (Admin → Settings → Connections); `lepika connect` is for "
+            "Ollama engines."
+        )
+        console.print(f"  Key: {key}", markup=False, soft_wrap=True)
+    else:
+        console.print(f"Engine API: http://{ip}:{cfg.api_port}")
+        console.print("On another machine:")
+        console.print(
+            f"  lepika connect http://{ip}:{cfg.api_port} --key {key}", markup=False, soft_wrap=True
+        )
     console.print("Keep the key private; `lepika expose --rotate` replaces it.")
 
 
 model_app = typer.Typer(help="Add, list, or remove local models.")
 app.add_typer(model_app, name="model")
+
+
+def _refuse_ollama_only(cfg: config.Config, detail: str) -> None:
+    """`model list`/`model rm` talk to Ollama, which a vLLM stack deliberately stops.
+
+    Without this the engine looks unreachable and the hint is `lepika up` — which
+    starts the stack it is already in, leaving the user in a loop.
+    """
+    if server.vllm_active(cfg):
+        raise FriendlyError(
+            f"'{cfg.model}' is served by vLLM — {detail}",
+            "Switch models with `lepika model add <ref>`; vLLM keeps its weights in "
+            "the hf-cache volume.",
+        )
 
 
 @model_app.command("add")
@@ -286,12 +321,21 @@ def model_add(
     from lepika import wizard
 
     info = detect.detect()
+    cfg = config.load()
     if ref is None:
-        model_ref = wizard.choose_model(info)
+        model_ref = wizard.choose_model(info, cfg)
     else:
         # Same rejection as the wizard's, by reusing it rather than restating it.
-        model_ref = wizard._validate(models.parse_model_ref(ref))
-    cfg = config.load()
+        model_ref = wizard._validate(models.parse_model_ref(ref), cfg, info)
+    if models.uses_vllm(model_ref.raw):
+        # Nothing to pull: vLLM downloads the weights itself when it starts, and it
+        # only starts once the config names the model compose interpolates.
+        server.hf_token_prompt(paths.stack_dir() / server.ENV_FILE)
+        cfg.model = model_ref.raw
+        config.save(cfg)
+        console.print(f"[green]✓ Set:[/green] {escape(model_ref.raw)} — starting vLLM…")
+        _ready(cfg, server.start_stack(info, cfg))
+        return
     if cfg.engine_managed and cfg.mode == "server":
         # In Server mode the engine is a container: it has to be up before there is
         # anything to pull into.
@@ -311,6 +355,7 @@ def model_add(
 def model_list() -> None:
     """List downloaded models."""
     cfg = config.load()
+    _refuse_ollama_only(cfg, "there is no Ollama model list to show.")
     installed = engine.list_models(cfg.engine_url, key=cfg.engine_key)
     if not installed:
         console.print("No models yet — run `lepika model add`.", markup=False)
@@ -330,6 +375,7 @@ def model_rm(
 ) -> None:
     """Remove a downloaded model."""
     cfg = config.load()
+    _refuse_ollama_only(cfg, "there is nothing to remove from Ollama.")
     engine.delete_model(cfg.engine_url, name, key=cfg.engine_key)
     console.print(f"[green]✓ Removed:[/green] {escape(name)}")
 

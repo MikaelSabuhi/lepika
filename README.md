@@ -85,7 +85,7 @@ Ollama already installed? LePika reuses it instead of installing a second copy.
 
 | Platform | GPU used | Stack |
 | --- | --- | --- |
-| Linux + NVIDIA | CUDA (needs NVIDIA Container Toolkit) | OpenWebUI + Ollama containers |
+| Linux + NVIDIA | CUDA (needs NVIDIA Container Toolkit) | OpenWebUI + Ollama containers, + vLLM for full-weight repos |
 | Linux (no GPU) | CPU | Same; LePika warns you it will be slow |
 | Windows + NVIDIA (Docker Desktop) | CUDA via WSL2 | Same |
 | macOS (Docker Desktop) | CPU only — containers can't use Metal; use Express for the GPU | Same |
@@ -146,11 +146,13 @@ One field, three shapes. The wizard and `lepika model add` both take all of them
 ```sh
 lepika model add qwen3:8b                          # any tag from the Ollama library
 lepika model add hf.co/unsloth/gemma-3-4b-it-GGUF  # any GGUF build on Hugging Face
-lepika model add meta-llama/Llama-3.3-70B-Instruct # full-weight HF repo — needs vLLM
+lepika model add meta-llama/Llama-3.3-70B-Instruct # full-weight HF repo — vLLM, Server mode on Linux + NVIDIA
 ```
 
-The third shape needs vLLM, which arrives with Server mode; today LePika says so and
-points you at the GGUF build of the same model.
+The third shape runs on vLLM inside the Server-mode stack (Linux + NVIDIA only; LePika
+says so elsewhere and points you at the GGUF build). Gated repos need a Hugging Face
+token: export `HF_TOKEN` or answer the one-time prompt; it is stored in
+`~/.lepika/stack/.env` (0600).
 
 Run `lepika model add` with no argument and you get the curated list filtered to your
 RAM, so there is no guessing whether a 27B fits in 16 GB.
@@ -168,7 +170,9 @@ lepika connect --local                            # back to this machine
 
 `lepika expose` (Server mode) puts a small Caddy proxy in front of the engine on port
 `11435`: only requests carrying the generated key get through. `--show` reprints the
-line, `--rotate` issues a new key, `--off` goes back to localhost only.
+line, `--rotate` issues a new key, `--off` goes back to localhost only. If the box runs a
+full-weight repo on vLLM, `lepika expose` prints an OpenAI-compatible URL to add in
+OpenWebUI instead of a `connect` line.
 
 LePika never installs or starts anything on an engine it didn't set up — it only
 checks that it answers, and says so plainly when it doesn't. If the chat UI is
@@ -206,7 +210,6 @@ Python in [`src/lepika/`](src/lepika): three dependencies, no magic.
 
 Both modes above are v0.1 and work today. Next up:
 
-- **A vLLM profile** — full-weight Hugging Face repos in Server mode, on Linux + NVIDIA.
 - **A published package** — so installing is a plain name instead of a repo URL.
   The install one-liners already work today either way.
 

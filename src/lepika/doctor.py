@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from lepika import config, detect, express, proc, server
+from lepika import config, detect, engine, express, proc, server
 from lepika.detect import SystemInfo
 
 # Advisory, not a hard failure: `cli.doctor` matches on this name, not a literal.
@@ -25,6 +25,7 @@ def run_checks(
     info: SystemInfo,
     which: Callable[[str], str | None] = shutil.which,
     api_up: Callable[..., bool] = detect.api_up,
+    vllm_up: Callable[..., bool] = engine.vllm_up,
     webui_up: Callable[..., bool] = express.webui_up,
     run: Callable[..., Any] = proc.run_logged,
 ) -> list[CheckResult]:
@@ -83,10 +84,11 @@ def run_checks(
                     "Run `lepika` to install it, or see https://ollama.com/download",
                 )
             )
+    vllm = server.vllm_active(cfg)
     checks += [
         CheckResult(
-            "Engine responding",
-            api_up(cfg.engine_url, key=cfg.engine_key),
+            "Engine (vLLM) responding" if vllm else "Engine responding",
+            vllm_up(server.VLLM_URL) if vllm else api_up(cfg.engine_url, key=cfg.engine_key),
             "Run `lepika up` to start it; logs: `lepika logs`"
             if cfg.engine_managed
             else f"{cfg.engine_url} is not answering — check that machine, "

@@ -28,14 +28,17 @@ CURATED = [
 
 
 def test_choose_model_by_number_picks_fitting_curated() -> None:
-    ref = wizard.choose_model(INFO, ask=lambda *a, **k: "1", curated=CURATED)
+    ref = wizard.choose_model(INFO, config.Config(), ask=lambda *a, **k: "1", curated=CURATED)
     assert ref.raw == "llama3.2:3b"
     assert ref.kind == "ollama"
 
 
 def test_choose_model_free_form() -> None:
     ref = wizard.choose_model(
-        INFO, ask=lambda *a, **k: "hf.co/unsloth/gemma-3-4b-it-GGUF", curated=CURATED
+        INFO,
+        config.Config(),
+        ask=lambda *a, **k: "hf.co/unsloth/gemma-3-4b-it-GGUF",
+        curated=CURATED,
     )
     assert ref.kind == "hf_gguf"
 
@@ -43,14 +46,17 @@ def test_choose_model_free_form() -> None:
 def test_choose_model_rejects_hf_repo_with_gguf_hint() -> None:
     with pytest.raises(FriendlyError) as exc:
         wizard.choose_model(
-            INFO, ask=lambda *a, **k: "meta-llama/Llama-3.3-70B-Instruct", curated=CURATED
+            INFO,
+            config.Config(),
+            ask=lambda *a, **k: "meta-llama/Llama-3.3-70B-Instruct",
+            curated=CURATED,
         )
     assert "GGUF" in exc.value.fix
 
 
 def test_choose_model_non_decimal_digit_is_a_model_ref_not_a_crash() -> None:
     """`str.isdigit()` is true for "²", which `int()` refuses — that must not traceback."""
-    ref = wizard.choose_model(INFO, ask=lambda *a, **k: "²", curated=CURATED)
+    ref = wizard.choose_model(INFO, config.Config(), ask=lambda *a, **k: "²", curated=CURATED)
     assert ref.raw == "²"
     assert ref.kind == "ollama"
 
@@ -74,7 +80,9 @@ TINY = detect.SystemInfo(
 
 def test_choose_model_explains_an_empty_curated_list(capsys: pytest.CaptureFixture[str]) -> None:
     """An empty table is a dead end; say why it's empty and what still works."""
-    ref = wizard.choose_model(TINY, ask=lambda *a, **k: "qwen3:0.6b", curated=CURATED)
+    ref = wizard.choose_model(
+        TINY, config.Config(), ask=lambda *a, **k: "qwen3:0.6b", curated=CURATED
+    )
     assert ref.raw == "qwen3:0.6b"
     out = capsys.readouterr().out
     assert "Nothing in the curated list" in out
@@ -86,7 +94,9 @@ def test_choose_model_reprompts_once_on_an_out_of_range_number(
 ) -> None:
     """A 99 against 3 rows is a mistyped pick, not a model called 99."""
     answers = iter(["99", "3"])
-    ref = wizard.choose_model(INFO, ask=lambda *a, **k: next(answers), curated=THREE)
+    ref = wizard.choose_model(
+        INFO, config.Config(), ask=lambda *a, **k: next(answers), curated=THREE
+    )
     assert ref.raw == "gemma3:4b"
     assert "only 3" in capsys.readouterr().out
 
@@ -94,7 +104,9 @@ def test_choose_model_reprompts_once_on_an_out_of_range_number(
 def test_choose_model_second_bad_number_falls_through_as_a_model_ref() -> None:
     """The re-prompt is bounded: one explanation, then the flow moves on."""
     answers = iter(["99", "77"])
-    ref = wizard.choose_model(INFO, ask=lambda *a, **k: next(answers), curated=THREE)
+    ref = wizard.choose_model(
+        INFO, config.Config(), ask=lambda *a, **k: next(answers), curated=THREE
+    )
     assert ref.raw == "77"
 
 

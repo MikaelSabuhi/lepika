@@ -126,3 +126,8 @@ def load_curated(
 
 def fitting(candidates: list[CuratedModel], ram_gb: float) -> list[CuratedModel]:
     return [m for m in candidates if m.min_ram_gb <= ram_gb]
+
+
+def uses_vllm(ref_raw: str) -> bool:
+    """Full-weight repos (`org/repo`) are served by vLLM; everything else by Ollama."""
+    return bool(ref_raw.strip()) and parse_model_ref(ref_raw).kind == "hf_repo"

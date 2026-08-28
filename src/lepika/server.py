@@ -14,7 +14,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from lepika import detect, express, log, proc
+from rich.console import Console
+from rich.prompt import Prompt
+
+from lepika import detect, engine, express, log, models, proc
 from lepika.config import Config
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
@@ -23,9 +26,19 @@ from lepika.paths import logs_dir, stack_dir
 RunFn = Callable[..., Any]
 CallFn = Callable[[list[str]], int]
 SleepFn = Callable[[float], None]
+AskFn = Callable[..., str]
+
+console = Console()
 
 STACK_FILES = ("compose.yml", "compose.nvidia.yml", "Caddyfile")
 ENV_FILE = ".env"
+VLLM_URL = "http://127.0.0.1:8000"
+_TOOLKIT_URL = (
+    "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
+)
+# The weights are tens of GB and vLLM compiles a graph before it answers: minutes,
+# sometimes tens of them, on a first start.
+_VLLM_READY_SECONDS = 1800
 
 # Written only when absent: these are yours to pin or fill in.
 PRESERVED_DEFAULTS = {
@@ -156,14 +169,59 @@ def env_values(cfg: Config, info: SystemInfo, existing: dict[str, str]) -> dict[
         "API_PORT": str(cfg.api_port),
         "LEPIKA_UPSTREAM": upstream,
     }
+    if vllm_active(cfg):
+        # OLLAMA_BASE_URL is left pointing at the stopped ollama service on purpose:
+        # OpenWebUI then lists no Ollama models, so the only model offered is vLLM's.
+        values |= {
+            "VLLM_MODEL": cfg.model,
+            "ENABLE_OPENAI_API": "true",
+            "OPENAI_API_BASE_URL": "http://vllm:8000/v1",
+            "OPENAI_API_KEY": "none",  # OpenWebUI insists on a value; vLLM ignores it
+            "LEPIKA_UPSTREAM": "vllm:8000",
+        }
     return values
 
 
+def vllm_allowed(cfg: Config, info: SystemInfo) -> bool:
+    """Could this machine serve a full-weight repo? vLLM is a CUDA container we start.
+
+    `engine_managed` is part of it: with a remote engine we start no containers at
+    all, so accepting a repo would save a model nothing in the stack ever serves.
+    """
+    return (
+        cfg.engine_managed and cfg.mode == "server" and info.os == "linux" and info.gpu == "nvidia"
+    )
+
+
+def vllm_active(cfg: Config) -> bool:
+    """Is vLLM the engine right now? The one predicate every caller shares."""
+    return cfg.engine_managed and models.uses_vllm(cfg.model)
+
+
 def profiles(cfg: Config) -> list[str]:
-    active = ["engine"] if cfg.engine_managed else []
+    active: list[str] = []
+    if cfg.engine_managed:
+        active.append("vllm" if vllm_active(cfg) else "engine")
     if cfg.exposed:
         active.append("expose")
     return active
+
+
+def hf_token_prompt(env_path: Path, ask: AskFn | None = None) -> None:
+    """Ask for a Hugging Face token once, only when nothing supplied one. Empty is fine.
+
+    Gated repos (Llama, Gemma…) 401 without one. The answer goes straight to .env
+    (0600) — never onto the command line, and never into LePika's log.
+    """
+    if os.environ.get("HF_TOKEN") or read_env(env_path).get("HF_TOKEN"):
+        return
+    ask_fn: AskFn = ask if ask is not None else Prompt.ask
+    token = ask_fn(
+        "Hugging Face token (needed for gated repos; Enter to skip)",
+        password=True,
+        default="",
+    ).strip()
+    write_env(env_path, {"HF_TOKEN": token})
 
 
 def nvidia_in_docker(info: SystemInfo, run: RunFn = proc.run_logged) -> bool:
@@ -218,8 +276,7 @@ def gpu_note(info: SystemInfo, run: RunFn = proc.run_logged) -> str | None:
     if info.gpu == "nvidia" and info.os == "linux" and not nvidia_in_docker(info, run=run):
         return (
             "NVIDIA GPU found, but Docker can't use it — running on CPU. Install the NVIDIA "
-            "Container Toolkit: https://docs.nvidia.com/datacenter/cloud-native/"
-            "container-toolkit/install-guide.html"
+            f"Container Toolkit: {_TOOLKIT_URL}"
         )
     return None
 
@@ -231,6 +288,7 @@ def start_stack(
     run: RunFn = proc.run_logged,
     call: CallFn = subprocess.call,
     api_up: Callable[..., bool] = detect.api_up,
+    vllm_up: Callable[..., bool] = engine.vllm_up,
     up: Callable[..., bool] = express.webui_up,
     sleep: SleepFn = time.sleep,
 ) -> str:
@@ -250,16 +308,23 @@ def start_stack(
     env_path = stack / ENV_FILE
     values = env_values(cfg, info, read_env(env_path))
     active = profiles(cfg)
+    gpu = nvidia_in_docker(info, run=run)
+    # Both refusals come before anything is written or started.
     # Caddy matches `Authorization: Bearer {$LEPIKA_API_KEY}`; an empty key makes a
-    # bare `Bearer ` header match, which is an open proxy on the network. Checked
-    # before anything is written or started.
+    # bare `Bearer ` header match, which is an open proxy on the network.
     if "expose" in active and not values["LEPIKA_API_KEY"]:
         raise FriendlyError(
             "Network exposure is on, but there is no API key to protect it.",
             "Run `lepika expose` to generate one, or `lepika expose --off`.",
         )
+    # vLLM has no CPU fallback worth offering: without the GPU the container starts
+    # and then dies, which is a far worse way to learn the toolkit is missing.
+    if "vllm" in active and not gpu:
+        raise FriendlyError(
+            "vLLM needs the GPU inside Docker, and Docker can't see it.",
+            f"Install the NVIDIA Container Toolkit: {_TOOLKIT_URL}",
+        )
     write_env(env_path, values)
-    gpu = nvidia_in_docker(info, run=run)
     base = compose_cmd(stack, active, gpu_overlay=gpu)
     log.get_logger().info("stack.up", profiles=active, gpu=info.gpu)
     # Streamed, not captured: the first run pulls gigabytes of images and a silent
@@ -274,7 +339,15 @@ def start_stack(
                 check=False,
                 timeout=60,
             )
-    if cfg.engine_managed:
+    if "vllm" in active:
+        # The first start downloads the full weights — tens of GB. A silent wait
+        # that long is indistinguishable from a hang, so say what is happening.
+        console.print(
+            "vLLM is loading the model — the first time this downloads the full "
+            "weights; watch with `lepika logs`."
+        )
+        express.wait_for(lambda: vllm_up(VLLM_URL), _VLLM_READY_SECONDS, "vLLM", sleep=sleep)
+    elif cfg.engine_managed:
         express.wait_for(lambda: api_up(cfg.engine_url), 120, "Ollama (container)", sleep=sleep)
     else:
         express.check_remote_engine(cfg, api_up=api_up)

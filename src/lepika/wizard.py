@@ -21,18 +21,19 @@ console = Console()
 _ask: AskFn = Prompt.ask
 
 
-def _validate(ref: ModelRef) -> ModelRef:
-    if ref.kind == "hf_repo":
+def _validate(ref: ModelRef, cfg: config.Config, info: SystemInfo) -> ModelRef:
+    if ref.kind == "hf_repo" and not server.vllm_allowed(cfg, info):
         raise FriendlyError(
-            "Full-weight Hugging Face repos need vLLM (Server mode on Linux + NVIDIA), "
-            "which isn't available yet.",
-            "Use a GGUF build instead, e.g. hf.co/<org>/<model>-GGUF",
+            "Full-weight Hugging Face repos need vLLM: Server mode on Linux with an NVIDIA GPU.",
+            "Use a GGUF build instead, e.g. hf.co/<org>/<model>-GGUF — or "
+            "`lepika --mode server` on a Linux NVIDIA box.",
         )
     return ref
 
 
 def choose_model(
     info: SystemInfo,
+    cfg: config.Config,
     ask: AskFn | None = None,
     curated: list[CuratedModel] | None = None,
 ) -> ModelRef:
@@ -61,7 +62,7 @@ def choose_model(
     def picked(answer: str) -> ModelRef | None:
         # isdecimal, not isdigit: "²".isdigit() is True but int("²") raises.
         if answer.isdecimal() and 1 <= int(answer) <= len(fitting):
-            return _validate(models.parse_model_ref(fitting[int(answer) - 1].ref))
+            return _validate(models.parse_model_ref(fitting[int(answer) - 1].ref), cfg, info)
         return None
 
     answer = ask_fn(prompt).strip()
@@ -80,7 +81,7 @@ def choose_model(
         chosen = picked(answer)
         if chosen is not None:
             return chosen
-    return _validate(models.parse_model_ref(answer))
+    return _validate(models.parse_model_ref(answer), cfg, info)
 
 
 def choose_mode(info: SystemInfo, current: str, ask: AskFn | None = None) -> str:
@@ -146,7 +147,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     if cfg.mode != previous and not dry_run:
         leave_mode(info, previous, cfg)
     console.print(detect.plan_sentence(info, cfg.mode))
-    ref = choose_model(info)
+    ref = choose_model(info, cfg)
     if dry_run:
         cfg.model = ref.raw
         config.save(cfg)
@@ -157,14 +158,25 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
             console.print("would: run docker compose up -d")
         else:
             console.print("would: ensure Ollama is installed and running")
-        console.print(f"would: pull model {escape(ref.raw)}")
+        if models.uses_vllm(ref.raw):
+            console.print(f"would: start vLLM with {escape(ref.raw)}")
+        else:
+            console.print(f"would: pull model {escape(ref.raw)}")
         console.print(f"would: start OpenWebUI on port {cfg.webui_port}")
         console.print(f"would: open {express.webui_url(cfg.webui_port)}")
         return
-    # The mode is decided now; the model is saved only after its pull succeeds.
+    if models.uses_vllm(ref.raw):
+        server.hf_token_prompt(paths.stack_dir() / server.ENV_FILE)
+        # compose interpolates VLLM_MODEL from the config, so this one has to be
+        # saved before the stack starts rather than after. A start that then fails
+        # is fixed by `lepika model add`, not by a stale config.
+        cfg.model = ref.raw
+    # The mode is decided now; an Ollama model is saved only after its pull succeeds.
     config.save(cfg)
 
     def pull_then_save() -> None:
+        if models.uses_vllm(ref.raw):
+            return  # vLLM downloads its own weights while starting; nothing to pull
         # Saved only once the pull succeeded: recording a model the machine failed
         # to download leaves the config pointing at something that isn't there.
         engine.pull_model(cfg.engine_url, ref, key=cfg.engine_key)

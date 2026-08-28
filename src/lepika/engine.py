@@ -19,6 +19,7 @@ UrlOpenFn = Callable[..., Any]
 ProgressFn = Callable[[int, int], None]
 
 _TAGS_TIMEOUT = 5.0
+_HEALTH_TIMEOUT = 1.0
 _DELETE_TIMEOUT = 30.0
 # A pull streams for as long as the download takes; only silence is a failure.
 _PULL_IDLE_TIMEOUT = 300.0
@@ -58,6 +59,15 @@ def human_size(n_bytes: int) -> str:
             return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1000
     return f"{size:.1f} GB"  # pragma: no cover - the loop always returns
+
+
+def vllm_up(url: str, urlopen: UrlOpenFn | None = None) -> bool:
+    """Is the vLLM server answering? `GET /health` — a probe, so nothing is logged."""
+    try:
+        _opener(urlopen)(urllib.request.Request(f"{url}/health"), timeout=_HEALTH_TIMEOUT)
+    except Exception:
+        return False
+    return True
 
 
 def list_models(url: str, key: str = "", urlopen: UrlOpenFn | None = None) -> list[tuple[str, int]]:

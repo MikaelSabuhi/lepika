@@ -1,4 +1,4 @@
-"""Typer entry point for ezai."""
+"""Typer entry point for LePika."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from ezai import config, detect, express, models, paths, proc
-from ezai.errors import FriendlyError
+from lepika import config, detect, express, models, paths, proc
+from lepika.errors import FriendlyError
 
 app = typer.Typer(
     help="One command → local AI chat in your browser.",
@@ -24,7 +24,7 @@ err_console = Console(stderr=True)
 
 
 def _version_string() -> str:
-    return f"ezai {importlib.metadata.version('ezai')}"
+    return f"lepika {importlib.metadata.version('lepika')}"
 
 
 @app.callback(invoke_without_command=True)
@@ -40,7 +40,7 @@ def main(
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
         # Imported here, not at module scope: `wizard` imports `cli._open_browser`.
-        from ezai import wizard
+        from lepika import wizard
 
         wizard.run_wizard(dry_run=dry_run)
 
@@ -50,11 +50,11 @@ def _open_browser(url: str) -> None:
 
 
 def _ready(cfg: config.Config, url: str) -> None:
-    """Announce a running stack and open it — shared by `ezai up` and the wizard."""
+    """Announce a running stack and open it — shared by `lepika up` and the wizard."""
     console.print(f"[green]✓ Ready:[/green] {url}")
     if not cfg.model:
         # A chat UI with no model behind it looks broken; say what's missing.
-        console.print("No model yet — run `ezai` or `ezai model add`.")
+        console.print("No model yet — run `lepika` or `lepika model add`.")
     _open_browser(url)
 
 
@@ -82,7 +82,7 @@ def down() -> None:
 def status() -> None:
     """Show what's running."""
     cfg = config.load()
-    table = Table(title="ezai status")
+    table = Table(title="lepika status")
     table.add_column("Service")
     table.add_column("State")
     ollama_ok = detect.api_up(cfg.engine_url)
@@ -95,7 +95,7 @@ def status() -> None:
 
 @app.command()
 def logs(lines: int = typer.Option(50, min=1, help="Lines per log file.")) -> None:
-    """Print the tail of ezai's log files."""
+    """Print the tail of LePika's log files."""
     log_files = sorted(paths.logs_dir().glob("*.log"))
     if not log_files:
         # Silence is indistinguishable from a broken command.
@@ -112,7 +112,7 @@ def logs(lines: int = typer.Option(50, min=1, help="Lines per log file.")) -> No
 def doctor() -> None:
     """Diagnose the local setup."""
     # Imported here, not at module scope: this command function shadows the name.
-    from ezai import doctor as doctor_mod
+    from lepika import doctor as doctor_mod
 
     info = detect.detect()
     results = doctor_mod.run_checks(info)
@@ -167,7 +167,7 @@ def model_add(
 ) -> None:
     """Download a model and make it the default."""
     # Imported here, not at module scope: `wizard` imports `cli._open_browser`.
-    from ezai import wizard
+    from lepika import wizard
 
     info = detect.detect()
     if ref is None:
@@ -189,14 +189,14 @@ def model_list() -> None:
     result = proc.run_logged(["ollama", "list"], check=False)
     if result.returncode != 0:
         # An unreachable engine looks identical to an empty list without this.
-        console.print("Could not reach Ollama — run `ezai doctor`.", markup=False)
+        console.print("Could not reach Ollama — run `lepika doctor`.", markup=False)
         raise typer.Exit(code=1)
-    console.print(result.stdout or "No models yet — run `ezai model add`.", markup=False)
+    console.print(result.stdout or "No models yet — run `lepika model add`.", markup=False)
 
 
 @model_app.command("rm")
 def model_rm(
-    name: str = typer.Argument(..., help="Model name as shown by `ezai model list`."),
+    name: str = typer.Argument(..., help="Model name as shown by `lepika model list`."),
 ) -> None:
     """Remove a downloaded model."""
     proc.run_logged(["ollama", "rm", name])

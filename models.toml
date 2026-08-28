@@ -1,4 +1,4 @@
-# Curated "known good" models shown by the ezai wizard.
+# Curated "known good" models shown by the LePika wizard.
 # Keep this list short, current, and honest. min_ram_gb is the practical
 # minimum system memory (or VRAM) to run the default quantization comfortably.
 schema = 1

@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from ezai import proc
-from ezai.errors import FriendlyError
+from lepika import proc
+from lepika.errors import FriendlyError
 
 OsName = Literal["macos", "linux", "windows"]
 Gpu = Literal["apple", "nvidia", "none"]
@@ -42,7 +42,7 @@ def detect_os(system: str | None = None) -> OsName:
         return "windows"
     raise FriendlyError(
         f"Unsupported operating system: {s}",
-        "ezai supports macOS, Linux, and Windows.",
+        "LePika supports macOS, Linux, and Windows.",
     )
 
 
@@ -90,7 +90,7 @@ def _windows_ram_gb(status: Callable[[], tuple[bool, int]] | None = None) -> flo
     if not ok:
         raise FriendlyError(
             "Could not detect system memory.",
-            "Re-run `ezai`; if this persists, file an issue with `ezai doctor` output.",
+            "Re-run `lepika`; if this persists, file an issue with `lepika doctor` output.",
         )
     return float(total_bytes) / 2**30
 

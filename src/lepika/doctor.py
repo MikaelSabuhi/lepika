@@ -1,4 +1,4 @@
-"""ezai doctor: every red ✗ comes with a one-line fix."""
+"""lepika doctor: every red ✗ comes with a one-line fix."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ezai import config, detect, express
-from ezai.detect import SystemInfo
+from lepika import config, detect, express
+from lepika.detect import SystemInfo
 
 # Advisory, not a hard failure: `cli.doctor` matches on this name, not a literal.
 RAM_CHECK = "RAM"
@@ -36,17 +36,17 @@ def run_checks(
         CheckResult(
             "Ollama installed",
             info.has_ollama,
-            "Run `ezai` to install it, or see https://ollama.com/download",
+            "Run `lepika` to install it, or see https://ollama.com/download",
         ),
         CheckResult(
             "Ollama API responding",
             api_up(cfg.engine_url),
-            "Run `ezai up` to start it; logs: `ezai logs`",
+            "Run `lepika up` to start it; logs: `lepika logs`",
         ),
         CheckResult(
             "OpenWebUI responding",
             webui_up(cfg.webui_port),
-            f"Run `ezai up`; if the port is busy, change webui_port in {config.config_path()}",
+            f"Run `lepika up`; if the port is busy, change webui_port in {config.config_path()}",
         ),
         CheckResult(
             RAM_CHECK,

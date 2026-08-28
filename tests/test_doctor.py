@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from ezai import cli, detect, doctor
-from ezai.detect import SystemInfo
+from lepika import cli, detect, doctor
+from lepika.detect import SystemInfo
 
 runner = CliRunner()
 
@@ -58,7 +58,7 @@ def test_low_ram_is_flagged(isolated_home: Path) -> None:
 
 def test_checks_probe_the_configured_engine_url(isolated_home: Path) -> None:
     """A remote engine must be diagnosed where it actually lives, not on localhost."""
-    from ezai import config
+    from lepika import config
 
     config.save(config.Config(engine_url="http://gpu-box.local:11434"))
     probed: list[str] = []
@@ -90,11 +90,11 @@ def test_doctor_command_fails_on_core_check_and_prints_hint(
     monkeypatch.setattr(
         doctor,
         "run_checks",
-        lambda i, **k: [doctor.CheckResult("Ollama API responding", False, "Run `ezai up`")],
+        lambda i, **k: [doctor.CheckResult("Ollama API responding", False, "Run `lepika up`")],
     )
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 1
-    assert "Run `ezai up`" in result.output
+    assert "Run `lepika up`" in result.output
 
 
 def test_doctor_command_ram_warning_does_not_fail(monkeypatch: pytest.MonkeyPatch) -> None:

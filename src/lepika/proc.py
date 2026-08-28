@@ -7,13 +7,13 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from ezai.errors import FriendlyError
-from ezai.paths import logs_dir
+from lepika.errors import FriendlyError
+from lepika.paths import logs_dir
 
 
 def _append_log(cmd: Sequence[str], outcome: str, output: str) -> Path:
     stamp = datetime.datetime.now().isoformat(timespec="seconds")
-    log_path = logs_dir() / "ezai.log"
+    log_path = logs_dir() / "lepika.log"
     with log_path.open("a", encoding="utf-8") as f:
         f.write(f"[{stamp}] $ {' '.join(cmd)}\n({outcome})\n{output}\n")
     return log_path
@@ -38,7 +38,7 @@ def run_logged(
         _append_log(cmd, "not found", str(exc))
         raise FriendlyError(
             f"Command not found: {cmd[0]}",
-            f"Install {cmd[0]} or run `ezai doctor` for setup help.",
+            f"Install {cmd[0]} or run `lepika doctor` for setup help.",
         ) from exc
     except subprocess.TimeoutExpired as exc:
         log_path = _append_log(cmd, f"timed out after {timeout}s", _decode(exc))

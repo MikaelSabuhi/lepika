@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from ezai import express, paths
-from ezai.config import Config
-from ezai.errors import FriendlyError
+from lepika import express, paths
+from lepika.config import Config
+from lepika.errors import FriendlyError
 
 
 class FakeProc:
@@ -136,7 +136,7 @@ def test_stop_openwebui_signals_when_the_port_answers(isolated_home: Path) -> No
 def test_restart_openwebui_waits_for_the_old_server_to_die_before_starting(
     isolated_home: Path,
 ) -> None:
-    """`ezai update` must not probe the dying server and call it 'already running'."""
+    """`lepika update` must not probe the dying server and call it 'already running'."""
     paths.pid_file("openwebui").write_text("4242")
     events: list[str] = []
     popen = PopenRecorder()

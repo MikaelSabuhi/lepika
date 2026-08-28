@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ezai import paths
+from lepika import paths
 
 
-def test_ezai_home_honors_env_and_creates_dir(isolated_home: Path) -> None:
-    home = paths.ezai_home()
+def test_lepika_home_honors_env_and_creates_dir(isolated_home: Path) -> None:
+    home = paths.lepika_home()
     assert home == isolated_home
     assert home.is_dir()
 

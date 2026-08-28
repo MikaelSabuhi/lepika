@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from ezai import cli, config, detect, express, proc
+from lepika import cli, config, detect, express, proc
 
 runner = CliRunner()
 
@@ -62,7 +62,7 @@ def test_model_list_empty_suggests_model_add(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(proc, "run_logged", fake_run)
     result = runner.invoke(cli.app, ["model", "list"])
     assert result.exit_code == 0
-    assert "ezai model add" in result.output
+    assert "lepika model add" in result.output
 
 
 def test_model_list_failure_points_at_doctor(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,7 +72,7 @@ def test_model_list_failure_points_at_doctor(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(proc, "run_logged", fake_run)
     result = runner.invoke(cli.app, ["model", "list"])
     assert result.exit_code == 1
-    assert "ezai doctor" in result.output
+    assert "lepika doctor" in result.output
     assert "No models yet" not in result.output
 
 

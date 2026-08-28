@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from ezai import detect
-from ezai.errors import FriendlyError
+from lepika import detect
+from lepika.errors import FriendlyError
 
 
 def fake_run(stdout: str) -> Any:
@@ -61,7 +61,7 @@ def test_windows_ram_raises_when_the_memory_api_fails() -> None:
     with pytest.raises(FriendlyError) as exc:
         detect._windows_ram_gb(status=lambda: (False, 0))
     assert "memory" in exc.value.problem
-    assert "ezai doctor" in exc.value.fix
+    assert "lepika doctor" in exc.value.fix
 
 
 def test_api_up_true_and_false() -> None:

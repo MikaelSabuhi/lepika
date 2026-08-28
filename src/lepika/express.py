@@ -12,12 +12,12 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from ezai import detect, proc
-from ezai.config import Config, config_path
-from ezai.detect import SystemInfo
-from ezai.errors import FriendlyError
-from ezai.models import ModelRef
-from ezai.paths import logs_dir, pid_file
+from lepika import detect, proc
+from lepika.config import Config, config_path
+from lepika.detect import SystemInfo
+from lepika.errors import FriendlyError
+from lepika.models import ModelRef
+from lepika.paths import logs_dir, pid_file
 
 RunFn = Callable[..., Any]
 WhichFn = Callable[[str], str | None]
@@ -47,7 +47,7 @@ def install_ollama(
         else:
             raise FriendlyError(
                 "Ollama is not installed and Homebrew was not found.",
-                "Install Ollama from https://ollama.com/download/mac then run `ezai` again.",
+                "Install Ollama from https://ollama.com/download/mac then run `lepika` again.",
             )
     elif info.os == "linux":
         # Streamed, not captured: the official script may prompt for sudo, and a
@@ -80,7 +80,7 @@ def start_ollama(os_name: str, popen: PopenFn = subprocess.Popen) -> None:
         log.close()
         raise FriendlyError(
             "Ollama is installed but not on your PATH yet.",
-            "Close this terminal, open a new one, and run `ezai` again.",
+            "Close this terminal, open a new one, and run `lepika` again.",
         ) from exc
 
 
@@ -96,7 +96,7 @@ def wait_for(
         sleep(1)
     raise FriendlyError(
         f"{what} did not become ready within {seconds}s.",
-        f"Check the logs in {logs_dir()} and run `ezai doctor`.",
+        f"Check the logs in {logs_dir()} and run `lepika doctor`.",
     )
 
 
@@ -143,7 +143,7 @@ def webui_up(port: int, urlopen: Callable[..., Any] | None = None) -> bool:
 
 def install_openwebui(run: RunFn = proc.run_logged) -> None:
     # `uv tool install` is idempotent: with open-webui already installed it is a
-    # no-op that does NOT upgrade — upgrading is `ezai update`'s job.
+    # no-op that does NOT upgrade — upgrading is `lepika update`'s job.
     run(["uv", "tool", "install", "--python", "3.11", "open-webui"])
 
 
@@ -195,7 +195,7 @@ def port_free(
 ) -> bool:
     """Can a server bind this port, or is another application already on it?
 
-    Retried, because `ezai update` asks this moments after stopping the server
+    Retried, because `lepika update` asks this moments after stopping the server
     that held the port: an OS that has not finished releasing the listening
     socket would otherwise be reported as a port conflict. A free port answers on
     the first try, so only the failing case pays for the wait.
@@ -297,7 +297,7 @@ def ensure_openwebui(
     bind_check: Callable[[int], bool] | None = None,
 ) -> None:
     # Probe first: an already-healthy OpenWebUI must cost nothing — no resolver
-    # round-trip, and `ezai` keeps working offline.
+    # round-trip, and `lepika` keeps working offline.
     if up(cfg.webui_port):
         return
     # The port is not answering /health, but something else may still own it.
@@ -307,7 +307,7 @@ def ensure_openwebui(
     if not free(cfg.webui_port):
         raise FriendlyError(
             f"Port {cfg.webui_port} is in use by another application.",
-            f"Change webui_port in {config_path()} and run `ezai up` again.",
+            f"Change webui_port in {config_path()} and run `lepika up` again.",
         )
     install_openwebui(run=run)
     start_openwebui(cfg.webui_port, cfg.engine_url, popen=popen)
@@ -335,7 +335,7 @@ def wait_until_down(
         sleep(1)
     raise FriendlyError(
         f"OpenWebUI on port {port} is still answering after {attempts} shutdown checks.",
-        f"Stop whatever is listening on port {port}, then run `ezai update` again.",
+        f"Stop whatever is listening on port {port}, then run `lepika update` again.",
     )
 
 
@@ -363,9 +363,9 @@ def start_stack(
 ) -> str:
     """Bring the stack up and return the URL to open.
 
-    The single source of truth for the ordering both `ezai up` and the wizard
+    The single source of truth for the ordering both `lepika up` and the wizard
     depend on: engine first, then whatever the caller needs the engine for (the
-    wizard pulls a model here), then the UI that talks to it. `ezai up` passes no
+    wizard pulls a model here), then the UI that talks to it. `lepika up` passes no
     hook; the wizard passes its pull.
     """
     ensure_ollama(info, url=cfg.engine_url)

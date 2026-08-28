@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from ezai import cli, config, detect, express, paths
+from lepika import cli, config, detect, express, paths
 
 runner = CliRunner()
 
@@ -62,7 +62,7 @@ def test_up_hints_at_adding_a_model_when_none_is_configured(
     """A running UI with no model is a dead end unless `up` says what to do next."""
     result = runner.invoke(cli.app, ["up"])
     assert result.exit_code == 0
-    assert "ezai model add" in result.output
+    assert "lepika model add" in result.output
 
 
 def test_up_stays_quiet_when_a_model_is_already_set(
@@ -117,7 +117,7 @@ def test_up_points_the_engine_check_at_the_configured_url(
 
 
 def test_logs_prints_tail(isolated_home: Path) -> None:
-    (paths.logs_dir() / "ezai.log").write_text("line-one\nline-two\n")
+    (paths.logs_dir() / "lepika.log").write_text("line-one\nline-two\n")
     result = runner.invoke(cli.app, ["logs"])
     assert result.exit_code == 0
     assert "line-two" in result.output
@@ -132,7 +132,7 @@ def test_logs_says_so_when_there_is_nothing_to_show(isolated_home: Path) -> None
 
 def test_logs_rejects_a_nonpositive_line_count(isolated_home: Path) -> None:
     """`content[-0:]` is the whole file, so --lines 0 dumped everything."""
-    (paths.logs_dir() / "ezai.log").write_text("line-one\nline-two\n")
+    (paths.logs_dir() / "lepika.log").write_text("line-one\nline-two\n")
     result = runner.invoke(cli.app, ["logs", "--lines", "0"])
     assert result.exit_code != 0
     assert "line-one" not in result.output

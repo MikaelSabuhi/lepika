@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from ezai import models
-from ezai.errors import FriendlyError
+from lepika import models
+from lepika.errors import FriendlyError
 
 
 def test_parse_plain_tag_is_ollama() -> None:

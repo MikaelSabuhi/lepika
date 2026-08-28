@@ -5,11 +5,11 @@ from typing import Any
 
 import pytest
 
-from ezai import express
-from ezai.detect import SystemInfo
-from ezai.errors import FriendlyError
-from ezai.models import ModelRef
-from ezai.paths import logs_dir
+from lepika import express
+from lepika.detect import SystemInfo
+from lepika.errors import FriendlyError
+from lepika.models import ModelRef
+from lepika.paths import logs_dir
 
 
 def info_for(os_name: str, has_ollama: bool = False) -> SystemInfo:

@@ -1,4 +1,4 @@
-"""The default `ezai` experience: detect, ask, install, open browser."""
+"""The default `lepika` experience: detect, ask, install, open browser."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from rich.markup import escape
 from rich.prompt import Prompt
 from rich.table import Table
 
-from ezai import config, detect, express, models
-from ezai.detect import SystemInfo
-from ezai.errors import FriendlyError
-from ezai.models import CuratedModel, ModelRef
+from lepika import config, detect, express, models
+from lepika.detect import SystemInfo
+from lepika.errors import FriendlyError
+from lepika.models import CuratedModel, ModelRef
 
 AskFn = Callable[..., str]
 console = Console()
@@ -104,6 +104,6 @@ def run_wizard(dry_run: bool = False) -> None:
         config.save(cfg)
 
     url = express.start_stack(info, cfg, after_engine=pull_then_save)
-    from ezai import cli
+    from lepika import cli
 
     cli._ready(cfg, url)

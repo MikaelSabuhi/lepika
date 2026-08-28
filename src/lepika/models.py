@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from ezai.errors import FriendlyError
+from lepika.errors import FriendlyError
 
 ModelKind = Literal["ollama", "hf_gguf", "hf_repo"]
 
-CURATED_MODELS_URL = "https://raw.githubusercontent.com/MikaelSabuhi/ezaiselfhost/main/models.toml"
+CURATED_MODELS_URL = "https://raw.githubusercontent.com/MikaelSabuhi/lepika/main/models.toml"
 
 
 @dataclass(frozen=True)
@@ -74,7 +74,7 @@ def parse_model_ref(raw: str) -> ModelRef:
 
 
 def _bundled_models_text() -> str:
-    resource = importlib.resources.files("ezai").joinpath("models.toml")
+    resource = importlib.resources.files("lepika").joinpath("models.toml")
     if resource.is_file():
         return resource.read_text(encoding="utf-8")
     # Editable/dev install: fall back to the repo-root copy.
@@ -85,7 +85,7 @@ def _bundled_models_text() -> str:
 def _parse_curated(text: str, *, lenient: bool) -> list[CuratedModel]:
     """Parse a models.toml.
 
-    `lenient` is for remote content, which is written by a NEWER ezai than the one
+    `lenient` is for remote content, which is written by a NEWER LePika than the one
     reading it: unknown keys are dropped and unusable entries are skipped so that
     additive schema changes on main never break an older client. The bundled copy
     ships with the code, so it is parsed strictly and a defect there raises.

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from ezai import config
-from ezai.errors import FriendlyError
+from lepika import config
+from lepika.errors import FriendlyError
 
 
 def test_load_returns_defaults_when_no_file(isolated_home: Path) -> None:
@@ -44,8 +44,8 @@ def test_save_keeps_previous_config_when_write_fails(
         raise OSError("disk full")
 
     # Only write_text is patched, so the reads below still work; do NOT call
-    # monkeypatch.undo() here — it would also revert the autouse EZAI_HOME fixture
-    # and point these assertions at the real ~/.ezai.
+    # monkeypatch.undo() here — it would also revert the autouse LEPIKA_HOME fixture
+    # and point these assertions at the real ~/.lepika.
     monkeypatch.setattr(Path, "write_text", exploding_write_text)
     with pytest.raises(OSError, match="disk full"):
         config.save(config.Config(model="never-lands"))
@@ -72,4 +72,4 @@ def test_load_raises_friendly_error_on_corrupt_file(isolated_home: Path) -> None
     with pytest.raises(FriendlyError) as excinfo:
         config.load()
     assert "corrupted" in excinfo.value.problem
-    assert "ezai" in excinfo.value.fix
+    assert "lepika" in excinfo.value.fix

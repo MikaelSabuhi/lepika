@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from ezai import cli, detect, express, proc
+from lepika import cli, detect, express, proc
 
 runner = CliRunner()
 
@@ -76,7 +76,7 @@ def test_update_restarts_openwebui_rather_than_probing_the_dying_one(
 
 
 def test_down_gates_the_signal_on_the_configured_port(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`ezai down` must tell `stop_openwebui` which port proves the pid is ours."""
+    """`lepika down` must tell `stop_openwebui` which port proves the pid is ours."""
     info = detect.SystemInfo(
         os="linux",
         arch="x86_64",

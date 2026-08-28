@@ -6,8 +6,8 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from ezai import cli, config, detect, express, models, wizard
-from ezai.errors import FriendlyError
+from lepika import cli, config, detect, express, models, wizard
+from lepika.errors import FriendlyError
 
 runner = CliRunner()
 

@@ -1,4 +1,4 @@
-"""config.toml under ~/.ezai — flat, versioned, migratable."""
+"""config.toml under ~/.lepika — flat, versioned, migratable."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from ezai.errors import FriendlyError
-from ezai.paths import ezai_home
+from lepika.errors import FriendlyError
+from lepika.paths import lepika_home
 
 SCHEMA_VERSION = 1
 
@@ -24,7 +24,7 @@ class Config:
 
 
 def config_path() -> Path:
-    return ezai_home() / "config.toml"
+    return lepika_home() / "config.toml"
 
 
 def _dump_toml(data: dict[str, object]) -> str:
@@ -60,7 +60,7 @@ def load() -> Config:
     except tomllib.TOMLDecodeError as exc:
         raise FriendlyError(
             f"Your config file is corrupted: {path}",
-            "Delete it and run `ezai` again — it will be recreated.",
+            "Delete it and run `lepika` again — it will be recreated.",
         ) from exc
     raw.setdefault("schema_version", SCHEMA_VERSION)
     known = {f.name for f in dataclasses.fields(Config)}

@@ -38,9 +38,14 @@ def test_vllm_allowed_needs_server_linux_nvidia_and_our_own_engine() -> None:
 
 
 def test_vllm_active_is_the_one_predicate_for_a_running_vllm() -> None:
-    assert server.vllm_active(config.Config(model=REPO)) is True
-    assert server.vllm_active(config.Config(model="qwen3:8b")) is False
-    assert server.vllm_active(config.Config(model=REPO, engine_managed=False)) is False
+    assert server.vllm_active(config.Config(mode="server", model=REPO)) is True
+    assert server.vllm_active(config.Config(mode="server", model="qwen3:8b")) is False
+    assert (
+        server.vllm_active(config.Config(mode="server", model=REPO, engine_managed=False)) is False
+    )
+    # There is no vLLM container in Express mode, so a leftover repo ref (a switch
+    # that failed halfway) must not make status/doctor/model list report one.
+    assert server.vllm_active(config.Config(mode="express", model=REPO)) is False
 
 
 def test_validate_accepts_hf_repo_where_vllm_runs_and_rejects_elsewhere() -> None:
@@ -254,3 +259,77 @@ def test_expose_on_a_vllm_box_prints_an_openai_url_not_a_connect_line(
     assert key in result.output
     assert "http://192.168.1.20:11435/v1" in result.output
     assert "lepika connect http" not in result.output
+
+
+def test_model_add_starts_the_stack_for_the_model_it_is_about_to_pull(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """Switching off a vLLM model: the stack has to come up on the *new* model's profile.
+
+    With the saved `org/repo` still in the config, `profiles()` says vllm, ollama stays
+    stopped, and the pull fails with "Could not reach the engine".
+    """
+    config.save(config.Config(mode="server", model=REPO))
+    started: list[str] = []
+    monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: started.append(cfg.model))
+    monkeypatch.setattr(engine, "pull_model", lambda *a, **k: None)
+    result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
+    assert result.exit_code == 0, result.output
+    assert started == ["qwen3:8b"]
+    assert config.load().model == "qwen3:8b"
+
+
+def test_model_add_keeps_the_old_model_when_the_pull_fails(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """The target model reaches the stack, but only a successful pull reaches the config."""
+    config.save(config.Config(mode="server", model=REPO))
+    monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
+
+    def boom(*a: Any, **k: Any) -> None:
+        raise FriendlyError("no", "fix")
+
+    monkeypatch.setattr(engine, "pull_model", boom)
+    result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
+    assert result.exit_code != 0
+    assert config.load().model == REPO
+
+
+def test_wizard_starts_the_stack_for_the_ollama_model_it_is_about_to_pull(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    config.save(config.Config(mode="server", model=REPO))
+    started: list[str] = []
+    monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
+    monkeypatch.setattr(models, "load_curated", lambda **k: [])
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "qwen3:8b")
+    monkeypatch.setattr(engine, "pull_model", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_open_browser", lambda url: None)
+
+    def fake_start(info: Any, cfg: Any, after_engine: Any = None, **k: Any) -> str:
+        started.append(cfg.model)
+        if after_engine is not None:
+            after_engine()
+        return "http://localhost:3000"
+
+    monkeypatch.setattr(server, "start_stack", fake_start)
+    wizard.run_wizard(mode="server")
+    assert started == ["qwen3:8b"]
+    assert config.load().model == "qwen3:8b"
+
+
+def test_rotate_on_a_vllm_box_stays_off_the_ollama_connect_line(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """`lepika connect` rejects a vLLM engine, so the reconnect hint must not name it."""
+    config.save(config.Config(mode="server", model=REPO))
+    monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
+    monkeypatch.setattr(server, "lan_ip", lambda **k: "192.168.1.20")
+    runner.invoke(cli.app, ["expose"])
+    result = runner.invoke(cli.app, ["expose", "--rotate"])
+    assert result.exit_code == 0, result.output
+    assert "lepika connect http" not in result.output
+    assert "old key" in result.output

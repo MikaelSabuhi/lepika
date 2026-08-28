@@ -81,12 +81,52 @@ def test_start_stack_writes_env_ups_and_waits(isolated_home: Path) -> None:
     assert any("caddy" in c for c in stops)
 
 
+# Port 11434 already answers: either our own ollama container (a second `lepika up`)
+# or a native Ollama the container could never bind over.
+ENGINE_ANSWERING = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, True, True)
+
+
+def _start_with_ps(ps_stdout: str, call: Caller) -> tuple[str, Runner]:
+    """Start the stack on a box where something already serves 11434.
+
+    `docker compose ps -q ollama` is what tells the two apart: a container id means
+    the engine on that port is ours.
+    """
+    run = Runner({"docker info": '{"nvidia": {}}', "docker compose": ps_stdout})
+    url = server.start_stack(
+        ENGINE_ANSWERING,
+        config.Config(mode="server"),
+        run=run,
+        call=call,
+        api_up=lambda url, **k: True,
+        up=lambda port, **k: True,
+        sleep=lambda s: None,
+    )
+    return url, run
+
+
+def test_start_stack_proceeds_when_the_engine_on_11434_is_our_own_container(
+    isolated_home: Path,
+) -> None:
+    """The stack publishes 127.0.0.1:11434 itself, so a second `lepika up` must not refuse."""
+    call = Caller()
+    url, run = _start_with_ps("9f8e7d6c5b4a\n", call)
+    assert url == "http://localhost:3000"
+    assert any(c[-3:] == ["up", "-d", "--remove-orphans"] for c in call.calls)
+    ps_cmd = next(c for c in run.calls if "ps" in c)
+    assert ps_cmd[-4:] == ["-q", "--status", "running", "ollama"]
+
+
 def test_start_stack_refuses_when_native_ollama_holds_the_port(isolated_home: Path) -> None:
-    info = detect.SystemInfo("macos", "arm64", "apple", 32.0, True, True, True)
+    call = Caller()
     with pytest.raises(FriendlyError) as exc:
-        server.start_stack(info, config.Config(mode="server"), run=Runner(), call=Caller())
+        _start_with_ps("", call)
     assert "11434" in exc.value.problem
-    assert "lepika connect http://127.0.0.1:11434" in exc.value.fix
+    # A loopback-bound native Ollama is not reachable from a container, so the only
+    # real way forward is stopping it.
+    assert "brew services stop ollama" in exc.value.fix
+    assert "lepika connect" not in exc.value.fix
+    assert call.calls == []
 
 
 def test_start_stack_refuses_to_expose_without_an_api_key(isolated_home: Path) -> None:

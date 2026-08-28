@@ -133,7 +133,9 @@ Docker volumes and survive `lepika down`.
 Both modes serve the UI on the same port, so switching between them stops the stack
 you're leaving before it starts the one you're moving to.
 
-**Security.** Nothing listens beyond localhost until you run `lepika expose`. Then the
+**Security.** Nothing LePika starts listens beyond localhost in either mode — Express
+starts OpenWebUI on `127.0.0.1`, and the Server stack publishes every port there too —
+until you run `lepika expose`. Then the
 chat UI needs a sign-in (first sign-up is the admin) and the engine API needs the
 generated key. The key lives only in `~/.lepika/stack/.env` (mode `0600`) on the box and
 in `~/.lepika/config.toml` (`0600`) on machines you connected from; it is never written
@@ -170,7 +172,8 @@ lepika connect --local                            # back to this machine
 
 `lepika expose` (Server mode) puts a small Caddy proxy in front of the engine on port
 `11435`: only requests carrying the generated key get through. `--show` reprints the
-line, `--rotate` issues a new key, `--off` goes back to localhost only. If the box runs a
+line, `--rotate` issues a new key (machines that already connected have to run
+`lepika connect` again with it), `--off` goes back to localhost only. If the box runs a
 full-weight repo on vLLM, `lepika expose` prints an OpenAI-compatible URL to add in
 OpenWebUI instead of a `connect` line.
 

@@ -224,6 +224,10 @@ def start_openwebui(
                 "open-webui",
                 "open-webui",
                 "serve",
+                # OpenWebUI binds 0.0.0.0 by default; nothing of ours reaches the
+                # network until `lepika expose` (Server mode) says so.
+                "--host",
+                "127.0.0.1",
                 "--port",
                 str(port),
             ],

@@ -60,6 +60,10 @@ services:
       LEPIKA_UPSTREAM: ${LEPIKA_UPSTREAM}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    # The upstream may be a host-side engine: on Linux this name does not resolve
+    # without the gateway mapping Docker Desktop provides for free.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   openwebui:

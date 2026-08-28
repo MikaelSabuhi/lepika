@@ -57,8 +57,11 @@ def save(cfg: Config) -> None:
     tmp = path.with_suffix(".toml.tmp")
     # The file can hold an engine key, so it is private from the first byte: the
     # mode is set when the file is created, not chmod'ed after the key is already
-    # on disk under the process umask. Windows ignores the mode bits.
+    # on disk under the process umask. fchmod also tightens a stale tmp file left
+    # world-readable by an interrupted run, which O_TRUNC alone would keep.
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if hasattr(os, "fchmod"):  # POSIX only; Windows ignores mode bits entirely
+        os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(_dump_toml(dataclasses.asdict(cfg)))
     os.replace(tmp, path)

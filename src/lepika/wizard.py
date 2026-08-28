@@ -185,5 +185,10 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
 
     from lepika import cli
 
-    url = cli._backend(cfg).start_stack(info, cfg, after_engine=pull_then_save)
+    # The stack is started for the model about to be pulled, not the one still saved:
+    # in Server mode the profile follows the ref, so an old full-weight repo would
+    # bring up vLLM and leave nothing to pull into. Only the pull saves it (above).
+    url = cli._backend(cfg).start_stack(
+        info, dataclasses.replace(cfg, model=ref.raw), after_engine=pull_then_save
+    )
     cli._ready(cfg, url)

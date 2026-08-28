@@ -61,3 +61,22 @@ def test_up_prints_the_gpu_note_when_docker_cannot_see_the_gpu(
         server, "gpu_note", lambda info, **k: "NVIDIA GPU found, but Docker can't use it"
     )
     assert "can't use it" in runner.invoke(cli.app, ["up"]).output
+
+
+def test_up_without_docker_says_so_before_probing_docker(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """`gpu_note` shells out to `docker info`; with no docker binary that is a generic
+    "Command not found" instead of the friendly Express hint."""
+    from lepika.errors import FriendlyError
+
+    no_docker = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, False, False, False)
+    config.save(config.Config(mode="server"))
+    monkeypatch.setattr(detect, "detect", lambda **k: no_docker)
+    monkeypatch.setattr(
+        server, "gpu_note", lambda info, **k: pytest.fail("probed Docker before checking it exists")
+    )
+    result = runner.invoke(cli.app, ["up"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, FriendlyError)
+    assert "Express" in result.exception.fix

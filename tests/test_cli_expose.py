@@ -120,3 +120,20 @@ def test_expose_off_does_not_reprint_the_key(exposed_box: list[str]) -> None:
     result = runner.invoke(cli.app, ["expose", "--off"])
     assert key not in result.output
     assert "localhost" in result.output
+
+
+def test_rotate_tells_machines_that_already_connected_to_reconnect(
+    exposed_box: list[str],
+) -> None:
+    """The old key stops working the moment Caddy restarts; silence looks like a break."""
+    runner.invoke(cli.app, ["expose"])
+    result = runner.invoke(cli.app, ["expose", "--rotate"])
+    assert result.exit_code == 0, result.output
+    key = server.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"]
+    assert "connected before" in result.output
+    assert key in result.output
+
+
+def test_a_plain_expose_does_not_talk_about_reconnecting(exposed_box: list[str]) -> None:
+    result = runner.invoke(cli.app, ["expose"])
+    assert "connected before" not in result.output

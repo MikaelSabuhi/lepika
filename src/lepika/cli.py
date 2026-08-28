@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.metadata
 import webbrowser
 from types import ModuleType
@@ -88,7 +89,9 @@ def up() -> None:
     cfg = config.load()
     console.print(detect.plan_sentence(info, cfg.mode))
     # A CPU-bound container on a GPU machine is a mystery worth one line up front.
-    if cfg.mode == "server" and (note := server.gpu_note(info)) is not None:
+    # `has_docker` first: gpu_note runs `docker info`, and without the binary that
+    # would replace Server mode's Express hint with a generic "command not found".
+    if cfg.mode == "server" and info.has_docker and (note := server.gpu_note(info)) is not None:
         console.print(f"[yellow]{escape(note)}[/yellow]")
     _ready(cfg, _backend(cfg).start_stack(info, cfg))
 
@@ -283,12 +286,25 @@ def expose(
             "Ollama engines."
         )
         console.print(f"  Key: {key}", markup=False, soft_wrap=True)
+        if rotate:
+            # Engine-neutral: reconnecting here is editing the OpenAI connection in
+            # OpenWebUI, and `lepika connect` refuses a vLLM engine outright.
+            console.print("Machines using the old key need the new one above.")
     else:
         console.print(f"Engine API: http://{ip}:{cfg.api_port}")
         console.print("On another machine:")
         console.print(
             f"  lepika connect http://{ip}:{cfg.api_port} --key {key}", markup=False, soft_wrap=True
         )
+        if rotate:
+            # Caddy only honours the new key, so every machine holding the old one is
+            # locked out until it is told — silence there looks like a broken engine.
+            console.print(
+                f"Machines that connected before need `lepika connect http://{ip}:{cfg.api_port} "
+                f"--key {key}` again.",
+                markup=False,
+                soft_wrap=True,
+            )
     console.print("Keep the key private; `lepika expose --rotate` replaces it.")
 
 
@@ -338,8 +354,10 @@ def model_add(
         return
     if cfg.engine_managed and cfg.mode == "server":
         # In Server mode the engine is a container: it has to be up before there is
-        # anything to pull into.
-        server.start_stack(info, cfg)
+        # anything to pull into — and it has to be the engine the *new* model needs.
+        # Switching away from a full-weight repo with the old ref still in the config
+        # would bring up vLLM, leave ollama stopped, and fail the pull.
+        server.start_stack(info, dataclasses.replace(cfg, model=model_ref.raw))
     elif cfg.engine_managed:
         express.ensure_ollama(info, url=cfg.engine_url)
     else:

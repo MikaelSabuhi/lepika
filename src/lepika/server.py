@@ -78,16 +78,47 @@ def read_env(path: Path) -> dict[str, str]:
         key, _, value = line.partition("=")
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-            value = value[1:-1]
+            quote, value = value[0], value[1:-1]
+            if quote == '"':
+                value = _unescape(value)
         values[key.strip()] = value
     return values
+
+
+def _unescape(text: str) -> str:
+    """Undo `_quote`'s double-quoted escapes: `\\"`, `\\\\`, and `$$` — nothing else."""
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text) and text[i + 1] in '\\"':
+            out.append(text[i + 1])
+            i += 2
+        elif text[i] == "$" and i + 1 < len(text) and text[i + 1] == "$":
+            out.append("$")
+            i += 2
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+def _quote(value: str) -> str:
+    """Single quotes keep JSON and `$` literal — but they cannot hold a `'`.
+
+    A value containing one (an API key from `lepika connect --key`) is written
+    double-quoted instead, with the escapes compose's .env parser expects — `$`
+    included, because compose interpolates `$VAR` inside double quotes.
+    """
+    if "'" not in value:
+        return f"'{value}'"
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "$$")
+    return f'"{escaped}"'
 
 
 def write_env(path: Path, values: dict[str, str]) -> None:
     """Merge `values` into .env, keep everything else, write privately and atomically."""
     merged = read_env(path) | values
-    # Single quotes: compose reads the value literally, so JSON and `$` survive.
-    body = "".join(f"{k}='{v}'\n" for k, v in merged.items())
+    body = "".join(f"{k}={_quote(v)}\n" for k, v in merged.items())
     tmp = path.with_name(path.name + ".tmp")
     # The file holds the API key and an HF token, so it is private from the first
     # byte rather than chmod'ed once the secrets are already on disk. fchmod also
@@ -194,8 +225,13 @@ def vllm_allowed(cfg: Config, info: SystemInfo) -> bool:
 
 
 def vllm_active(cfg: Config) -> bool:
-    """Is vLLM the engine right now? The one predicate every caller shares."""
-    return cfg.engine_managed and models.uses_vllm(cfg.model)
+    """Is vLLM the engine right now? The one predicate every caller shares.
+
+    The mode is part of the answer: vLLM is a container in the Server stack, so an
+    Express config still naming a repo (a switch that failed halfway) has no vLLM
+    behind it for `status`, `doctor`, or `model list` to report.
+    """
+    return cfg.mode == "server" and cfg.engine_managed and models.uses_vllm(cfg.model)
 
 
 def profiles(cfg: Config) -> list[str]:
@@ -264,6 +300,28 @@ def ensure_docker(info: SystemInfo, run: RunFn = proc.run_logged) -> None:
         )
 
 
+def _our_ollama(stack: Path, run: RunFn) -> bool:
+    """Is the engine answering on 11434 our own container rather than a native Ollama?
+
+    The stack publishes exactly `127.0.0.1:11434`, so every run after the first sees
+    the port taken — by itself. Compose is the only thing that can tell them apart.
+    """
+    result = run(
+        [
+            *compose_cmd(stack, ["engine"], gpu_overlay=False),
+            "ps",
+            "-q",
+            "--status",
+            "running",
+            "ollama",
+        ],
+        check=False,
+        log=False,
+        timeout=30,
+    )
+    return bool(result.returncode == 0 and result.stdout.strip())
+
+
 def _compose_failed(step: str) -> FriendlyError:
     return FriendlyError(
         f"`docker compose {step}` failed.",
@@ -298,13 +356,14 @@ def start_stack(
     changed, and is what makes `connect`/`expose` edits take effect.
     """
     ensure_docker(info, run=run)
-    if cfg.engine_managed and info.ollama_running:
+    stack = install_stack()
+    if cfg.engine_managed and info.ollama_running and not _our_ollama(stack, run):
         raise FriendlyError(
             "Ollama is already running natively on port 11434, so the Docker engine can't bind it.",
-            "Stop it (`brew services stop ollama` / `systemctl stop ollama` / quit it from "
-            "the tray), or keep it and run `lepika connect http://127.0.0.1:11434`.",
+            "Stop it first: `brew services stop ollama` (macOS), `systemctl stop ollama` "
+            "(Linux), or quit it from the tray (Windows); if LePika started it, "
+            '`pkill -f "ollama serve"`.',
         )
-    stack = install_stack()
     env_path = stack / ENV_FILE
     values = env_values(cfg, info, read_env(env_path))
     active = profiles(cfg)

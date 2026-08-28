@@ -109,3 +109,14 @@ def test_config_file_is_private(isolated_home: Path) -> None:
     os.chmod(config.config_path(), 0o644)
     config.save(config.Config(engine_key="abc"))
     assert stat.S_IMODE(os.stat(config.config_path()).st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_save_tightens_a_stale_world_readable_temp_file(isolated_home: Path) -> None:
+    """O_TRUNC keeps an existing file's bits, so a tmp left behind by an older run
+    would hand the engine key to every user on the box."""
+    tmp = config.config_path().with_suffix(".toml.tmp")
+    tmp.write_text("leftover")
+    os.chmod(tmp, 0o644)
+    config.save(config.Config(engine_key="abc"))
+    assert stat.S_IMODE(os.stat(config.config_path()).st_mode) == 0o600

@@ -156,3 +156,25 @@ def test_lan_ip_falls_back_to_a_placeholder() -> None:
         raise OSError("no route")
 
     assert server.lan_ip(connect=boom) == "<this machine's IP>"
+
+
+def test_write_env_round_trips_values_containing_quotes(tmp_path: Path) -> None:
+    """`lepika connect --key "it's"` reaches .env: an unescaped `'` ends the value early."""
+    env = tmp_path / ".env"
+    values = {"SINGLE": "it's", "DOUBLE": 'say "hi"', "BOTH": 'it\'s "x"', "BACKSLASH": "a\\b"}
+    server.write_env(env, values)
+    assert server.read_env(env) == values
+    text = env.read_text()
+    # A value with a `'` is written double-quoted, which compose's parser unescapes.
+    assert 'SINGLE="it\'s"' in text
+
+
+def test_write_env_keeps_a_dollar_literal_in_a_double_quoted_value(tmp_path: Path) -> None:
+    """Compose interpolates `$VAR` inside double quotes, so the escape has to survive."""
+    env = tmp_path / ".env"
+    server.write_env(env, {"KEY": "it's $HOME", "PLAIN": "no $HOME here"})
+    assert server.read_env(env) == {"KEY": "it's $HOME", "PLAIN": "no $HOME here"}
+    text = env.read_text()
+    assert 'KEY="it\'s $$HOME"' in text
+    # A value with no `'` stays single-quoted, where `$` is already literal.
+    assert "PLAIN='no $HOME here'" in text

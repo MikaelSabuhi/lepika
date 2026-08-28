@@ -382,3 +382,12 @@ def test_webui_up_is_true_when_health_check_succeeds() -> None:
 
     assert express.webui_up(3000, urlopen=ok) is True
     assert seen == ["http://127.0.0.1:3000/health"]
+
+
+def test_start_openwebui_binds_to_localhost_only(isolated_home: Path) -> None:
+    """OpenWebUI defaults to 0.0.0.0: Express mode must not put the UI on the network."""
+    popen = PopenRecorder()
+    express.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
+    argv = popen.calls[0]
+    assert argv[argv.index("--host") + 1] == "127.0.0.1"
+    popen.kwargs[0]["stdout"].close()

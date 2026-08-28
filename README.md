@@ -15,7 +15,7 @@ Got Docker and a homelab? Server mode runs the same thing as one `docker compose
 [![CI](https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml/badge.svg)](https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-<!-- demo GIF placeholder: added by the release plan via vhs -->
+<!-- demo GIF goes here — see the Roadmap -->
 
 ## Install
 
@@ -100,10 +100,10 @@ to install Docker.
 | `lepika` | The setup wizard: detect → (Express or Server) → pick a model → install → open the browser |
 | `lepika up` | Start the local AI stack and open the browser |
 | `lepika down` | Stop the stack (Express: OpenWebUI only; Server: all containers, models kept) |
-| `lepika status` | Show what's running |
+| `lepika status` | Show the mode, the engine and where it is, OpenWebUI, and the default model |
 | `lepika logs` | Print the tail of LePika's logs (Server mode: container logs too; `--lines`, default 50) |
 | `lepika doctor` | Diagnose the local setup; every ✗ comes with a one-line fix |
-| `lepika update` | Upgrade Ollama and OpenWebUI to their latest versions |
+| `lepika update` | Upgrade the engine and OpenWebUI (Server mode: pull newer images, then restart) |
 | `lepika connect <url> [--key K]` | Use an engine on another machine (`--local` to go back) |
 | `lepika expose [--off\|--show\|--rotate]` | Share the engine + UI on your network behind a generated API key (Server mode) |
 | `lepika model add [ref]` | Download a model and make it the default (no ref → browse) |
@@ -114,8 +114,8 @@ Global flags: `--version`, `--mode express|server` (the wizard's, not a per-comm
 switch), `--dry-run` (show what the wizard would do without doing it), and `--help` on
 every command.
 
-All state lives in one place: `~/.lepika` (config, pid files, logs). Point `LEPIKA_HOME`
-somewhere else if you prefer.
+All state lives in one place: `~/.lepika` — config, logs, pid files, and in Server mode the
+compose stack. Point `LEPIKA_HOME` somewhere else if you prefer.
 
 ## Server mode
 
@@ -149,10 +149,10 @@ lepika model add hf.co/unsloth/gemma-3-4b-it-GGUF  # any GGUF build on Hugging F
 lepika model add meta-llama/Llama-3.3-70B-Instruct # full-weight HF repo — vLLM, Server mode on Linux + NVIDIA
 ```
 
-The third shape runs on vLLM inside the Server-mode stack (Linux + NVIDIA only; LePika
-says so elsewhere and points you at the GGUF build). Gated repos need a Hugging Face
-token: export `HF_TOKEN` or answer the one-time prompt; it is stored in
-`~/.lepika/stack/.env` (0600).
+The third shape runs on vLLM inside the Server-mode stack (Linux + NVIDIA only, and only
+with LePika's own engine — not a `connect`ed one; anywhere else LePika refuses it and
+points you at the GGUF build). Gated repos need a Hugging Face token: export `HF_TOKEN`
+or answer the one-time prompt; it is stored in `~/.lepika/stack/.env` (0600).
 
 Run `lepika model add` with no argument and you get the curated list filtered to your
 RAM, so there is no guessing whether a 27B fits in 16 GB.
@@ -208,10 +208,13 @@ Python in [`src/lepika/`](src/lepika): three dependencies, no magic.
 
 ## Roadmap
 
-Both modes above are v0.1 and work today. Next up:
+Both modes above are v0.1 and work today. Still to come:
 
 - **A published package** — so installing is a plain name instead of a repo URL.
   The install one-liners already work today either way.
+- **A scheduled smoke run**, so an upstream change to Ollama or OpenWebUI breaks CI
+  before it breaks you.
+- **A demo GIF** at the top of this page, because one command deserves one picture.
 
 Star the repo to follow along, or open an issue with what you'd want next.
 

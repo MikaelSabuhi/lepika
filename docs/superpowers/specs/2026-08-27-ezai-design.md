@@ -158,14 +158,27 @@ Every failure maps to a one-line next step; no stack traces.
 - **Principles:** thin orchestration (never reimplement upstream);
   two runtime deps (Typer, Rich); zero live scraping; escape hatches
   over pins.
-- **Trunk-based, tag-driven:** merge to `main` → ruff + pyright +
-  unit + integration. Tag `vX.Y.Z` → full matrix + smoke → PyPI via
-  trusted publishing (OIDC, no secrets) → GitHub Release with
-  generated notes.
+- **Development workflow — PR-only, worktree-based:** `main` is
+  protected; no direct pushes. Every change happens in a git worktree
+  on a feature branch and lands via a PR that must pass CI. Small,
+  focused PRs (one plan task or fix each).
+- **CI pipeline (one workflow, uv-native, fast):** every PR runs, via
+  `astral-sh/setup-uv` with caching:
+  1. `ruff check` + `ruff format --check` (lint/format)
+  2. `pyright` (types)
+  3. `pytest` unit + integration (`uv run pytest`)
+  4. Security audit: `bandit` (code) + `pip-audit` (dependency CVEs)
+  That's the whole gate — no sprawling job matrix; smoke tests stay on
+  the weekly schedule + release tags, not on every PR.
+- **Releases — semver, tag-driven:** tag `vX.Y.Z` on `main` → full CI
+  + smoke test → PyPI via trusted publishing (OIDC, no secrets) →
+  GitHub Release with generated notes. Version lives in one place
+  (`pyproject.toml`).
 - **Hygiene:** conventional commits → CHANGELOG; Dependabot (Python
   deps + Actions); issue template requires `ezai doctor` output;
   CONTRIBUTING.md documents the superpowers workflow (brainstorm →
-  spec → plan → TDD) as the project's development process.
+  spec → plan → TDD, worktrees, PR-only) as the project's development
+  process.
 
 ## 10. Distribution & virality kit
 

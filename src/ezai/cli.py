@@ -6,6 +6,7 @@ import importlib.metadata
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from ezai.errors import FriendlyError
 
@@ -38,6 +39,6 @@ def run() -> None:
     try:
         app()
     except FriendlyError as exc:
-        err_console.print(f"[red]✗ {exc.problem}[/red]")
-        err_console.print(f"[yellow]→ {exc.fix}[/yellow]")
+        err_console.print(f"[red]✗ {escape(exc.problem)}[/red]")
+        err_console.print(f"[yellow]→ {escape(exc.fix)}[/yellow]")
         raise SystemExit(1) from exc

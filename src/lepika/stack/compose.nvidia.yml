@@ -1,0 +1,10 @@
+# Added by LePika when an NVIDIA GPU is visible to Docker.
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

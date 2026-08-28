@@ -15,3 +15,8 @@ def test_logs_dir_and_pid_file_live_under_home(isolated_home: Path) -> None:
     assert paths.logs_dir() == isolated_home / "logs"
     assert paths.logs_dir().is_dir()
     assert paths.pid_file("openwebui") == isolated_home / "openwebui.pid"
+
+
+def test_stack_dir_lives_under_home(isolated_home: Path) -> None:
+    assert paths.stack_dir() == isolated_home / "stack"
+    assert paths.stack_dir().is_dir()

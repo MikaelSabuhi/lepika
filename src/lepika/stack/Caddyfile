@@ -1,0 +1,14 @@
+# LePika API proxy: only requests carrying the generated key reach the engine.
+{
+	auto_https off
+}
+
+:11435 {
+	@authed header Authorization "Bearer {$LEPIKA_API_KEY}"
+	handle @authed {
+		reverse_proxy {$LEPIKA_UPSTREAM}
+	}
+	handle {
+		respond 401
+	}
+}

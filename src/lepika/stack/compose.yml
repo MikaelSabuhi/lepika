@@ -1,0 +1,67 @@
+# LePika Server mode. Owned by LePika: edit .env (next to this file), not this.
+# Profiles: engine (Ollama) · vllm (Linux + NVIDIA, full-weight HF repos) · expose (Caddy API proxy)
+name: lepika
+
+services:
+  openwebui:
+    image: ${OPENWEBUI_IMAGE}
+    restart: unless-stopped
+    ports:
+      - "${WEBUI_BIND}:${WEBUI_PORT}:8080"
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      OLLAMA_API_CONFIGS: ${OLLAMA_API_CONFIGS}
+      ENABLE_OPENAI_API: ${ENABLE_OPENAI_API}
+      OPENAI_API_BASE_URL: ${OPENAI_API_BASE_URL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ENABLE_PERSISTENT_CONFIG: "false"
+    volumes:
+      - openwebui:/app/backend/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  ollama:
+    image: ${OLLAMA_IMAGE}
+    profiles: ["engine"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+
+  vllm:
+    image: ${VLLM_IMAGE}
+    profiles: ["vllm"]
+    restart: unless-stopped
+    command: ["--model", "${VLLM_MODEL}", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+    ipc: host
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  caddy:
+    image: ${CADDY_IMAGE}
+    profiles: ["expose"]
+    restart: unless-stopped
+    ports:
+      - "${API_PORT}:11435"
+    environment:
+      LEPIKA_API_KEY: ${LEPIKA_API_KEY}
+      LEPIKA_UPSTREAM: ${LEPIKA_UPSTREAM}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+
+volumes:
+  openwebui:
+  ollama:
+  hf-cache:

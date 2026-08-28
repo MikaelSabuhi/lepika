@@ -20,3 +20,9 @@ def logs_dir() -> Path:
 
 def pid_file(name: str) -> Path:
     return lepika_home() / f"{name}.pid"
+
+
+def stack_dir() -> Path:
+    d = lepika_home() / "stack"
+    d.mkdir(parents=True, exist_ok=True)
+    return d

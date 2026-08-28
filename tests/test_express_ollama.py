@@ -8,7 +8,6 @@ import pytest
 from lepika import express
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
-from lepika.models import ModelRef
 from lepika.paths import logs_dir
 
 
@@ -158,8 +157,3 @@ def test_ensure_ollama_probes_the_url_it_is_given() -> None:
 def test_wait_for_raises_after_timeout() -> None:
     with pytest.raises(FriendlyError):
         express.wait_for(lambda: False, seconds=3, what="Ollama API", sleep=lambda s: None)
-
-
-def test_pull_model_raises_friendly_on_nonzero_exit() -> None:
-    with pytest.raises(FriendlyError):
-        express.pull_model(ModelRef(raw="qwen3:8b", kind="ollama"), call=lambda cmd: 1)

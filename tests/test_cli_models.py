@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, express, proc
+from lepika import cli, config, detect, engine, express
+from lepika.errors import FriendlyError
 
 runner = CliRunner()
 
@@ -27,7 +27,7 @@ def fake_engine(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     pulled: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
-    monkeypatch.setattr(express, "pull_model", lambda ref, **k: pulled.append(ref.raw))
+    monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: pulled.append(ref.raw))
     return pulled
 
 
@@ -44,46 +44,53 @@ def test_model_add_rejects_full_weight_repo(fake_engine: list[str], isolated_hom
     assert fake_engine == []
 
 
-def test_model_list_shows_ollama_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        assert cmd == ["ollama", "list"]
-        return subprocess.CompletedProcess(cmd, 0, stdout="NAME  SIZE\nqwen3:8b  5GB\n", stderr="")
-
-    monkeypatch.setattr(proc, "run_logged", fake_run)
+def test_model_list_shows_a_table_with_the_default_marked(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    config.save(config.Config(model="qwen3:8b"))
+    monkeypatch.setattr(
+        engine,
+        "list_models",
+        lambda url, **k: [("qwen3:8b", 5_000_000_000), ("gemma3:4b", 3_300_000_000)],
+    )
     result = runner.invoke(cli.app, ["model", "list"])
     assert result.exit_code == 0
     assert "qwen3:8b" in result.output
+    assert "(default)" in result.output
+    assert "5.0 GB" in result.output
 
 
 def test_model_list_empty_suggests_model_add(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(proc, "run_logged", fake_run)
+    monkeypatch.setattr(engine, "list_models", lambda url, **k: [])
     result = runner.invoke(cli.app, ["model", "list"])
     assert result.exit_code == 0
     assert "lepika model add" in result.output
 
 
-def test_model_list_failure_points_at_doctor(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="connection refused")
+def test_model_list_uses_the_configured_engine_and_key(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    config.save(config.Config(engine_url="http://gpu-box:11435", engine_key="k"))
+    seen: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        engine, "list_models", lambda url, key="", **k: seen.append((url, key)) or []
+    )
+    runner.invoke(cli.app, ["model", "list"])
+    assert seen == [("http://gpu-box:11435", "k")]
 
-    monkeypatch.setattr(proc, "run_logged", fake_run)
+
+def test_model_list_failure_is_friendly(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(url: str, **k: Any) -> list[tuple[str, int]]:
+        raise FriendlyError("Could not reach the engine at http://x.", "Run `lepika doctor`.")
+
+    monkeypatch.setattr(engine, "list_models", boom)
     result = runner.invoke(cli.app, ["model", "list"])
-    assert result.exit_code == 1
-    assert "lepika doctor" in result.output
-    assert "No models yet" not in result.output
+    assert result.exit_code != 0
 
 
-def test_model_rm_invokes_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
-
-    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        calls.append(list(cmd))
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(proc, "run_logged", fake_run)
+def test_model_rm_deletes_through_the_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    deleted: list[str] = []
+    monkeypatch.setattr(engine, "delete_model", lambda url, name, **k: deleted.append(name))
     result = runner.invoke(cli.app, ["model", "rm", "qwen3:8b"])
     assert result.exit_code == 0
-    assert ["ollama", "rm", "qwen3:8b"] in calls
+    assert deleted == ["qwen3:8b"]

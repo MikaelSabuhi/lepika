@@ -39,7 +39,7 @@ def test_run_logged_keeps_output_only_for_failures(isolated_home: Path) -> None:
 
 
 def test_run_logged_with_log_false_records_nothing_for_a_read(isolated_home: Path) -> None:
-    """Read-only commands (`ollama list`) change nothing, so they earn no log line."""
+    """Read-only commands (`sysctl -n hw.memsize`) change nothing, so they earn no log line."""
     proc.run_logged([sys.executable, "-c", "print('hello')"], log=False)
     log_path = paths.logs_dir() / "lepika.log"
     assert not log_path.exists() or log_path.read_text() == ""

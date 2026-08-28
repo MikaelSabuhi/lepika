@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, express, models, wizard
+from lepika import cli, config, detect, engine, express, models, wizard
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
@@ -107,7 +107,7 @@ def test_run_wizard_orders_engine_then_pull_then_ui_then_browser(
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "1")
     monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: events.append("engine"))
-    monkeypatch.setattr(express, "pull_model", lambda ref, **k: events.append("pull"))
+    monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: events.append("pull"))
     monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: events.append("ui"))
     monkeypatch.setattr(cli, "_open_browser", lambda url: events.append("browser"))
 
@@ -128,10 +128,10 @@ def test_wizard_keeps_the_old_model_when_the_pull_fails(
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "1")
     monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
 
-    def boom(ref: Any, **k: Any) -> None:
+    def boom(url: str, ref: Any, **k: Any) -> None:
         raise FriendlyError("Failed to pull model.", "Check the name.")
 
-    monkeypatch.setattr(express, "pull_model", boom)
+    monkeypatch.setattr(engine, "pull_model", boom)
     monkeypatch.setattr(
         express, "ensure_openwebui", lambda cfg, **k: pytest.fail("no UI after a failed pull")
     )
@@ -157,7 +157,7 @@ def test_dry_run_writes_config_and_executes_nothing(
     # A dry run installs nothing, downloads nothing, starts nothing, opens nothing:
     # if the early return ever moves, these fail loudly instead of running for real.
     monkeypatch.setattr(express, "ensure_ollama", never("express.ensure_ollama"))
-    monkeypatch.setattr(express, "pull_model", never("express.pull_model"))
+    monkeypatch.setattr(engine, "pull_model", never("engine.pull_model"))
     monkeypatch.setattr(express, "ensure_openwebui", never("express.ensure_openwebui"))
     monkeypatch.setattr(cli, "_open_browser", never("cli._open_browser"))
 

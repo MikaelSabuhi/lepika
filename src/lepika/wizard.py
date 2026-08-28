@@ -9,7 +9,7 @@ from rich.markup import escape
 from rich.prompt import Prompt
 from rich.table import Table
 
-from lepika import config, detect, express, models
+from lepika import config, detect, engine, express, models
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import CuratedModel, ModelRef
@@ -99,7 +99,7 @@ def run_wizard(dry_run: bool = False) -> None:
     def pull_then_save() -> None:
         # Saved only once the pull succeeded: recording a model the machine failed
         # to download leaves the config pointing at something that isn't there.
-        express.pull_model(ref)
+        engine.pull_model(cfg.engine_url, ref, key=cfg.engine_key)
         cfg.model = ref.raw
         config.save(cfg)
 

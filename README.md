@@ -90,7 +90,7 @@ Ollama already installed? LePika reuses it instead of installing a second copy.
 | `lepika doctor` | Diagnose the local setup; every ✗ comes with a one-line fix |
 | `lepika update` | Upgrade Ollama and OpenWebUI to their latest versions |
 | `lepika model add [ref]` | Download a model and make it the default (no ref → browse) |
-| `lepika model list` | List downloaded models |
+| `lepika model list` | List downloaded models (size, default marked) |
 | `lepika model rm <name>` | Remove a downloaded model |
 
 Global flags: `--version`, `--dry-run` (show what the wizard would do without doing

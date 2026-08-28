@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from lepika import config, detect, express, models, paths, proc
+from lepika import config, detect, engine, express, models, paths, proc
 from lepika.errors import FriendlyError
 
 app = typer.Typer(
@@ -177,7 +177,7 @@ def model_add(
         model_ref = wizard._validate(models.parse_model_ref(ref))
     cfg = config.load()
     express.ensure_ollama(info, url=cfg.engine_url)
-    express.pull_model(model_ref)
+    engine.pull_model(cfg.engine_url, model_ref, key=cfg.engine_key)
     cfg.model = model_ref.raw
     config.save(cfg)
     console.print(f"[green]✓ Added:[/green] {escape(model_ref.raw)}")
@@ -186,12 +186,18 @@ def model_add(
 @model_app.command("list")
 def model_list() -> None:
     """List downloaded models."""
-    result = proc.run_logged(["ollama", "list"], check=False, log=False)
-    if result.returncode != 0:
-        # An unreachable engine looks identical to an empty list without this.
-        console.print("Could not reach Ollama — run `lepika doctor`.", markup=False)
-        raise typer.Exit(code=1)
-    console.print(result.stdout or "No models yet — run `lepika model add`.", markup=False)
+    cfg = config.load()
+    installed = engine.list_models(cfg.engine_url, key=cfg.engine_key)
+    if not installed:
+        console.print("No models yet — run `lepika model add`.", markup=False)
+        return
+    table = Table(title="models")
+    table.add_column("Name")
+    table.add_column("Size", justify="right")
+    for name, size in installed:
+        marker = " [dim](default)[/dim]" if name == cfg.model else ""
+        table.add_row(escape(name) + marker, engine.human_size(size))
+    console.print(table)
 
 
 @model_app.command("rm")
@@ -199,7 +205,8 @@ def model_rm(
     name: str = typer.Argument(..., help="Model name as shown by `lepika model list`."),
 ) -> None:
     """Remove a downloaded model."""
-    proc.run_logged(["ollama", "rm", name])
+    cfg = config.load()
+    engine.delete_model(cfg.engine_url, name, key=cfg.engine_key)
     console.print(f"[green]✓ Removed:[/green] {escape(name)}")
 
 

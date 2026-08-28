@@ -16,7 +16,6 @@ from lepika import detect, proc
 from lepika.config import Config, config_path
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
-from lepika.models import ModelRef
 from lepika.paths import logs_dir, pid_file
 
 RunFn = Callable[..., Any]
@@ -115,17 +114,6 @@ def ensure_ollama(
     if not api_up(url):
         start_ollama(info.os, popen=popen)
         wait_for(lambda: api_up(url), 30, "Ollama API", sleep=sleep)
-
-
-def pull_model(ref: ModelRef, call: CallFn = subprocess.call) -> None:
-    # Streams ollama's own progress bar to the terminal on purpose.
-    code = call(["ollama", "pull", ref.raw])
-    if code != 0:
-        raise FriendlyError(
-            f"Failed to pull model '{ref.raw}'.",
-            "Check the model name/URL — e.g. qwen3:8b or hf.co/<org>/<repo>-GGUF — "
-            "and your internet connection.",
-        )
 
 
 def webui_url(port: int) -> str:

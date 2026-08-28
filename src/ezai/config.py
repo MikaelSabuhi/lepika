@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from ezai.errors import FriendlyError
 from ezai.paths import ezai_home
 
 SCHEMA_VERSION = 1
@@ -38,14 +40,24 @@ def _dump_toml(data: dict[str, object]) -> str:
 
 
 def save(cfg: Config) -> None:
-    config_path().write_text(_dump_toml(dataclasses.asdict(cfg)), encoding="utf-8")
+    """Write atomically so an interrupted save can't leave a half-written config."""
+    path = config_path()
+    tmp = path.with_suffix(".toml.tmp")
+    tmp.write_text(_dump_toml(dataclasses.asdict(cfg)), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def load() -> Config:
     path = config_path()
     if not path.exists():
         return Config()
-    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise FriendlyError(
+            f"Your config file is corrupted: {path}",
+            "Delete it and run `ezai` again — it will be recreated.",
+        ) from exc
     raw.setdefault("schema_version", SCHEMA_VERSION)
     known = {f.name for f in dataclasses.fields(Config)}
     return Config(**{k: v for k, v in raw.items() if k in known})

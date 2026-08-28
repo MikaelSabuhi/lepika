@@ -161,11 +161,17 @@ Every failure maps to a one-line next step; no stack traces.
 - **Development workflow — PR-only, worktree-based:** `main` is
   protected; no direct pushes. Every change happens in a git worktree
   on a feature branch and lands via a PR that must pass CI. Small,
-  focused PRs (one plan task or fix each).
+  focused PRs (one plan task or fix each). PRs are **squash-and-merged**
+  into `main` on approval, giving one clean conventional commit per
+  change.
+- **Styling:** `ruff format` (Black-style) is the single formatter,
+  enforced locally via **pre-commit hooks** (`.pre-commit-config.yaml`
+  running ruff-check + ruff-format) and verified in CI. No debates, no
+  drift.
 - **CI pipeline (one workflow, uv-native, fast):** every PR runs, via
   `astral-sh/setup-uv` with caching:
   1. `ruff check` + `ruff format --check` (lint/format)
-  2. `pyright` (types)
+  2. `mypy` in strict mode (types)
   3. `pytest` unit + integration (`uv run pytest`)
   4. Security audit: `bandit` (code) + `pip-audit` (dependency CVEs)
   That's the whole gate — no sprawling job matrix; smoke tests stay on
@@ -193,4 +199,8 @@ Every failure maps to a one-line next step; no stack traces.
   `models.toml`, `pyproject.toml`.
 - **README:** vhs-recorded GIF (regenerable), platform matrix,
   "why not just X?" honesty table, MIT license. Launch demo video for
-  HN/X/r/LocalLLaMA.
+  HN/X/r/LocalLLaMA. The README is a first-class deliverable: every
+  user-facing change (commands, install lines, platform support) must
+  update it in the same PR — it stays current, clean, and attractive.
+- **Repo hygiene:** clean root (only files users need to see), proper
+  `.gitignore`, CONTRIBUTING.md, MIT LICENSE, issue templates.

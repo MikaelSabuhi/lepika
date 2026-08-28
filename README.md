@@ -2,9 +2,14 @@
 
 **One command → local AI chat in your browser.**
 
+*(luh-PEE-ka)*
+
 Your gaming GPU is already an AI machine. LePika self-hosts LLMs on the hardware you
 already own, with zero configuration: Mac (Metal), Linux and Windows (NVIDIA).
 No Docker, no API keys, no monthly bill, and nothing you type ever leaves the box.
+
+> A pika is a small mountain mammal that spends the summer stashing hay in its own
+> burrow, so everything it needs is already at home. Same idea, for your AI.
 
 [![CI](https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml/badge.svg)](https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)

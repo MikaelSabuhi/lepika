@@ -122,9 +122,9 @@ def update() -> None:
     """Upgrade Ollama and OpenWebUI to their latest versions."""
     info = detect.detect()
     console.print("Upgrading Ollama…")
-    # check=False on the package managers: "already up to date" exits nonzero on some.
     if info.os == "macos":
         if shutil.which("brew") is not None:
+            # check=False: brew exits nonzero when ollama is already up to date.
             proc.run_logged(["brew", "upgrade", "ollama"], check=False)
         else:
             console.print("Ollama.app updates itself — skipping engine upgrade.")
@@ -133,8 +133,10 @@ def update() -> None:
         # restated: it must stream, because it may prompt for sudo.
         express.install_ollama(info)
     else:
+        # check=False: winget exits nonzero when no upgrade is available.
         proc.run_logged(["winget", "upgrade", "--id", "Ollama.Ollama", "-e"], check=False)
     console.print("Upgrading OpenWebUI…")
+    # check=False: uv exits nonzero when open-webui is already the latest version.
     proc.run_logged(["uv", "tool", "upgrade", "open-webui"], check=False)
     express.stop_openwebui(info.os)
     express.ensure_openwebui(config.load())

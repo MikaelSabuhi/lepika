@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from ezai import config, detect, express, paths
+from ezai import config, detect, express, models, paths, proc
 from ezai.errors import FriendlyError
 
 app = typer.Typer(
@@ -94,6 +94,50 @@ def logs(lines: int = typer.Option(50, help="Lines per log file.")) -> None:
         content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
         for line in content[-lines:]:
             console.print(line, markup=False)
+
+
+model_app = typer.Typer(help="Add, list, or remove local models.")
+app.add_typer(model_app, name="model")
+
+
+@model_app.command("add")
+def model_add(
+    ref: str | None = typer.Argument(
+        None, help="qwen3:8b · hf.co/<org>/<repo>-GGUF · leave empty to browse"
+    ),
+) -> None:
+    """Download a model and make it the default."""
+    # Imported here, not at module scope: `wizard` imports `cli._open_browser`.
+    from ezai import wizard
+
+    info = detect.detect()
+    if ref is None:
+        model_ref = wizard.choose_model(info)
+    else:
+        # Same rejection as the wizard's, by reusing it rather than restating it.
+        model_ref = wizard._validate(models.parse_model_ref(ref))
+    express.ensure_ollama(info)
+    express.pull_model(model_ref)
+    cfg = config.load()
+    cfg.model = model_ref.raw
+    config.save(cfg)
+    console.print(f"[green]✓ Added:[/green] {escape(model_ref.raw)}")
+
+
+@model_app.command("list")
+def model_list() -> None:
+    """List downloaded models."""
+    result = proc.run_logged(["ollama", "list"], check=False)
+    console.print(result.stdout or "No models yet — run `ezai model add`.", markup=False)
+
+
+@model_app.command("rm")
+def model_rm(
+    name: str = typer.Argument(..., help="Model name as shown by `ezai model list`."),
+) -> None:
+    """Remove a downloaded model."""
+    proc.run_logged(["ollama", "rm", name])
+    console.print(f"[green]✓ Removed:[/green] {escape(name)}")
 
 
 def run() -> None:

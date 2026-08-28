@@ -158,3 +158,24 @@ def test_start_stack_explains_an_unreachable_remote_engine(monkeypatch: pytest.M
         express.start_stack(info, cfg)
     assert "gpu-box" in exc.value.problem
     assert "lepika connect --local" in exc.value.fix
+
+
+def test_connect_in_server_mode_reconciles_the_stack_instead_of_restarting_express(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """`compose up -d` is the Server-mode reconciler; the Express restart has no stack to touch."""
+    from lepika import server
+
+    config.save(config.Config(mode="server"))
+    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    started: list[str] = []
+    monkeypatch.setattr(
+        server, "start_stack", lambda info, cfg, **k: started.append(cfg.engine_url) or ""
+    )
+    monkeypatch.setattr(
+        express, "restart_openwebui", lambda *a, **k: pytest.fail("express restart in server mode")
+    )
+    result = runner.invoke(cli.app, ["connect", "http://gpu-box:11435"])
+    assert result.exit_code == 0, result.output
+    assert started == ["http://gpu-box:11435"]

@@ -107,3 +107,34 @@ def test_model_rm_deletes_through_the_engine(monkeypatch: pytest.MonkeyPatch) ->
     result = runner.invoke(cli.app, ["model", "rm", "qwen3:8b"])
     assert result.exit_code == 0
     assert deleted == ["qwen3:8b"]
+
+
+def test_model_add_in_server_mode_brings_the_engine_container_up_first(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """A container engine has to be running before anything can be pulled into it."""
+    from lepika import server
+
+    config.save(config.Config(mode="server"))
+    events: list[str] = []
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: events.append("stack") or "")
+    monkeypatch.setattr(express, "ensure_ollama", lambda *a, **k: pytest.fail("no native install"))
+    monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: events.append("pull"))
+    result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
+    assert result.exit_code == 0, result.output
+    assert events == ["stack", "pull"]
+
+
+def test_model_add_in_server_mode_still_only_checks_a_remote_engine(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    from lepika import server
+
+    config.save(config.Config(mode="server", engine_managed=False, engine_url="http://gpu-box:1"))
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(server, "start_stack", lambda *a, **k: pytest.fail("not ours to start"))
+    monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: None)
+    result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
+    assert result.exit_code == 0, result.output

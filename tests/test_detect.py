@@ -116,3 +116,9 @@ def test_plan_sentence_mentions_gpu_and_mode() -> None:
     sentence = detect.plan_sentence(info)
     assert "Express" in sentence
     assert "Metal" in sentence
+
+
+def test_plan_sentence_describes_server_mode() -> None:
+    info = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
+    assert "Server mode" in detect.plan_sentence(info, mode="server")
+    assert "docker compose" in detect.plan_sentence(info, mode="server")

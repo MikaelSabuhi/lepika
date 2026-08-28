@@ -152,10 +152,12 @@ _GPU_LABEL = {"apple": "Apple Metal GPU", "nvidia": "NVIDIA GPU", "none": "CPU o
 _OS_LABEL = {"macos": "macOS", "linux": "Linux", "windows": "Windows"}
 
 
-def plan_sentence(info: SystemInfo) -> str:
+def plan_sentence(info: SystemInfo, mode: str = "express") -> str:
     speed_note = "" if info.gpu != "none" else " (no GPU found — models will run slowly)"
-    return (
+    hardware = (
         f"Detected {_OS_LABEL[info.os]} on {info.arch} with {info.ram_gb:.0f} GB RAM "
-        f"and {_GPU_LABEL[info.gpu]}{speed_note} — Express mode: native Ollama + "
-        f"OpenWebUI, no Docker needed."
+        f"and {_GPU_LABEL[info.gpu]}{speed_note}"
     )
+    if mode == "server":
+        return f"{hardware} — Server mode: docker compose stack (OpenWebUI + Ollama)."
+    return f"{hardware} — Express mode: native Ollama + OpenWebUI, no Docker needed."

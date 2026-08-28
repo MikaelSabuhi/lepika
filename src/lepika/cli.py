@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import importlib.metadata
 import webbrowser
+from types import ModuleType
 
 import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from lepika import config, detect, engine, express, log, models
+from lepika import config, detect, engine, express, log, models, server
 from lepika.errors import FriendlyError
 
 app = typer.Typer(
@@ -20,6 +21,17 @@ app = typer.Typer(
 
 console = Console()
 err_console = Console(stderr=True)
+
+MODES = ("express", "server")
+
+
+def _backend(cfg: config.Config) -> ModuleType:
+    """The module that runs the stack in this mode — the only place the two differ.
+
+    `express` and `server` deliberately expose the same start_stack/stop/update/logs
+    surface, so every lifecycle command is written once against whichever is in play.
+    """
+    return server if cfg.mode == "server" else express
 
 
 def _version_string() -> str:
@@ -33,15 +45,27 @@ def main(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Show what the wizard would do without doing it."
     ),
+    mode: str | None = typer.Option(
+        None, "--mode", help="express (default, no Docker) or server (docker compose)."
+    ),
 ) -> None:
     if version:
         typer.echo(_version_string())
         raise typer.Exit()
+    if mode is not None:
+        if mode not in MODES:
+            raise typer.BadParameter("--mode must be 'express' or 'server'.")
+        if ctx.invoked_subcommand is not None:
+            # The mode is chosen once, by the wizard, and then lives in config.toml;
+            # accepting it here silently would look like it had switched something.
+            raise typer.BadParameter(
+                "--mode applies to the wizard only; run `lepika --mode server` (no subcommand)."
+            )
     if ctx.invoked_subcommand is None:
         # Imported here, not at module scope: `wizard` imports `cli._open_browser`.
         from lepika import wizard
 
-        wizard.run_wizard(dry_run=dry_run)
+        wizard.run_wizard(dry_run=dry_run, mode=mode)
 
 
 def _open_browser(url: str) -> None:
@@ -61,15 +85,19 @@ def _ready(cfg: config.Config, url: str) -> None:
 def up() -> None:
     """Start the local AI stack and open the browser."""
     info = detect.detect()
-    console.print(detect.plan_sentence(info))
     cfg = config.load()
-    _ready(cfg, express.start_stack(info, cfg))
+    console.print(detect.plan_sentence(info, cfg.mode))
+    # A CPU-bound container on a GPU machine is a mystery worth one line up front.
+    if cfg.mode == "server" and (note := server.gpu_note(info)) is not None:
+        console.print(f"[yellow]{escape(note)}[/yellow]")
+    _ready(cfg, _backend(cfg).start_stack(info, cfg))
 
 
 @app.command()
 def down() -> None:
-    """Stop the stack (Express: OpenWebUI only; Ollama keeps running as a shared service)."""
-    if express.stop(detect.detect(), config.load()):
+    """Stop the stack (Express: OpenWebUI only; Server: every container, models kept)."""
+    cfg = config.load()
+    if _backend(cfg).stop(detect.detect(), cfg):
         console.print("[green]✓ Stopped.[/green]")
     else:
         console.print("Nothing was running.")
@@ -82,6 +110,8 @@ def status() -> None:
     table = Table(title="lepika status")
     table.add_column("Service")
     table.add_column("State")
+    # First row: every other row means something different in each mode.
+    table.add_row("Mode", cfg.mode)
     engine_ok = detect.api_up(cfg.engine_url, key=cfg.engine_key)
     webui_ok = express.webui_up(cfg.webui_port)
     table.add_row("Engine", "[green]up[/green]" if engine_ok else "[red]down[/red]")
@@ -95,8 +125,8 @@ def status() -> None:
 
 @app.command()
 def logs(lines: int = typer.Option(50, min=1, help="Lines per log file.")) -> None:
-    """Print the tail of LePika's log files."""
-    sections = express.logs(lines)
+    """Print the tail of LePika's logs (Server mode: the container logs too)."""
+    sections = _backend(config.load()).logs(lines)
     if not sections:
         # Silence is indistinguishable from a broken command.
         console.print("(no logs yet)")
@@ -130,18 +160,24 @@ def doctor() -> None:
 def update() -> None:
     """Upgrade the engine and OpenWebUI to their latest versions."""
     console.print("Upgrading…")
-    express.update(detect.detect(), config.load())
+    cfg = config.load()
+    _backend(cfg).update(detect.detect(), cfg)
     console.print("[green]✓ Everything is up to date and running.[/green]")
 
 
-def _repoint_webui(cfg: config.Config) -> bool:
-    """Re-point a running OpenWebUI at the engine just configured; did it restart?
+def _apply_engine_change(cfg: config.Config) -> bool:
+    """Make a running OpenWebUI use the engine just configured; did anything restart?
 
     OpenWebUI reads the engine URL and key from its environment once, at startup, so
     a UI that is already up keeps talking to the old engine no matter what the config
-    says — and `lepika up` would not fix it, because a healthy UI is left alone. The
-    restart is what makes `lepika connect` take effect on a live stack.
+    says — and `lepika up` would not fix it in Express mode, because a healthy UI is
+    left alone. This is what makes `lepika connect` take effect on a live stack.
     """
+    if cfg.mode == "server":
+        # `compose up -d` is the Server-mode reconciler: it rewrites .env and
+        # recreates whatever the new engine URL changed, so it needs no probe.
+        server.start_stack(detect.detect(), cfg)
+        return True
     if not express.webui_up(cfg.webui_port):
         return False
     express.restart_openwebui(cfg, detect.detect().os)
@@ -160,7 +196,7 @@ def connect(
         cfg.engine_managed, cfg.engine_url, cfg.engine_key = True, config.DEFAULT_ENGINE_URL, ""
         config.save(cfg)
         log.get_logger().info("engine.connect", url=cfg.engine_url, local=True)
-        if _repoint_webui(cfg):
+        if _apply_engine_change(cfg):
             console.print("[green]✓ Using the local engine again[/green] — OpenWebUI restarted.")
         else:
             console.print("[green]✓ Using the local engine again.[/green] Run `lepika up`.")
@@ -183,7 +219,7 @@ def connect(
     cfg.engine_managed, cfg.engine_url, cfg.engine_key = False, url, key
     config.save(cfg)
     log.get_logger().info("engine.connect", url=url, key=key)
-    if _repoint_webui(cfg):
+    if _apply_engine_change(cfg):
         console.print(f"[green]✓ Connected to[/green] {escape(url)} — OpenWebUI restarted.")
     else:
         console.print(f"[green]✓ Connected to[/green] {escape(url)}. Run `lepika up`.")
@@ -210,7 +246,11 @@ def model_add(
         # Same rejection as the wizard's, by reusing it rather than restating it.
         model_ref = wizard._validate(models.parse_model_ref(ref))
     cfg = config.load()
-    if cfg.engine_managed:
+    if cfg.engine_managed and cfg.mode == "server":
+        # In Server mode the engine is a container: it has to be up before there is
+        # anything to pull into.
+        server.start_stack(info, cfg)
+    elif cfg.engine_managed:
         express.ensure_ollama(info, url=cfg.engine_url)
     else:
         # A remote engine is someone else's to run: check it, never install for it.

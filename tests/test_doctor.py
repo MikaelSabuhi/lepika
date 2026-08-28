@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fakes import Runner
 from typer.testing import CliRunner
 
 from lepika import cli, detect, doctor
@@ -125,3 +126,39 @@ def test_doctor_command_ram_warning_does_not_fail(monkeypatch: pytest.MonkeyPatc
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0
     assert "4 GB detected" in result.output
+
+
+def test_server_mode_checks_docker_instead_of_native_ollama(isolated_home: Path) -> None:
+    """Server mode's prerequisites are Docker's, so its checks are Docker's too."""
+    from lepika import config
+
+    config.save(config.Config(mode="server"))
+    results = doctor.run_checks(
+        info(has_ollama=False),
+        which=lambda n: "/usr/bin/docker" if n == "docker" else None,
+        api_up=lambda url, **k: True,
+        webui_up=lambda port, **k: True,
+        run=Runner(stdout={"docker info --format": '{"nvidia": {}}'}),
+    )
+    names = {r.name for r in results}
+    assert {"Docker running", "docker compose available", "NVIDIA GPU visible to Docker"} <= names
+    assert "Ollama installed" not in names
+    assert "uv installed" not in names
+    assert all(r.ok for r in results)
+
+
+def test_server_mode_never_probes_docker_when_it_is_not_installed(isolated_home: Path) -> None:
+    """`docker info` with no docker binary is a FriendlyError, not a red ✗ with a hint."""
+    from lepika import config
+
+    config.save(config.Config(mode="server"))
+    results = doctor.run_checks(
+        info(),
+        which=lambda n: None,
+        api_up=lambda url, **k: True,
+        webui_up=lambda port, **k: True,
+        run=lambda cmd, **k: pytest.fail("must not probe a Docker that isn't there"),
+    )
+    failed = {r.name: r for r in results if not r.ok}
+    assert "Docker running" in failed
+    assert "lepika --mode express" in failed["Docker running"].hint

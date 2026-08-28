@@ -21,7 +21,7 @@ LePika CLI (Python, Typer + Rich)
 State: ~/.lepika/ (override with LEPIKA_HOME)
 ```
 
-**Express mode** (v0.1, the default): no Docker anywhere. Ollama runs natively (Homebrew / official script / winget) so the GPU works on every platform — Metal on Mac, CUDA on Windows/Linux — and OpenWebUI runs via `uv tool`. **Server mode** (planned): docker compose stack with an ollama container, optional vLLM (Linux + NVIDIA), and Caddy-fronted API-key exposure for the network.
+**Express mode** (v0.1, the default): no Docker anywhere. Ollama runs natively (Homebrew / official script / winget) so the GPU works on every platform — Metal on Mac, CUDA on Windows/Linux — and OpenWebUI runs via `uv tool`. **Server mode** (`--mode server`, or picked in the wizard when Docker is already installed): docker compose stack with an ollama container, plus a planned vLLM profile (Linux + NVIDIA) and Caddy-fronted API-key exposure for the network. `cli._backend(cfg)` picks the module — `express` and `server` expose the same `start_stack`/`stop`/`update`/`logs` surface, so every lifecycle command is written once.
 
 ## Design rules
 

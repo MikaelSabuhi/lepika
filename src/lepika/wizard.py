@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 
 from rich.console import Console
@@ -9,7 +10,7 @@ from rich.markup import escape
 from rich.prompt import Prompt
 from rich.table import Table
 
-from lepika import config, detect, engine, express, models
+from lepika import config, detect, engine, express, models, paths, server
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import CuratedModel, ModelRef
@@ -82,19 +83,86 @@ def choose_model(
     return _validate(models.parse_model_ref(answer))
 
 
-def run_wizard(dry_run: bool = False) -> None:
+def choose_mode(info: SystemInfo, current: str, ask: AskFn | None = None) -> str:
+    """Express unless Docker is present AND the user picks Server.
+
+    A machine without Docker never hears the question — and so is never nudged
+    towards installing Docker for a mode it does not need.
+    """
+    if not info.has_docker:
+        return "express"
+    ask_fn: AskFn = ask if ask is not None else _ask
+    default = "2" if current == "server" else "1"
+    console.print("How should LePika run?")
+    console.print(
+        "  1  ⚡ Express — native Ollama + OpenWebUI, GPU on every platform (recommended)"
+    )
+    console.print(
+        "  2  🐳 Server — everything in docker compose; NVIDIA GPU on Linux, "
+        "shareable with `lepika expose`"
+    )
+    # `or default`: Prompt.ask already returns the default on an empty line, but a
+    # bare Enter must mean "keep what I have" whatever the prompt is.
+    answer = ask_fn("Pick 1 or 2", default=default).strip() or default
+    return "server" if answer == "2" else "express"
+
+
+_MODE_LABEL = {"express": "Express", "server": "Server"}
+
+
+def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> None:
+    """Stop the stack we are switching away from, best effort.
+
+    Both modes serve OpenWebUI on the same host port, so an abandoned stack does not
+    just linger — it answers. `ensure_openwebui` would find the old container healthy,
+    leave it alone, and open a UI that `lepika status` then reports as the other mode.
+    """
+    console.print(
+        f"Switching from {_MODE_LABEL[previous]} to {_MODE_LABEL[cfg.mode]} mode — "
+        f"stopping the {_MODE_LABEL[previous]} stack…"
+    )
+    # The config as it was loaded: `stop` reads the old mode's ports, not the new mode's.
+    old_cfg = dataclasses.replace(cfg, mode=previous)
+    backend = server if previous == "server" else express
+    try:
+        # The bool is "was anything running", which is not a reason to stop switching.
+        backend.stop(info, old_cfg)
+    except FriendlyError as exc:
+        # A backend too broken to stop is usually why the user is leaving it. Say so
+        # and carry on rather than trapping them in the mode that failed.
+        console.print(f"[yellow]Could not stop it cleanly: {escape(exc.problem)}[/yellow]")
+
+
+def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     info = detect.detect()
-    console.print(detect.plan_sentence(info))
-    ref = choose_model(info)
     cfg = config.load()
+    previous = cfg.mode
+    cfg.mode = mode if mode is not None else choose_mode(info, cfg.mode)
+    if cfg.mode == "server" and not info.has_docker:
+        # Only reachable via `--mode server`: a clear error naming Express, never an
+        # install prompt. Whether a present Docker is *running* is start_stack's
+        # business — asking here would make --dry-run shell out.
+        server.ensure_docker(info)
+    if cfg.mode != previous and not dry_run:
+        leave_mode(info, previous, cfg)
+    console.print(detect.plan_sentence(info, cfg.mode))
+    ref = choose_model(info)
     if dry_run:
         cfg.model = ref.raw
         config.save(cfg)
-        console.print("would: ensure Ollama is installed and running")
+        if cfg.mode == "server":
+            # Built from lepika_home(), not stack_dir(): a dry run creates nothing.
+            env_path = paths.lepika_home() / "stack" / server.ENV_FILE
+            console.print(f"would: write {escape(str(env_path))}")
+            console.print("would: run docker compose up -d")
+        else:
+            console.print("would: ensure Ollama is installed and running")
         console.print(f"would: pull model {escape(ref.raw)}")
         console.print(f"would: start OpenWebUI on port {cfg.webui_port}")
         console.print(f"would: open {express.webui_url(cfg.webui_port)}")
         return
+    # The mode is decided now; the model is saved only after its pull succeeds.
+    config.save(cfg)
 
     def pull_then_save() -> None:
         # Saved only once the pull succeeded: recording a model the machine failed
@@ -103,7 +171,7 @@ def run_wizard(dry_run: bool = False) -> None:
         cfg.model = ref.raw
         config.save(cfg)
 
-    url = express.start_stack(info, cfg, after_engine=pull_then_save)
     from lepika import cli
 
+    url = cli._backend(cfg).start_stack(info, cfg, after_engine=pull_then_save)
     cli._ready(cfg, url)

@@ -7,6 +7,7 @@
 Your gaming GPU is already an AI machine. LePika self-hosts LLMs on the hardware you
 already own, with zero configuration: Mac (Metal), Linux and Windows (NVIDIA).
 No Docker, no API keys, no monthly bill, and nothing you type ever leaves the box.
+Got Docker and a homelab? Server mode runs the same thing as one `docker compose` stack.
 
 > A pika is a small mountain mammal that spends the summer stashing hay in its own
 > burrow, so everything it needs is already at home. Same idea, for your AI.
@@ -65,6 +66,8 @@ Python, so there is nothing else to set up.
 
 ## What you get
 
+### ⚡ Express mode (default)
+
 Everything runs natively on your machine. No containers, no VMs, no cloud.
 
 | Platform | GPU used | How LePika sets it up |
@@ -78,15 +81,27 @@ Everything runs natively on your machine. No containers, no VMs, no cloud.
 
 Ollama already installed? LePika reuses it instead of installing a second copy.
 
+### 🐳 Server mode (`lepika --mode server`)
+
+| Platform | GPU used | Stack |
+| --- | --- | --- |
+| Linux + NVIDIA | CUDA (needs NVIDIA Container Toolkit) | OpenWebUI + Ollama containers |
+| Linux (no GPU) | CPU | Same; LePika warns you it will be slow |
+| Windows + NVIDIA (Docker Desktop) | CUDA via WSL2 | Same |
+| macOS (Docker Desktop) | CPU only — containers can't use Metal; use Express for the GPU | Same |
+
+Server mode is asked about only when Docker is already installed; LePika never asks you
+to install Docker.
+
 ## Everyday commands
 
 | Command | What it does |
 | --- | --- |
-| `lepika` | The setup wizard: detect → pick a model → install → open the browser |
+| `lepika` | The setup wizard: detect → (Express or Server) → pick a model → install → open the browser |
 | `lepika up` | Start the local AI stack and open the browser |
-| `lepika down` | Stop OpenWebUI (Ollama keeps running as a shared service) |
+| `lepika down` | Stop the stack (Express: OpenWebUI only; Server: all containers, models kept) |
 | `lepika status` | Show what's running |
-| `lepika logs` | Print the tail of LePika's log files (`--lines`, default 50) |
+| `lepika logs` | Print the tail of LePika's logs (Server mode: container logs too; `--lines`, default 50) |
 | `lepika doctor` | Diagnose the local setup; every ✗ comes with a one-line fix |
 | `lepika update` | Upgrade Ollama and OpenWebUI to their latest versions |
 | `lepika connect <url> [--key K]` | Use an engine on another machine (`--local` to go back) |
@@ -94,11 +109,28 @@ Ollama already installed? LePika reuses it instead of installing a second copy.
 | `lepika model list` | List downloaded models (size, default marked) |
 | `lepika model rm <name>` | Remove a downloaded model |
 
-Global flags: `--version`, `--dry-run` (show what the wizard would do without doing
-it), and `--help` on every command.
+Global flags: `--version`, `--mode express|server` (the wizard's, not a per-command
+switch), `--dry-run` (show what the wizard would do without doing it), and `--help` on
+every command.
 
 All state lives in one place: `~/.lepika` (config, pid files, logs). Point `LEPIKA_HOME`
 somewhere else if you prefer.
+
+## Server mode
+
+Everything in one readable `docker compose` file, for the box under the desk:
+
+```sh
+lepika --mode server            # or pick 🐳 in the wizard when Docker is present
+```
+
+The stack lives in `~/.lepika/stack/`. LePika owns `compose.yml`; you own `.env`
+(created private, `0600`). Pin a version by editing it — `OLLAMA_IMAGE='ollama/ollama:0.11.4'` —
+and LePika keeps your pins on every `lepika up` / `lepika update`. Models and chats live in named
+Docker volumes and survive `lepika down`.
+
+Both modes serve the UI on the same port, so switching between them stops the stack
+you're leaving before it starts the one you're moving to.
 
 ## Pick any model
 
@@ -155,15 +187,14 @@ You absolutely can. LePika drives [Ollama](https://ollama.com) and
 | Staying current | Update each piece separately, per platform | `lepika update` |
 
 If you'd rather run the raw tools, their docs are excellent and LePika gets out of your
-way. And if you're curious what it's doing on your behalf, it's under a thousand lines
-of plain Python in [`src/lepika/`](src/lepika): three dependencies, no magic.
+way. And if you're curious what it's doing on your behalf, it's a few files of plain
+Python in [`src/lepika/`](src/lepika): three dependencies, no magic.
 
 ## Roadmap
 
-Express mode (above) is v0.1 and works today. Next up:
+Both modes above are v0.1 and work today. Next up:
 
-- **🐳 Server mode** — a single, readable `docker compose` stack: OpenWebUI + Ollama,
-  with a **vLLM** profile for full-weight Hugging Face repos on Linux + NVIDIA.
+- **A vLLM profile** — full-weight Hugging Face repos in Server mode, on Linux + NVIDIA.
 - **`lepika expose`** — serve the API to your network behind a generated API key
   (Caddy Bearer auth), instead of localhost only.
 - **A published package** — so installing is a plain name instead of a repo URL.

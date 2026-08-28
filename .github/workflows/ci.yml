@@ -24,6 +24,6 @@ jobs:
       - name: Tests
         run: uv run pytest -q
       - name: Security audit (code)
-        run: uv run bandit -r src -q
+        run: uv run bandit -c pyproject.toml -r src -q
       - name: Security audit (dependencies)
         run: uv run pip-audit

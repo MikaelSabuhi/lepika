@@ -5,11 +5,16 @@ from __future__ import annotations
 import importlib.metadata
 
 import typer
+from rich.console import Console
+
+from ezai.errors import FriendlyError
 
 app = typer.Typer(
     help="One command → local AI chat in your browser.",
     add_completion=False,
 )
+
+err_console = Console(stderr=True)
 
 
 def _version_string() -> str:
@@ -30,4 +35,9 @@ def main(
 
 def run() -> None:
     """Console-script entry point."""
-    app()
+    try:
+        app()
+    except FriendlyError as exc:
+        err_console.print(f"[red]✗ {exc.problem}[/red]")
+        err_console.print(f"[yellow]→ {exc.fix}[/yellow]")
+        raise SystemExit(1) from exc

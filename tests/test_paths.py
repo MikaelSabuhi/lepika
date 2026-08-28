@@ -1,0 +1,17 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from ezai import paths
+
+
+def test_ezai_home_honors_env_and_creates_dir(isolated_home: Path) -> None:
+    home = paths.ezai_home()
+    assert home == isolated_home
+    assert home.is_dir()
+
+
+def test_logs_dir_and_pid_file_live_under_home(isolated_home: Path) -> None:
+    assert paths.logs_dir() == isolated_home / "logs"
+    assert paths.logs_dir().is_dir()
+    assert paths.pid_file("openwebui") == isolated_home / "openwebui.pid"

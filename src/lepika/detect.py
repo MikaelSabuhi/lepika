@@ -101,7 +101,8 @@ def detect_ram_gb(
     meminfo: Path = Path("/proc/meminfo"),
 ) -> float:
     if os_name == "macos":
-        result = run(["sysctl", "-n", "hw.memsize"])
+        # A pure read of the machine: nothing changed, so nothing is logged.
+        result = run(["sysctl", "-n", "hw.memsize"], log=False)
         return float(int(result.stdout.strip())) / 2**30
     if os_name == "linux":
         for line in meminfo.read_text().splitlines():

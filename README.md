@@ -141,7 +141,7 @@ You absolutely can. LePika drives [Ollama](https://ollama.com) and
 
 If you'd rather run the raw tools, their docs are excellent and LePika gets out of your
 way. And if you're curious what it's doing on your behalf, it's under a thousand lines
-of plain Python in [`src/lepika/`](src/lepika): two dependencies, no magic.
+of plain Python in [`src/lepika/`](src/lepika): three dependencies, no magic.
 
 ## Roadmap
 

@@ -186,7 +186,7 @@ def model_add(
 @model_app.command("list")
 def model_list() -> None:
     """List downloaded models."""
-    result = proc.run_logged(["ollama", "list"], check=False)
+    result = proc.run_logged(["ollama", "list"], check=False, log=False)
     if result.returncode != 0:
         # An unreachable engine looks identical to an empty list without this.
         console.print("Could not reach Ollama — run `lepika doctor`.", markup=False)

@@ -15,6 +15,7 @@ LePika CLI (Python, Typer + Rich)
  ├─ config.py   ~/.lepika/config.toml (flat, versioned, atomic writes)
  ├─ doctor.py   diagnostics; every ✗ ships a one-line fix
  ├─ proc.py     the single subprocess choke point (logged, friendly)
+ ├─ log.py      JSON-lines log, secret-looking keys redacted
  └─ cli.py      commands: up · down · status · logs · model · doctor · update
 State: ~/.lepika/ (override with LEPIKA_HOME)
 ```
@@ -25,9 +26,9 @@ State: ~/.lepika/ (override with LEPIKA_HOME)
 
 These are load-bearing; changes should preserve them.
 
-1. **Two runtime dependencies** — typer and rich. Stdlib for everything else (urllib, tomllib, ctypes, socket).
+1. **Three runtime dependencies** — typer, rich, and structlog (JSON-lines log under `~/.lepika/logs/lepika.log`; keys named like secrets are redacted before they are written). Events are `area.action`; a line is written when something changed or failed, never for a pure read (`run_logged(..., log=False)`) and never for a health probe. Stdlib for everything else (urllib, tomllib, ctypes, socket, json, secrets).
 2. **Every user-reachable failure is a `FriendlyError(problem, fix)`** — one red line, one suggested next step, never a traceback. `proc.run_logged` converts nonzero exits, missing binaries, and timeouts; everything else raises it deliberately.
-3. **Every external effect is an injected callable** (`run`, `which`, `popen`, `urlopen`, `sleep`, `call`, `kill`, `bind`). The test suite (111 tests) runs in under a second with no network, no Docker, and no real processes — and an autouse fixture points `LEPIKA_HOME` at a temp dir so tests can never touch a real `~/.lepika`.
+3. **Every external effect is an injected callable** (`run`, `which`, `popen`, `urlopen`, `sleep`, `call`, `kill`, `bind`). The test suite (118 tests) runs in under a second with no network, no Docker, and no real processes — and an autouse fixture points `LEPIKA_HOME` at a temp dir so tests can never touch a real `~/.lepika`.
 4. **Model refs, one field, three shapes:** `qwen3:8b` (Ollama tag) · `hf.co/<org>/<repo>-GGUF` (Ollama pulls from Hugging Face) · `<org>/<repo>` (full weights → vLLM, Server mode; rejected today with a GGUF hint).
 5. **The curated list is data, not code.** `models.toml` ships in the wheel and is re-fetched from `main` at runtime (3s timeout). Remote content is untrusted: unknown keys are dropped, bad types and missing fields skip the entry, parse errors fall back to the bundled copy. The bundled copy parses strictly so defects fail in CI.
 6. **Health-check first, act second.** A healthy `lepika up` makes zero subprocess calls and works offline. Restarts wait for the old server to actually die before declaring victory.

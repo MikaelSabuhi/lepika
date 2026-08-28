@@ -14,7 +14,48 @@ def test_run_logged_captures_output_and_appends_log(isolated_home: Path) -> None
     assert result.returncode == 0
     assert "hello" in result.stdout
     log_text = (paths.logs_dir() / "lepika.log").read_text()
-    assert "hello" in log_text
+    assert "proc.run" in log_text
+
+
+def test_run_logged_records_a_structured_entry(isolated_home: Path) -> None:
+    import json
+
+    proc.run_logged([sys.executable, "-c", "print('hello')"])
+    lines = (paths.logs_dir() / "lepika.log").read_text().splitlines()
+    entry = json.loads(lines[-1])
+    assert entry["event"] == "proc.run"
+    assert entry["exit"] == 0
+    # Success is one clean line; command output is only kept for failures.
+    assert "output" not in entry
+
+
+def test_run_logged_keeps_output_only_for_failures(isolated_home: Path) -> None:
+    import json
+
+    proc.run_logged([sys.executable, "-c", "print('boom'); raise SystemExit(2)"], check=False)
+    entry = json.loads((paths.logs_dir() / "lepika.log").read_text().splitlines()[-1])
+    assert entry["exit"] == 2
+    assert "boom" in entry["output"]
+
+
+def test_run_logged_with_log_false_records_nothing_for_a_read(isolated_home: Path) -> None:
+    """Read-only commands (`ollama list`) change nothing, so they earn no log line."""
+    proc.run_logged([sys.executable, "-c", "print('hello')"], log=False)
+    log_path = paths.logs_dir() / "lepika.log"
+    assert not log_path.exists() or log_path.read_text() == ""
+
+
+def test_run_logged_with_log_false_still_records_failures(isolated_home: Path) -> None:
+    """`log=False` silences the success line only — a failure is always worth a line."""
+    import json
+
+    proc.run_logged(
+        [sys.executable, "-c", "print('boom'); raise SystemExit(2)"], check=False, log=False
+    )
+    entry = json.loads((paths.logs_dir() / "lepika.log").read_text().splitlines()[-1])
+    assert entry["event"] == "proc.run"
+    assert entry["exit"] == 2
+    assert "boom" in entry["output"]
 
 
 def test_run_logged_raises_friendly_error_on_failure(isolated_home: Path) -> None:

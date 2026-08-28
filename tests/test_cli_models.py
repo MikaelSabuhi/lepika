@@ -55,6 +55,26 @@ def test_model_list_shows_ollama_output(monkeypatch: pytest.MonkeyPatch) -> None
     assert "qwen3:8b" in result.output
 
 
+def test_model_list_empty_suggests_model_add(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(proc, "run_logged", fake_run)
+    result = runner.invoke(cli.app, ["model", "list"])
+    assert result.exit_code == 0
+    assert "ezai model add" in result.output
+
+
+def test_model_list_failure_points_at_doctor(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="connection refused")
+
+    monkeypatch.setattr(proc, "run_logged", fake_run)
+    result = runner.invoke(cli.app, ["model", "list"])
+    assert "ezai doctor" in result.output
+    assert "No models yet" not in result.output
+
+
 def test_model_rm_invokes_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 

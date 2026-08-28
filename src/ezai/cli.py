@@ -96,6 +96,26 @@ def logs(lines: int = typer.Option(50, help="Lines per log file.")) -> None:
             console.print(line, markup=False)
 
 
+@app.command()
+def doctor() -> None:
+    """Diagnose the local setup."""
+    # Imported here, not at module scope: keeps `ezai` startup off the check path.
+    from ezai import doctor as doctor_mod
+
+    info = detect.detect()
+    results = doctor_mod.run_checks(info)
+    core_failed = False
+    for r in results:
+        mark = "[green]✓[/green]" if r.ok else "[red]✗[/red]"
+        console.print(f"{mark} {r.name}")
+        if not r.ok:
+            console.print(f"  [yellow]→ {escape(r.hint)}[/yellow]")
+            if r.name != "RAM":
+                core_failed = True
+    if core_failed:
+        raise typer.Exit(code=1)
+
+
 model_app = typer.Typer(help="Add, list, or remove local models.")
 app.add_typer(model_app, name="model")
 
@@ -128,6 +148,10 @@ def model_add(
 def model_list() -> None:
     """List downloaded models."""
     result = proc.run_logged(["ollama", "list"], check=False)
+    if result.returncode != 0:
+        # An unreachable engine looks identical to an empty list without this.
+        console.print("Could not reach Ollama — run `ezai doctor`.", markup=False)
+        return
     console.print(result.stdout or "No models yet — run `ezai model add`.", markup=False)
 
 

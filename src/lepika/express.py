@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -201,9 +202,17 @@ def start_openwebui(
     engine_url: str,
     popen: PopenFn = subprocess.Popen,
     environ: Mapping[str, str] | None = None,
+    engine_key: str = "",
 ) -> int:
     env = dict(environ if environ is not None else os.environ)
     env["OLLAMA_BASE_URL"] = engine_url
+    # LePika owns the wiring: OpenWebUI otherwise persists whatever its admin panel
+    # saved on first run and ignores the env from then on, so `lepika connect` would
+    # move the engine everywhere except in the UI.
+    env["ENABLE_PERSISTENT_CONFIG"] = "false"
+    if engine_key:
+        # OpenWebUI keys its engines by index; ours is the only one.
+        env["OLLAMA_API_CONFIGS"] = json.dumps({"0": {"key": engine_key}})
     log = (logs_dir() / "openwebui.log").open("ab")
     try:
         proc_handle = popen(
@@ -298,7 +307,7 @@ def ensure_openwebui(
             f"Change webui_port in {config_path()} and run `lepika up` again.",
         )
     install_openwebui(run=run)
-    start_openwebui(cfg.webui_port, cfg.engine_url, popen=popen)
+    start_openwebui(cfg.webui_port, cfg.engine_url, popen=popen, engine_key=cfg.engine_key)
     wait_for(lambda: up(cfg.webui_port), 180, "OpenWebUI", sleep=sleep)
 
 
@@ -344,6 +353,17 @@ def restart_openwebui(
     ensure_openwebui(cfg, run=run, popen=popen, up=up_fn, sleep=sleep, bind_check=bind_check)
 
 
+def check_remote_engine(cfg: Config, api_up: Callable[..., bool] = detect.api_up) -> None:
+    """Confirm an engine we do not manage is answering — the only thing we may do to it."""
+    if api_up(cfg.engine_url, key=cfg.engine_key):
+        return
+    raise FriendlyError(
+        f"The engine at {cfg.engine_url} is not answering.",
+        "Make sure that machine is up (and `lepika expose` is on there), or run "
+        "`lepika connect --local` to go back to a local engine.",
+    )
+
+
 def start_stack(
     info: SystemInfo,
     cfg: Config,
@@ -356,8 +376,60 @@ def start_stack(
     wizard pulls a model here), then the UI that talks to it. `lepika up` passes no
     hook; the wizard passes its pull.
     """
-    ensure_ollama(info, url=cfg.engine_url)
+    if cfg.engine_managed:
+        ensure_ollama(info, url=cfg.engine_url)
+    else:
+        # Someone else runs this engine: never install or start anything for it.
+        check_remote_engine(cfg, api_up=detect.api_up)
     if after_engine is not None:
         after_engine()
     ensure_openwebui(cfg)
     return webui_url(cfg.webui_port)
+
+
+def stop(info: SystemInfo, cfg: Config) -> bool:
+    """`lepika down` in Express mode: stop OpenWebUI; Ollama stays as a shared service."""
+    # The port is what proves the recorded pid is still our OpenWebUI.
+    return stop_openwebui(info.os, port=cfg.webui_port)
+
+
+def update(
+    info: SystemInfo,
+    cfg: Config,
+    run: RunFn | None = None,
+    which: WhichFn | None = None,
+) -> None:
+    """`lepika update` in Express mode: upgrade the engine (if ours) and OpenWebUI.
+
+    Resolved at call time, not bound as defaults, so the injected callables stay
+    patchable from the module — the same reason `install_ollama` is called by name.
+    """
+    run_fn = run if run is not None else proc.run_logged
+    which_fn = which if which is not None else shutil.which
+    if cfg.engine_managed:
+        if info.os == "macos":
+            # No Homebrew means the Ollama.app installer, which updates itself.
+            if which_fn("brew") is not None:
+                # check=False: brew exits nonzero when ollama is already up to date.
+                run_fn(["brew", "upgrade", "ollama"], check=False)
+        elif info.os == "linux":
+            # Re-running the official script upgrades in place. Reused rather than
+            # restated: it must stream, because it may prompt for sudo.
+            install_ollama(info)
+        else:
+            # check=False: winget exits nonzero when no upgrade is available.
+            run_fn(["winget", "upgrade", "--id", "Ollama.Ollama", "-e"], check=False)
+    # check=False: uv exits nonzero when open-webui is already the latest version.
+    run_fn(["uv", "tool", "upgrade", "open-webui"], check=False)
+    # A restart, not a stop-then-probe: the upgraded build only takes effect once
+    # the old server is really gone.
+    restart_openwebui(cfg, info.os)
+
+
+def logs(lines: int) -> list[tuple[str, str]]:
+    """`lepika logs` in Express mode: the tail of every file under ~/.lepika/logs."""
+    out: list[tuple[str, str]] = []
+    for log_file in sorted(logs_dir().glob("*.log")):
+        content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        out.append((log_file.name, "\n".join(content[-lines:])))
+    return out

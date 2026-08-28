@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.metadata
-import shutil
 import webbrowser
 
 import typer
@@ -11,7 +10,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from lepika import config, detect, engine, express, models, paths, proc
+from lepika import config, detect, engine, express, log, models
 from lepika.errors import FriendlyError
 
 app = typer.Typer(
@@ -69,13 +68,11 @@ def up() -> None:
 
 @app.command()
 def down() -> None:
-    """Stop OpenWebUI (Ollama keeps running as a shared service)."""
-    info = detect.detect()
-    # The port is what proves the recorded pid is still our OpenWebUI.
-    if express.stop_openwebui(info.os, port=config.load().webui_port):
-        console.print("[green]✓ OpenWebUI stopped.[/green]")
+    """Stop the stack (Express: OpenWebUI only; Ollama keeps running as a shared service)."""
+    if express.stop(detect.detect(), config.load()):
+        console.print("[green]✓ Stopped.[/green]")
     else:
-        console.print("OpenWebUI was not running.")
+        console.print("Nothing was running.")
 
 
 @app.command()
@@ -85,9 +82,12 @@ def status() -> None:
     table = Table(title="lepika status")
     table.add_column("Service")
     table.add_column("State")
-    ollama_ok = detect.api_up(cfg.engine_url)
+    engine_ok = detect.api_up(cfg.engine_url, key=cfg.engine_key)
     webui_ok = express.webui_up(cfg.webui_port)
-    table.add_row("Ollama API", "[green]up[/green]" if ollama_ok else "[red]down[/red]")
+    table.add_row("Engine", "[green]up[/green]" if engine_ok else "[red]down[/red]")
+    # Which machine answered matters once the engine can live somewhere else.
+    where = cfg.engine_url + ("" if cfg.engine_managed else " (remote)")
+    table.add_row("Engine URL", escape(where))
     table.add_row("OpenWebUI", "[green]up[/green]" if webui_ok else "[red]down[/red]")
     table.add_row("Model", cfg.model or "[dim]not set[/dim]")
     console.print(table)
@@ -96,16 +96,14 @@ def status() -> None:
 @app.command()
 def logs(lines: int = typer.Option(50, min=1, help="Lines per log file.")) -> None:
     """Print the tail of LePika's log files."""
-    log_files = sorted(paths.logs_dir().glob("*.log"))
-    if not log_files:
+    sections = express.logs(lines)
+    if not sections:
         # Silence is indistinguishable from a broken command.
         console.print("(no logs yet)")
         return
-    for log_file in log_files:
-        console.rule(str(log_file.name))
-        content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
-        for line in content[-lines:]:
-            console.print(line, markup=False)
+    for title, text in sections:
+        console.rule(title)
+        console.print(text, markup=False)
 
 
 @app.command()
@@ -130,29 +128,65 @@ def doctor() -> None:
 
 @app.command()
 def update() -> None:
-    """Upgrade Ollama and OpenWebUI to their latest versions."""
-    info = detect.detect()
-    console.print("Upgrading Ollama…")
-    if info.os == "macos":
-        if shutil.which("brew") is not None:
-            # check=False: brew exits nonzero when ollama is already up to date.
-            proc.run_logged(["brew", "upgrade", "ollama"], check=False)
-        else:
-            console.print("Ollama.app updates itself — skipping engine upgrade.")
-    elif info.os == "linux":
-        # Re-running the official script upgrades in place. Reused rather than
-        # restated: it must stream, because it may prompt for sudo.
-        express.install_ollama(info)
-    else:
-        # check=False: winget exits nonzero when no upgrade is available.
-        proc.run_logged(["winget", "upgrade", "--id", "Ollama.Ollama", "-e"], check=False)
-    console.print("Upgrading OpenWebUI…")
-    # check=False: uv exits nonzero when open-webui is already the latest version.
-    proc.run_logged(["uv", "tool", "upgrade", "open-webui"], check=False)
-    # A restart, not a stop-then-probe: the upgraded build only takes effect once
-    # the old server is really gone.
-    express.restart_openwebui(config.load(), info.os)
+    """Upgrade the engine and OpenWebUI to their latest versions."""
+    console.print("Upgrading…")
+    express.update(detect.detect(), config.load())
     console.print("[green]✓ Everything is up to date and running.[/green]")
+
+
+def _repoint_webui(cfg: config.Config) -> bool:
+    """Re-point a running OpenWebUI at the engine just configured; did it restart?
+
+    OpenWebUI reads the engine URL and key from its environment once, at startup, so
+    a UI that is already up keeps talking to the old engine no matter what the config
+    says — and `lepika up` would not fix it, because a healthy UI is left alone. The
+    restart is what makes `lepika connect` take effect on a live stack.
+    """
+    if not express.webui_up(cfg.webui_port):
+        return False
+    express.restart_openwebui(cfg, detect.detect().os)
+    return True
+
+
+@app.command()
+def connect(
+    url: str | None = typer.Argument(None, help="Engine URL, e.g. http://gpu-box:11435"),
+    key: str = typer.Option("", "--key", help="API key, if the engine needs one."),
+    local: bool = typer.Option(False, "--local", help="Go back to the engine on this machine."),
+) -> None:
+    """Use an engine running on another machine (or --local to stop doing so)."""
+    cfg = config.load()
+    if local:
+        cfg.engine_managed, cfg.engine_url, cfg.engine_key = True, config.DEFAULT_ENGINE_URL, ""
+        config.save(cfg)
+        log.get_logger().info("engine.connect", url=cfg.engine_url, local=True)
+        if _repoint_webui(cfg):
+            console.print("[green]✓ Using the local engine again[/green] — OpenWebUI restarted.")
+        else:
+            console.print("[green]✓ Using the local engine again.[/green] Run `lepika up`.")
+        return
+    if url is None:
+        raise typer.BadParameter("Give an engine URL, or --local.")
+    url = url.rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        # `gpu-box:11435` parses as a scheme, so every probe of it fails obscurely.
+        raise FriendlyError(
+            "Engine URLs start with http:// or https://",
+            "Give the whole address, e.g. `lepika connect http://gpu-box:11435`.",
+        )
+    if not detect.api_up(url, key=key):
+        raise FriendlyError(
+            f"No engine answered at {url}.",
+            "Check the address and that `lepika expose` is on over there "
+            "(add --key if it printed one).",
+        )
+    cfg.engine_managed, cfg.engine_url, cfg.engine_key = False, url, key
+    config.save(cfg)
+    log.get_logger().info("engine.connect", url=url, key=key)
+    if _repoint_webui(cfg):
+        console.print(f"[green]✓ Connected to[/green] {escape(url)} — OpenWebUI restarted.")
+    else:
+        console.print(f"[green]✓ Connected to[/green] {escape(url)}. Run `lepika up`.")
 
 
 model_app = typer.Typer(help="Add, list, or remove local models.")
@@ -176,7 +210,11 @@ def model_add(
         # Same rejection as the wizard's, by reusing it rather than restating it.
         model_ref = wizard._validate(models.parse_model_ref(ref))
     cfg = config.load()
-    express.ensure_ollama(info, url=cfg.engine_url)
+    if cfg.engine_managed:
+        express.ensure_ollama(info, url=cfg.engine_url)
+    else:
+        # A remote engine is someone else's to run: check it, never install for it.
+        express.check_remote_engine(cfg, api_up=detect.api_up)
     engine.pull_model(cfg.engine_url, model_ref, key=cfg.engine_key)
     cfg.model = model_ref.raw
     config.save(cfg)

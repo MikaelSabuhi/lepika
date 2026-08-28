@@ -89,6 +89,7 @@ Ollama already installed? LePika reuses it instead of installing a second copy.
 | `lepika logs` | Print the tail of LePika's log files (`--lines`, default 50) |
 | `lepika doctor` | Diagnose the local setup; every ✗ comes with a one-line fix |
 | `lepika update` | Upgrade Ollama and OpenWebUI to their latest versions |
+| `lepika connect <url> [--key K]` | Use an engine on another machine (`--local` to go back) |
 | `lepika model add [ref]` | Download a model and make it the default (no ref → browse) |
 | `lepika model list` | List downloaded models (size, default marked) |
 | `lepika model rm <name>` | Remove a downloaded model |
@@ -114,6 +115,20 @@ points you at the GGUF build of the same model.
 
 Run `lepika model add` with no argument and you get the curated list filtered to your
 RAM, so there is no guessing whether a 27B fits in 16 GB.
+
+## Use a GPU box from your laptop
+
+The chat UI runs where you are; the models run where the GPU is.
+
+```sh
+lepika connect http://gpu-box:11435 --key <key>   # printed by `lepika expose` on the box
+lepika up                                          # UI here, models there
+lepika connect --local                             # back to this machine
+```
+
+LePika never installs or starts anything on an engine it didn't set up — it only
+checks that it answers, and says so plainly when it doesn't. If the chat UI is
+already running, `lepika connect` restarts it so the switch takes effect right away.
 
 ## Requirements
 
@@ -151,7 +166,6 @@ Express mode (above) is v0.1 and works today. Next up:
   with a **vLLM** profile for full-weight Hugging Face repos on Linux + NVIDIA.
 - **`lepika expose`** — serve the API to your network behind a generated API key
   (Caddy Bearer auth), instead of localhost only.
-- **`lepika connect <url>`** — point the UI at an engine running on another box.
 - **A published package** — so installing is a plain name instead of a repo URL.
   The install one-liners already work today either way.
 

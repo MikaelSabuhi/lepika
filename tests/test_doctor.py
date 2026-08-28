@@ -71,6 +71,24 @@ def test_checks_probe_the_configured_engine_url(isolated_home: Path) -> None:
     assert probed == ["http://gpu-box.local:11434"]
 
 
+def test_remote_engine_skips_the_local_install_check_and_uses_the_key(isolated_home: Path) -> None:
+    """A remote engine is someone else's to install — only whether it answers is ours."""
+    from lepika import config
+
+    config.save(
+        config.Config(engine_managed=False, engine_url="http://gpu-box:11435", engine_key="k")
+    )
+    seen: list[str] = []
+    results = doctor.run_checks(
+        info(has_ollama=False),
+        which=lambda n: f"/usr/bin/{n}",
+        api_up=lambda url, key="", **k: bool(seen.append(key)) or True,
+        webui_up=lambda port, **k: True,
+    )
+    assert "Ollama installed" not in {r.name for r in results}
+    assert seen == ["k"]
+
+
 def test_doctor_command_exits_zero_when_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(detect, "detect", lambda **k: info())
     monkeypatch.setattr(
@@ -90,7 +108,7 @@ def test_doctor_command_fails_on_core_check_and_prints_hint(
     monkeypatch.setattr(
         doctor,
         "run_checks",
-        lambda i, **k: [doctor.CheckResult("Ollama API responding", False, "Run `lepika up`")],
+        lambda i, **k: [doctor.CheckResult("Engine responding", False, "Run `lepika up`")],
     )
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 1

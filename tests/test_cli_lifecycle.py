@@ -78,6 +78,15 @@ def test_down_stops_webui(quiet_stack: dict[str, int]) -> None:
     result = runner.invoke(cli.app, ["down"])
     assert result.exit_code == 0
     assert quiet_stack["stop"] == 1
+    assert "Stopped." in result.output
+
+
+def test_down_says_so_when_nothing_was_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(express, "stop_openwebui", lambda os_name, **k: False)
+    result = runner.invoke(cli.app, ["down"])
+    assert result.exit_code == 0
+    assert "Nothing was running." in result.output
 
 
 def test_status_reports_services(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> None:
@@ -100,6 +109,33 @@ def test_status_probes_the_configured_engine_url(
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0
     assert probed == ["http://gpu-box.local:11434"]
+
+
+def test_status_shows_the_engine_url_and_says_when_it_is_remote(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """With a remote engine, "Engine: up" alone hides which machine answered."""
+    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    config.save(config.Config(engine_managed=False, engine_url="http://gpu-box:11435"))
+    result = runner.invoke(cli.app, ["status"])
+    assert result.exit_code == 0
+    assert "http://gpu-box:11435" in result.output
+    assert "remote" in result.output
+
+
+def test_status_probes_a_keyed_engine_with_its_key(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """A keyed engine rejects an unauthenticated probe, so status would call it down."""
+    seen: list[str] = []
+    monkeypatch.setattr(detect, "api_up", lambda url, key="", **k: bool(seen.append(key)) or True)
+    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    config.save(
+        config.Config(engine_managed=False, engine_url="http://gpu-box:11435", engine_key="k")
+    )
+    runner.invoke(cli.app, ["status"])
+    assert seen == ["k"]
 
 
 def test_up_points_the_engine_check_at_the_configured_url(

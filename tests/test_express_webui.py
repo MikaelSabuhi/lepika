@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import signal
 import socket
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 
 from lepika import express, paths
 from lepika.config import Config
+from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 
 
@@ -40,6 +42,58 @@ def test_start_openwebui_sets_engine_env_and_writes_pidfile(isolated_home: Path)
     assert popen.envs[0]["OLLAMA_BASE_URL"] == "http://127.0.0.1:11434"
     assert "open-webui" in " ".join(popen.calls[0])
     popen.kwargs[0]["stdout"].close()
+
+
+def test_start_openwebui_makes_env_win_over_the_saved_admin_config(isolated_home: Path) -> None:
+    """OpenWebUI persists its admin panel's engine URL and would ignore ours on restart."""
+    popen = PopenRecorder()
+    express.start_openwebui(3000, "http://gpu-box:11435", popen=popen, environ={})
+    assert popen.envs[0] is not None
+    assert popen.envs[0]["ENABLE_PERSISTENT_CONFIG"] == "false"
+    popen.kwargs[0]["stdout"].close()
+
+
+def test_start_openwebui_passes_the_engine_key_to_openwebui(isolated_home: Path) -> None:
+    popen = PopenRecorder()
+    express.start_openwebui(3000, "http://gpu-box:11435", popen=popen, environ={}, engine_key="k")
+    assert popen.envs[0] is not None
+    assert json.loads(popen.envs[0]["OLLAMA_API_CONFIGS"]) == {"0": {"key": "k"}}
+    popen.kwargs[0]["stdout"].close()
+
+
+def test_start_openwebui_omits_the_key_config_when_there_is_no_key(isolated_home: Path) -> None:
+    popen = PopenRecorder()
+    express.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
+    assert popen.envs[0] is not None
+    assert "OLLAMA_API_CONFIGS" not in popen.envs[0]
+    popen.kwargs[0]["stdout"].close()
+
+
+def test_stop_is_the_backend_stop_for_express(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`lepika down` in Express stops the UI only — Ollama is a shared service."""
+    info = SystemInfo(
+        os="linux",
+        arch="x86_64",
+        gpu="none",
+        ram_gb=16.0,
+        has_docker=False,
+        has_ollama=True,
+        ollama_running=True,
+    )
+    seen: list[tuple[str, int | None]] = []
+    monkeypatch.setattr(
+        express,
+        "stop_openwebui",
+        lambda os_name, port=None, **k: bool(seen.append((os_name, port))) or True,
+    )
+    assert express.stop(info, Config(webui_port=3210)) is True
+    assert seen == [("linux", 3210)]
+
+
+def test_logs_returns_the_tail_of_every_log_file(isolated_home: Path) -> None:
+    (paths.logs_dir() / "ollama.log").write_text("one\ntwo\nthree\n")
+    (paths.logs_dir() / "openwebui.log").write_text("only\n")
+    assert express.logs(2) == [("ollama.log", "two\nthree"), ("openwebui.log", "only")]
 
 
 def test_start_openwebui_missing_uv_is_friendly(isolated_home: Path) -> None:

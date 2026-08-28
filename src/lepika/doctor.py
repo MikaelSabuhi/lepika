@@ -27,21 +27,30 @@ def run_checks(
     webui_up: Callable[..., bool] = express.webui_up,
 ) -> list[CheckResult]:
     cfg = config.load()
-    return [
+    checks = [
         CheckResult(
             "uv installed",
             which("uv") is not None,
             "Install uv: https://docs.astral.sh/uv/getting-started/installation/",
         ),
+    ]
+    if cfg.engine_managed:
+        # Only asked when the engine is ours to install: a remote one is not.
+        checks.append(
+            CheckResult(
+                "Ollama installed",
+                info.has_ollama,
+                "Run `lepika` to install it, or see https://ollama.com/download",
+            )
+        )
+    checks += [
         CheckResult(
-            "Ollama installed",
-            info.has_ollama,
-            "Run `lepika` to install it, or see https://ollama.com/download",
-        ),
-        CheckResult(
-            "Ollama API responding",
-            api_up(cfg.engine_url),
-            "Run `lepika up` to start it; logs: `lepika logs`",
+            "Engine responding",
+            api_up(cfg.engine_url, key=cfg.engine_key),
+            "Run `lepika up` to start it; logs: `lepika logs`"
+            if cfg.engine_managed
+            else f"{cfg.engine_url} is not answering — check that machine, "
+            "or `lepika connect --local`",
         ),
         CheckResult(
             "OpenWebUI responding",
@@ -55,3 +64,4 @@ def run_checks(
             "models like qwen3:0.6b or llama3.2:3b",
         ),
     ]
+    return checks

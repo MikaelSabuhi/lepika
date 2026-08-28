@@ -16,7 +16,7 @@ LePika CLI (Python, Typer + Rich)
  ├─ doctor.py   diagnostics; every ✗ ships a one-line fix
  ├─ proc.py     the single subprocess choke point (logged, friendly)
  ├─ log.py      JSON-lines log, secret-looking keys redacted
- └─ cli.py      commands: up · down · status · logs · model · doctor · update
+ └─ cli.py      commands: up · down · status · logs · model · doctor · update · connect
 State: ~/.lepika/ (override with LEPIKA_HOME)
 ```
 
@@ -28,7 +28,7 @@ These are load-bearing; changes should preserve them.
 
 1. **Three runtime dependencies** — typer, rich, and structlog (JSON-lines log under `~/.lepika/logs/lepika.log`; keys named like secrets are redacted before they are written). Events are `area.action`; a line is written when something changed or failed, never for a pure read (`run_logged(..., log=False)`) and never for a health probe. Stdlib for everything else (urllib, tomllib, ctypes, socket, json, secrets).
 2. **Every user-reachable failure is a `FriendlyError(problem, fix)`** — one red line, one suggested next step, never a traceback. `proc.run_logged` converts nonzero exits, missing binaries, and timeouts; everything else raises it deliberately.
-3. **Every external effect is an injected callable** (`run`, `which`, `popen`, `urlopen`, `sleep`, `call`, `kill`, `bind`). The test suite (118 tests) runs in under a second with no network, no Docker, and no real processes — and an autouse fixture points `LEPIKA_HOME` at a temp dir so tests can never touch a real `~/.lepika`.
+3. **Every external effect is an injected callable** (`run`, `which`, `popen`, `urlopen`, `sleep`, `call`, `kill`, `bind`). The test suite (161 tests) runs in under a second with no network, no Docker, and no real processes — and an autouse fixture points `LEPIKA_HOME` at a temp dir so tests can never touch a real `~/.lepika`.
 4. **Model refs, one field, three shapes:** `qwen3:8b` (Ollama tag) · `hf.co/<org>/<repo>-GGUF` (Ollama pulls from Hugging Face) · `<org>/<repo>` (full weights → vLLM, Server mode; rejected today with a GGUF hint).
 5. **The curated list is data, not code.** `models.toml` ships in the wheel and is re-fetched from `main` at runtime (3s timeout). Remote content is untrusted: unknown keys are dropped, bad types and missing fields skip the entry, parse errors fall back to the bundled copy. The bundled copy parses strictly so defects fail in CI.
 6. **Health-check first, act second.** A healthy `lepika up` makes zero subprocess calls and works offline. Restarts wait for the old server to actually die before declaring victory.
@@ -39,5 +39,7 @@ These are load-bearing; changes should preserve them.
 - **PyPI:** LePika is not published to PyPI yet. Installers therefore install from this repository (`git+https://…`) and must never install a bare name we don't own. Publishing requires registering the distribution name first.
 - **Ports:** conflict detection probes both `0.0.0.0` and `127.0.0.1` (macOS lets loopback bind over a wildcard listener) and uses `SO_EXCLUSIVEADDRUSE` on Windows.
 - **`ollama` and `open-webui` track latest** by design; `lepika update` is the refresh path. Breakage from upstream is caught by tests + (planned) scheduled smoke runs.
+- **OpenWebUI persists its own config:** the first run stores the engine URL from its admin panel and ignores the environment afterwards, so LePika starts it with `ENABLE_PERSISTENT_CONFIG=false` (and `OLLAMA_API_CONFIGS` when the engine needs a key) — otherwise `lepika connect` would move the engine everywhere except in the UI. The environment is read once, at startup, so `lepika connect` also restarts a UI that is already up: `lepika up` alone would leave the healthy old process pointed at the old engine.
 - **Known trade-off:** `lepika down` treats a hung-but-alive webui as stale (won't signal it). Follow-up idea: pid liveness fallback.
-- Remote engines (`lepika connect`), network exposure with API keys (`lepika expose`), vLLM, and the compose stack are Server-mode scope — planned, not present. `config.engine_url` is already honored by status/doctor/engine checks in preparation.
+- **Managed vs. remote engines.** `config.engine_managed` splits them: managed means LePika installs and starts the engine, remote (`lepika connect`) means someone else runs it and LePika may only check that it answers — never install, never start, never stop. `express` exposes one backend surface — `start_stack` / `stop` / `update` / `logs` — that the CLI drives; the planned Server mode mirrors it rather than adding per-command branches.
+- Network exposure with API keys (`lepika expose`), vLLM, and the compose stack are Server-mode scope — planned, not present.

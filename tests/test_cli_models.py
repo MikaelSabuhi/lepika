@@ -44,6 +44,19 @@ def test_model_add_rejects_full_weight_repo(fake_engine: list[str], isolated_hom
     assert fake_engine == []
 
 
+def test_model_add_never_installs_an_engine_someone_else_runs(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    config.save(config.Config(engine_managed=False, engine_url="http://gpu-box:11435"))
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(express, "ensure_ollama", lambda *a, **k: pytest.fail("must not install"))
+    monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: None)
+    result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
+    assert result.exit_code == 0
+    assert config.load().model == "qwen3:8b"
+
+
 def test_model_list_shows_a_table_with_the_default_marked(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:

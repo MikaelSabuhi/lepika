@@ -52,6 +52,18 @@ def test_ram_linux_reads_meminfo(tmp_path: Path) -> None:
     assert ram == pytest.approx(16384000 / 2**20)
 
 
+def test_windows_ram_converts_bytes_to_gb() -> None:
+    assert detect._windows_ram_gb(status=lambda: (True, 16 * 2**30)) == pytest.approx(16.0)
+
+
+def test_windows_ram_raises_when_the_memory_api_fails() -> None:
+    """GlobalMemoryStatusEx returns a BOOL; ignoring it reports a 0 GB machine."""
+    with pytest.raises(FriendlyError) as exc:
+        detect._windows_ram_gb(status=lambda: (False, 0))
+    assert "memory" in exc.value.problem
+    assert "ezai doctor" in exc.value.fix
+
+
 def test_api_up_true_and_false() -> None:
     def ok(url: str, timeout: float = 0) -> Any:
         class R:

@@ -40,7 +40,7 @@ def run_checks(
         ),
         CheckResult(
             "Ollama API responding",
-            api_up(detect.OLLAMA_URL),
+            api_up(cfg.engine_url),
             "Run `ezai up` to start it; logs: `ezai logs`",
         ),
         CheckResult(

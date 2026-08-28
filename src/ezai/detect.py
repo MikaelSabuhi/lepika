@@ -58,7 +58,8 @@ def detect_gpu(
     return "none"
 
 
-def _windows_ram_gb() -> float:
+def _global_memory_status() -> tuple[bool, int]:  # pragma: no cover - Windows only
+    """Call GlobalMemoryStatusEx, returning (succeeded, total physical bytes)."""
     import ctypes
 
     class MemoryStatusEx(ctypes.Structure):
@@ -76,8 +77,22 @@ def _windows_ram_gb() -> float:
 
     stat = MemoryStatusEx()
     stat.dwLength = ctypes.sizeof(MemoryStatusEx)
-    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))  # type: ignore[attr-defined]
-    return float(stat.ullTotalPhys) / 2**30
+    ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))  # type: ignore[attr-defined]
+    return bool(ok), int(stat.ullTotalPhys)
+
+
+def _windows_ram_gb(status: Callable[[], tuple[bool, int]] | None = None) -> float:
+    # GlobalMemoryStatusEx signals failure through its BOOL return, leaving the
+    # struct untouched. Ignoring it reported a 0 GB machine, which silently
+    # filtered the curated list down to nothing.
+    reader = status if status is not None else _global_memory_status
+    ok, total_bytes = reader()
+    if not ok:
+        raise FriendlyError(
+            "Could not detect system memory.",
+            "Re-run `ezai`; if this persists, file an issue with `ezai doctor` output.",
+        )
+    return float(total_bytes) / 2**30
 
 
 def detect_ram_gb(

@@ -35,7 +35,11 @@ def _dump_toml(data: dict[str, object]) -> str:
         elif isinstance(value, int | float):
             lines.append(f"{key} = {value}")
         else:
-            lines.append(f'{key} = "{value}"')
+            # A free-form model ref is user input and may contain `"` or `\`.
+            # Unescaped, either one writes a config.toml that no longer parses —
+            # and `load` then refuses to read the file it just wrote.
+            text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+            lines.append(f'{key} = "{text}"')
     return "\n".join(lines) + "\n"
 
 

@@ -49,24 +49,30 @@ def _open_browser(url: str) -> None:
     webbrowser.open(url)
 
 
+def _ready(cfg: config.Config, url: str) -> None:
+    """Announce a running stack and open it — shared by `ezai up` and the wizard."""
+    console.print(f"[green]✓ Ready:[/green] {url}")
+    if not cfg.model:
+        # A chat UI with no model behind it looks broken; say what's missing.
+        console.print("No model yet — run `ezai` or `ezai model add`.")
+    _open_browser(url)
+
+
 @app.command()
 def up() -> None:
     """Start the local AI stack and open the browser."""
     info = detect.detect()
     console.print(detect.plan_sentence(info))
     cfg = config.load()
-    express.ensure_ollama(info)
-    express.ensure_openwebui(cfg)
-    url = express.webui_url(cfg.webui_port)
-    console.print(f"[green]✓ Ready:[/green] {url}")
-    _open_browser(url)
+    _ready(cfg, express.start_stack(info, cfg))
 
 
 @app.command()
 def down() -> None:
     """Stop OpenWebUI (Ollama keeps running as a shared service)."""
     info = detect.detect()
-    if express.stop_openwebui(info.os):
+    # The port is what proves the recorded pid is still our OpenWebUI.
+    if express.stop_openwebui(info.os, port=config.load().webui_port):
         console.print("[green]✓ OpenWebUI stopped.[/green]")
     else:
         console.print("OpenWebUI was not running.")
@@ -79,7 +85,7 @@ def status() -> None:
     table = Table(title="ezai status")
     table.add_column("Service")
     table.add_column("State")
-    ollama_ok = detect.api_up(detect.OLLAMA_URL)
+    ollama_ok = detect.api_up(cfg.engine_url)
     webui_ok = express.webui_up(cfg.webui_port)
     table.add_row("Ollama API", "[green]up[/green]" if ollama_ok else "[red]down[/red]")
     table.add_row("OpenWebUI", "[green]up[/green]" if webui_ok else "[red]down[/red]")
@@ -88,9 +94,14 @@ def status() -> None:
 
 
 @app.command()
-def logs(lines: int = typer.Option(50, help="Lines per log file.")) -> None:
+def logs(lines: int = typer.Option(50, min=1, help="Lines per log file.")) -> None:
     """Print the tail of ezai's log files."""
-    for log_file in sorted(paths.logs_dir().glob("*.log")):
+    log_files = sorted(paths.logs_dir().glob("*.log"))
+    if not log_files:
+        # Silence is indistinguishable from a broken command.
+        console.print("(no logs yet)")
+        return
+    for log_file in log_files:
         console.rule(str(log_file.name))
         content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
         for line in content[-lines:]:
@@ -138,8 +149,9 @@ def update() -> None:
     console.print("Upgrading OpenWebUI…")
     # check=False: uv exits nonzero when open-webui is already the latest version.
     proc.run_logged(["uv", "tool", "upgrade", "open-webui"], check=False)
-    express.stop_openwebui(info.os)
-    express.ensure_openwebui(config.load())
+    # A restart, not a stop-then-probe: the upgraded build only takes effect once
+    # the old server is really gone.
+    express.restart_openwebui(config.load(), info.os)
     console.print("[green]✓ Everything is up to date and running.[/green]")
 
 
@@ -163,9 +175,9 @@ def model_add(
     else:
         # Same rejection as the wizard's, by reusing it rather than restating it.
         model_ref = wizard._validate(models.parse_model_ref(ref))
-    express.ensure_ollama(info)
-    express.pull_model(model_ref)
     cfg = config.load()
+    express.ensure_ollama(info, url=cfg.engine_url)
+    express.pull_model(model_ref)
     cfg.model = model_ref.raw
     config.save(cfg)
     console.print(f"[green]✓ Added:[/green] {escape(model_ref.raw)}")

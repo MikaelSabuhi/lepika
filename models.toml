@@ -36,7 +36,7 @@ min_ram_gb = 16
 [[models]]
 name = "GPT-OSS 20B — OpenAI open-weight"
 ref = "gpt-oss:20b"
-min_ram_gb = 16
+min_ram_gb = 20
 
 [[models]]
 name = "Gemma 3 27B — high quality"
@@ -51,4 +51,4 @@ min_ram_gb = 32
 [[models]]
 name = "Llama 3.3 70B — flagship class"
 ref = "llama3.3:70b"
-min_ram_gb = 48
+min_ram_gb = 64

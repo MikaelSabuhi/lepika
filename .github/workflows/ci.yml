@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
 
+# Least privilege: these jobs only ever read the checked-out repository.
+permissions:
+  contents: read
+
 jobs:
   checks:
     runs-on: ubuntu-latest

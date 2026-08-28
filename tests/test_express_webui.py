@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import signal
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,160 @@ def test_stop_openwebui_permission_error_is_not_fatal(isolated_home: Path) -> No
     assert not pf.exists()
 
 
+def test_stop_openwebui_stale_pidfile_is_never_signalled(isolated_home: Path) -> None:
+    """After a reboot the recorded pid can belong to a stranger — the port decides."""
+    pf = paths.pid_file("openwebui")
+    pf.write_text("4242")
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("must not signal a process we cannot confirm is ours")
+
+    stopped = express.stop_openwebui("linux", kill=never, port=3000, up=lambda port, **k: False)
+    assert stopped is False
+    assert not pf.exists()
+
+
+def test_stop_openwebui_signals_when_the_port_answers(isolated_home: Path) -> None:
+    """The healthy path is unchanged: a live OpenWebUI on our port still gets SIGTERM."""
+    paths.pid_file("openwebui").write_text("4242")
+    killed: list[tuple[int, int]] = []
+    stopped = express.stop_openwebui(
+        "linux",
+        kill=lambda pid, sig: killed.append((pid, sig)),
+        port=3000,
+        up=lambda port, **k: True,
+    )
+    assert stopped is True
+    assert killed == [(4242, signal.SIGTERM)]
+    assert not paths.pid_file("openwebui").exists()
+
+
+def test_restart_openwebui_waits_for_the_old_server_to_die_before_starting(
+    isolated_home: Path,
+) -> None:
+    """`ezai update` must not probe the dying server and call it 'already running'."""
+    paths.pid_file("openwebui").write_text("4242")
+    events: list[str] = []
+    popen = PopenRecorder()
+    lingering = {"probes": 0}
+
+    def up(port: int, **k: Any) -> bool:
+        events.append("probe")
+        if "start" in events:
+            return True
+        # Still answering for a few probes after the SIGTERM, then gone.
+        lingering["probes"] += 1
+        return lingering["probes"] <= 4
+
+    def record_popen(cmd: list[str], **k: Any) -> FakeProc:
+        events.append("start")
+        return popen(cmd, **k)
+
+    express.restart_openwebui(
+        Config(),
+        "linux",
+        run=lambda cmd, **k: events.append("install"),
+        popen=record_popen,
+        up=up,
+        sleep=lambda s: None,
+        kill=lambda pid, sig: events.append("kill"),
+        bind_check=lambda port: True,
+    )
+    assert "kill" in events
+    # 4 lingering "yes" answers had to be outwaited, not believed: the staleness
+    # gate, four probes that still saw the dying server, and the one that finally
+    # saw it gone — then ensure_openwebui's own probe before it starts anything.
+    assert lingering["probes"] == 6
+    assert events.index("kill") < events.index("install") < events.index("start")
+    popen.kwargs[0]["stdout"].close()
+
+
+def test_restart_openwebui_raises_when_the_old_server_never_dies(
+    isolated_home: Path,
+) -> None:
+    paths.pid_file("openwebui").write_text("4242")
+    with pytest.raises(FriendlyError) as exc:
+        express.restart_openwebui(
+            Config(webui_port=3210),
+            "linux",
+            run=lambda cmd, **k: None,
+            popen=lambda *a, **k: pytest.fail("must not start a second server"),
+            up=lambda port, **k: True,
+            sleep=lambda s: None,
+            kill=lambda pid, sig: None,
+            bind_check=lambda port: True,
+        )
+    assert "3210" in exc.value.problem or "3210" in exc.value.fix
+
+
+def test_port_free_sees_a_listener_bound_to_the_wildcard_address() -> None:
+    """Measured on Darwin: with SO_REUSEADDR, 127.0.0.1 binds happily over 0.0.0.0.
+
+    Probing only the loopback address therefore called a genuinely taken port free
+    and let the install/start run into a conflict it had just declared impossible.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        holder.bind(("0.0.0.0", 0))
+        holder.listen(1)
+        port = int(holder.getsockname()[1])
+        assert express.port_free(port, sleep=lambda s: None) is False
+
+
+@pytest.mark.parametrize("busy", ["0.0.0.0", "127.0.0.1"])
+def test_bind_once_calls_a_port_busy_when_either_address_is_taken(busy: str) -> None:
+    def bind(address: str, port: int) -> bool:
+        return address != busy
+
+    assert express._bind_once(3000, bind_address=bind) is False
+
+
+def test_bind_once_probes_both_addresses_before_calling_a_port_free() -> None:
+    probed: list[str] = []
+
+    def bind(address: str, port: int) -> bool:
+        probed.append(address)
+        return True
+
+    assert express._bind_once(3000, bind_address=bind) is True
+    assert probed == ["0.0.0.0", "127.0.0.1"]
+
+
+def test_port_free_retries_before_calling_a_port_busy() -> None:
+    """A port we just stopped serving can need a moment to be released."""
+    attempts = {"n": 0}
+
+    def bind(port: int) -> bool:
+        attempts["n"] += 1
+        return attempts["n"] >= 3
+
+    assert express.port_free(3000, bind=bind, sleep=lambda s: None) is True
+    assert attempts["n"] == 3
+
+
+def test_port_free_gives_up_on_a_genuinely_busy_port() -> None:
+    assert express.port_free(3000, bind=lambda port: False, sleep=lambda s: None) is False
+
+
+def test_ensure_openwebui_rejects_a_port_another_app_holds(isolated_home: Path) -> None:
+    """A busy port must be named, not hidden behind a 180s 'did not become ready'."""
+
+    def never(*a: Any, **k: Any) -> Any:
+        raise AssertionError("must not install or start when the port is taken")
+
+    with pytest.raises(FriendlyError) as exc:
+        express.ensure_openwebui(
+            Config(webui_port=3210),
+            run=never,
+            popen=never,
+            up=lambda port, **k: False,
+            sleep=lambda s: None,
+            bind_check=lambda port: False,
+        )
+    assert "3210" in exc.value.problem
+    assert "webui_port" in exc.value.fix
+
+
 def test_ensure_openwebui_noop_when_healthy(isolated_home: Path) -> None:
     """A healthy OpenWebUI must cost nothing: no install round-trip, no start."""
 
@@ -144,6 +299,7 @@ def test_ensure_openwebui_installs_then_starts_then_waits(isolated_home: Path) -
         popen=record_popen,
         up=up,
         sleep=lambda s: None,
+        bind_check=lambda port: True,
     )
     kinds = [e.split(":")[0] for e in events]
     assert kinds == ["probe", "install", "start", "probe"]

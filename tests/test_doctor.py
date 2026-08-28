@@ -56,6 +56,21 @@ def test_low_ram_is_flagged(isolated_home: Path) -> None:
     assert ram_check.ok is False
 
 
+def test_checks_probe_the_configured_engine_url(isolated_home: Path) -> None:
+    """A remote engine must be diagnosed where it actually lives, not on localhost."""
+    from ezai import config
+
+    config.save(config.Config(engine_url="http://gpu-box.local:11434"))
+    probed: list[str] = []
+    doctor.run_checks(
+        info(),
+        which=lambda n: f"/usr/bin/{n}",
+        api_up=lambda url, **k: bool(probed.append(url)),
+        webui_up=lambda port, **k: True,
+    )
+    assert probed == ["http://gpu-box.local:11434"]
+
+
 def test_doctor_command_exits_zero_when_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(detect, "detect", lambda **k: info())
     monkeypatch.setattr(

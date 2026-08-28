@@ -54,6 +54,13 @@ def test_save_keeps_previous_config_when_write_fails(
     assert config.load() == original
 
 
+def test_save_escapes_quotes_and_backslashes_in_strings(isolated_home: Path) -> None:
+    """A free-form model ref may contain `"` or `\\`; an unescaped one corrupts the file."""
+    cfg = config.Config(model='we"ird\\ref')
+    config.save(cfg)
+    assert config.load() == cfg
+
+
 def test_load_drops_unknown_keys(isolated_home: Path) -> None:
     config.config_path().write_text('schema_version = 1\nmode = "express"\nfuture_option = "x"\n')
     cfg = config.load()

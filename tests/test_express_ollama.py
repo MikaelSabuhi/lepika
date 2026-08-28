@@ -139,6 +139,22 @@ def test_ensure_ollama_skips_install_and_start_when_running() -> None:
     assert run.calls == []
 
 
+def test_ensure_ollama_probes_the_url_it_is_given() -> None:
+    """A configured remote engine must be probed there, not on the local default."""
+    probed: list[str] = []
+
+    express.ensure_ollama(
+        info_for("linux", has_ollama=True),
+        run=RunRecorder(),
+        which=lambda n: None,
+        popen=lambda *a, **k: pytest.fail("should not start a local engine"),
+        api_up=lambda url, **k: bool(probed.append(url)) or True,
+        sleep=lambda s: None,
+        url="http://gpu-box.local:11434",
+    )
+    assert probed == ["http://gpu-box.local:11434"]
+
+
 def test_wait_for_raises_after_timeout() -> None:
     with pytest.raises(FriendlyError):
         express.wait_for(lambda: False, seconds=3, what="Ollama API", sleep=lambda s: None)

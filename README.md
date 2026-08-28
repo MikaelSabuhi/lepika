@@ -13,8 +13,9 @@ No Docker, no API keys, no monthly bill, and nothing you type ever leaves the bo
 
 ## Install
 
-> **v0.1 is landing.** The one-liners below go live the moment ezai hits PyPI.
-> Until then, use [**Run it today**](#run-it-today): same wizard, one extra line.
+> **v0.1 is landing.** The one-liners below work today — they install straight
+> from this repository. A published package is planned; until then, installing by
+> name would fetch someone else's project, so ezai never does.
 
 **Mac / Linux**
 
@@ -28,19 +29,24 @@ curl -fsSL https://raw.githubusercontent.com/MikaelSabuhi/ezaiselfhost/main/inst
 irm https://raw.githubusercontent.com/MikaelSabuhi/ezaiselfhost/main/install.ps1 | iex
 ```
 
-**Already have [uv](https://docs.astral.sh/uv/)?** *(soon — after our first PyPI release)*
+**Already have [uv](https://docs.astral.sh/uv/)?**
 
 ```sh
-uvx ezai
+uv tool install git+https://github.com/MikaelSabuhi/ezaiselfhost
 ```
+
+A published package will shorten this to a plain name once one exists.
+
+ezai installs into `~/.local/bin`. If a new terminal can't find the `ezai` command,
+add that directory to your `PATH` or restart your shell.
 
 That's it. ezai detects your OS, GPU, and RAM, offers the models that actually fit
 your machine, installs [Ollama](https://ollama.com) + [OpenWebUI](https://openwebui.com),
 pulls your pick, and opens the chat UI at `http://localhost:3000`.
 
-### Run it today
+### From a clone
 
-Works right now, straight from the repo:
+Prefer to read the source first, or hack on it:
 
 ```sh
 git clone https://github.com/MikaelSabuhi/ezaiselfhost
@@ -141,8 +147,8 @@ Express mode (above) is v0.1 and works today. Next up:
 - **`ezai expose`** — serve the API to your network behind a generated API key
   (Caddy Bearer auth), instead of localhost only.
 - **`ezai connect <url>`** — point the UI at an engine running on another box.
-- **PyPI** — v0.1 publishes to PyPI, which switches on the install one-liners and
-  `uvx ezai`.
+- **A published package** — so installing is a plain name instead of a repo URL.
+  The install one-liners already work today either way.
 
 Star the repo to follow along, or open an issue with what you'd want next.
 

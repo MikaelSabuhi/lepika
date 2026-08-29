@@ -15,6 +15,7 @@ def test_connect_stores_url_key_and_marks_engine_remote(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(express, "webui_up", lambda port, **k: False)
     result = runner.invoke(cli.app, ["connect", "http://gpu-box:11435", "--key", "s3cret"])
     assert result.exit_code == 0
     cfg = config.load()
@@ -28,6 +29,7 @@ def test_connect_strips_a_trailing_slash(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(express, "webui_up", lambda port, **k: False)
     runner.invoke(cli.app, ["connect", "http://gpu-box:11435/"])
     assert config.load().engine_url == "http://gpu-box:11435"
 
@@ -54,6 +56,7 @@ def test_connect_refuses_an_engine_that_does_not_answer(
 def test_connect_probes_with_the_key(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> None:
     seen: list[str] = []
     monkeypatch.setattr(detect, "api_up", lambda url, key="", **k: bool(seen.append(key)) or True)
+    monkeypatch.setattr(express, "webui_up", lambda port, **k: False)
     runner.invoke(cli.app, ["connect", "http://gpu-box:11435", "--key", "k"])
     assert seen == ["k"]
 
@@ -120,10 +123,13 @@ def test_connect_local_is_logged(monkeypatch: pytest.MonkeyPatch, isolated_home:
     assert config.DEFAULT_ENGINE_URL in written
 
 
-def test_connect_local_restores_the_managed_engine(isolated_home: Path) -> None:
+def test_connect_local_restores_the_managed_engine(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
     config.save(
         config.Config(engine_managed=False, engine_url="http://gpu-box:11435", engine_key="k")
     )
+    monkeypatch.setattr(express, "webui_up", lambda port, **k: False)
     result = runner.invoke(cli.app, ["connect", "--local"])
     assert result.exit_code == 0
     cfg = config.load()

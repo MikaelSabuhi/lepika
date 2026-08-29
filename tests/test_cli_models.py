@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -136,10 +137,13 @@ def test_model_add_help_lists_all_three_model_ref_shapes() -> None:
     """Listing two of three reads as "a full-weight repo is not accepted here"."""
     result = runner.invoke(cli.app, ["model", "add", "--help"])
     assert result.exit_code == 0
-    assert "qwen3:8b" in result.output
-    assert "<org>/<repo>" in result.output
+    # Typer forces colour under CI (GITHUB_ACTIONS/FORCE_COLOR), and rich's highlighter
+    # then wraps `<org>` in escape codes that split the substring being looked for.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "qwen3:8b" in plain
+    assert "<org>/<repo>" in plain
     # The bare `<org>/<repo>` shape is the one that was missing; only it says vLLM.
-    assert "(vLLM)" in result.output
+    assert "(vLLM)" in plain
 
 
 def test_model_add_in_server_mode_brings_the_engine_container_up_first(

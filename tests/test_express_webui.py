@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 import socket
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +68,86 @@ def test_start_openwebui_omits_the_key_config_when_there_is_no_key(isolated_home
     express.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
     assert popen.envs[0] is not None
     assert "OLLAMA_API_CONFIGS" not in popen.envs[0]
+    popen.kwargs[0]["stdout"].close()
+
+
+def test_start_openwebui_pins_the_interpreter(isolated_home: Path) -> None:
+    """Unpinned, `uv tool run` builds an ephemeral env on the system Python.
+
+    On a box whose default is 3.14 that means rebuilding wheels from source —
+    pyarrow has none for 3.14 — so the launch never finishes and the user only
+    sees "OpenWebUI did not become ready".
+    """
+    popen = PopenRecorder()
+    express.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
+    argv = popen.calls[0]
+    after_run = argv.index("run") + 1
+    assert argv[after_run : after_run + 2] == ["--python", express.OPENWEBUI_PYTHON]
+    popen.kwargs[0]["stdout"].close()
+
+
+def test_install_openwebui_pins_the_same_interpreter_as_the_launch() -> None:
+    cmds: list[list[str]] = []
+    express.install_openwebui(run=lambda cmd, **k: cmds.append(list(cmd)))
+    assert cmds == [["uv", "tool", "install", "--python", express.OPENWEBUI_PYTHON, "open-webui"]]
+    assert express.OPENWEBUI_PYTHON == "3.11"
+
+
+def test_start_openwebui_keeps_openwebui_data_under_lepika_home(isolated_home: Path) -> None:
+    """Left to itself OpenWebUI stores chats inside the uv tool venv, which
+    `lepika update` rewrites — and which no `LEPIKA_HOME` can move."""
+    popen = PopenRecorder()
+    express.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
+    assert popen.envs[0] is not None
+    assert popen.envs[0]["DATA_DIR"] == str(isolated_home / "openwebui")
+    assert (isolated_home / "openwebui").is_dir()
+    popen.kwargs[0]["stdout"].close()
+
+
+def test_start_openwebui_owns_the_signing_secret(isolated_home: Path) -> None:
+    """Unset, OpenWebUI drops a `.webui_secret_key` in whatever directory the
+    user happened to run `lepika up` from, with the ambient umask."""
+    popen = PopenRecorder()
+    express.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
+    secret = (isolated_home / "openwebui" / "secret_key").read_text(encoding="utf-8").strip()
+    assert secret != ""
+    assert popen.envs[0] is not None
+    assert popen.envs[0]["WEBUI_SECRET_KEY"] == secret
+    popen.kwargs[0]["stdout"].close()
+
+
+def test_start_openwebui_never_puts_the_secret_in_argv(isolated_home: Path) -> None:
+    popen = PopenRecorder()
+    express.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
+    secret = (isolated_home / "openwebui" / "secret_key").read_text(encoding="utf-8").strip()
+    assert secret not in " ".join(popen.calls[0])
+    popen.kwargs[0]["stdout"].close()
+
+
+def test_webui_secret_is_stable_across_restarts(isolated_home: Path) -> None:
+    """A fresh secret on every start would sign every user out on `lepika update`."""
+    data_dir = paths.openwebui_data_dir()
+    first = express._webui_secret(data_dir)
+    assert express._webui_secret(data_dir) == first
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows ignores POSIX mode bits")
+def test_webui_secret_file_is_private_from_creation(isolated_home: Path) -> None:
+    express._webui_secret(paths.openwebui_data_dir())
+    mode = (isolated_home / "openwebui" / "secret_key").stat().st_mode
+    assert stat.S_IMODE(mode) == 0o600
+
+
+def test_start_openwebui_replaces_an_unreadable_secret_file(isolated_home: Path) -> None:
+    """A corrupted secret_key is a fresh secret, never a UnicodeDecodeError."""
+    data_dir = paths.openwebui_data_dir()
+    (data_dir / "secret_key").write_bytes(b"\xff\xfe not utf-8")
+    popen = PopenRecorder()
+    express.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
+    secret = (data_dir / "secret_key").read_text(encoding="utf-8").strip()
+    assert secret != ""
+    assert popen.envs[0] is not None
+    assert popen.envs[0]["WEBUI_SECRET_KEY"] == secret
     popen.kwargs[0]["stdout"].close()
 
 

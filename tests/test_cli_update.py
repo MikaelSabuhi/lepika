@@ -41,7 +41,10 @@ def test_update_upgrades_engine_and_webui(monkeypatch: pytest.MonkeyPatch) -> No
     # express.install_ollama — never through captured run_logged.
     assert installed == [info]
     assert not any("ollama.com/install.sh" in " ".join(c) for c in calls)
-    assert ["uv", "tool", "upgrade", "open-webui"] in calls
+    # The pin travels with every `uv tool` call: an upgrade that resolved a
+    # different interpreter would leave `uv tool run --python 3.11` with no
+    # matching env to reuse, which is the ephemeral-build failure again.
+    assert ["uv", "tool", "upgrade", "--python", express.OPENWEBUI_PYTHON, "open-webui"] in calls
 
 
 def test_update_restarts_openwebui_rather_than_probing_the_dying_one(

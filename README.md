@@ -119,8 +119,10 @@ Global flags: `--version`, `--mode express|server` (the wizard's, not a per-comm
 switch), `--dry-run` (show what the wizard would do without doing it), and `--help` on
 every command.
 
-All state lives in one place: `~/.lepika` — config, logs, pid files, and in Server mode the
-compose stack. Point `LEPIKA_HOME` somewhere else if you prefer.
+All state lives in one place: `~/.lepika` — config, logs, pid files, in Express mode
+OpenWebUI's own data (`~/.lepika/openwebui/` — chats, users, uploads), and in Server mode
+the compose stack. That is what makes `lepika update` keep your chats. Point `LEPIKA_HOME`
+somewhere else if you prefer.
 
 ## Server mode
 

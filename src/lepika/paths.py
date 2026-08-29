@@ -26,3 +26,9 @@ def stack_dir() -> Path:
     d = lepika_home() / "stack"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def openwebui_data_dir() -> Path:
+    d = lepika_home() / "openwebui"
+    d.mkdir(parents=True, exist_ok=True)
+    return d

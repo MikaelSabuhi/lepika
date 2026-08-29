@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 import signal
 import socket
@@ -11,13 +12,14 @@ import subprocess
 import time
 import urllib.request
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 
 from lepika import detect, proc
 from lepika.config import Config, config_path
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
-from lepika.paths import logs_dir, pid_file
+from lepika.paths import logs_dir, openwebui_data_dir, pid_file
 
 RunFn = Callable[..., Any]
 WhichFn = Callable[[str], str | None]
@@ -27,6 +29,12 @@ CallFn = Callable[[list[str]], int]
 
 # Windows: DETACHED_PROCESS (0x8) | CREATE_NEW_PROCESS_GROUP (0x200)
 _WINDOWS_DETACH_FLAGS = 0x00000208
+
+# The interpreter OpenWebUI is installed on AND run on — both, or `uv tool run`
+# builds an ephemeral environment on the system Python instead of reusing the
+# installed one. On a box whose default is newer than OpenWebUI's dependencies
+# (pyarrow has no 3.14 wheel) that means a source build that never finishes.
+OPENWEBUI_PYTHON = "3.11"
 
 
 def _detach_kwargs(os_name: str) -> dict[str, Any]:
@@ -135,7 +143,7 @@ def webui_up(port: int, urlopen: Callable[..., Any] | None = None) -> bool:
 def install_openwebui(run: RunFn = proc.run_logged) -> None:
     # `uv tool install` is idempotent: with open-webui already installed it is a
     # no-op that does NOT upgrade — upgrading is `lepika update`'s job.
-    run(["uv", "tool", "install", "--python", "3.11", "open-webui"])
+    run(["uv", "tool", "install", "--python", OPENWEBUI_PYTHON, "open-webui"])
 
 
 # Only defined on Windows, so it is looked up rather than referenced.
@@ -199,6 +207,37 @@ def port_free(
     return False
 
 
+def _webui_secret(data_dir: Path) -> str:
+    """Read — or create, once — the secret OpenWebUI signs its sessions with.
+
+    Unset, OpenWebUI writes a `.webui_secret_key` into whatever directory `lepika
+    up` happened to run from, under the ambient umask. Stable, because a fresh
+    secret on every start would sign every user out on `lepika update`.
+    """
+    path = data_dir / "secret_key"
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        # Missing, unreadable, or not text at all: a corrupted secret is worth
+        # exactly one re-signed session, never a traceback (rule 2).
+        existing = ""
+    if existing:
+        return existing
+    secret = secrets.token_urlsafe(32)
+    tmp = path.with_suffix(".tmp")
+    # Private from the first byte, exactly as `config.save` writes the API key:
+    # the mode is set when the file is created, not chmod'ed once the secret is
+    # already on disk, and fchmod also tightens a stale tmp file that an
+    # interrupted run left world-readable.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if hasattr(os, "fchmod"):  # POSIX only; Windows ignores mode bits entirely
+        os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(secret + "\n")
+    os.replace(tmp, path)
+    return secret
+
+
 def start_openwebui(
     port: int,
     engine_url: str,
@@ -215,6 +254,13 @@ def start_openwebui(
     if engine_key:
         # OpenWebUI keys its engines by index; ours is the only one.
         env["OLLAMA_API_CONFIGS"] = json.dumps({"0": {"key": engine_key}})
+    # Chats, users, and uploads default to a directory inside the uv tool venv:
+    # shared by every LEPIKA_HOME, outside ~/.lepika, and rewritten by the
+    # `uv tool upgrade` behind `lepika update`.
+    data_dir = openwebui_data_dir()
+    env["DATA_DIR"] = str(data_dir)
+    # Never logged, never in argv.
+    env["WEBUI_SECRET_KEY"] = _webui_secret(data_dir)
     log = (logs_dir() / "openwebui.log").open("ab")
     try:
         proc_handle = popen(
@@ -222,6 +268,10 @@ def start_openwebui(
                 "uv",
                 "tool",
                 "run",
+                # Same interpreter as the install, so this reuses that
+                # environment instead of building an ephemeral one.
+                "--python",
+                OPENWEBUI_PYTHON,
                 "--from",
                 "open-webui",
                 "open-webui",
@@ -426,8 +476,11 @@ def update(
         else:
             # check=False: winget exits nonzero when no upgrade is available.
             run_fn(["winget", "upgrade", "--id", "Ollama.Ollama", "-e"], check=False)
+    # Pinned like the install and the run: an upgrade that resolved a different
+    # interpreter would move the tool env out from under `uv tool run --python`,
+    # which then builds an ephemeral one instead of reusing it.
     # check=False: uv exits nonzero when open-webui is already the latest version.
-    run_fn(["uv", "tool", "upgrade", "open-webui"], check=False)
+    run_fn(["uv", "tool", "upgrade", "--python", OPENWEBUI_PYTHON, "open-webui"], check=False)
     # A restart, not a stop-then-probe: the upgraded build only takes effect once
     # the old server is really gone.
     restart_openwebui(cfg, info.os)

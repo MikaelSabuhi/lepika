@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/logo.png" alt="LePika — a cat in a speech bubble with a terminal prompt" width="220">
+</p>
+
 # LePika
 
 **One command → local AI chat in your browser.**
@@ -9,8 +13,9 @@ already own, with zero configuration: Mac (Metal), Linux and Windows (NVIDIA).
 No Docker, no API keys, no monthly bill, and nothing you type ever leaves the box.
 Got Docker and a homelab? Server mode runs the same thing as one `docker compose` stack.
 
-> A pika is a small mountain mammal that spends the summer stashing hay in its own
-> burrow, so everything it needs is already at home. Same idea, for your AI.
+> LePika is named after Pika, the cat who supervises this project. Like any cat,
+> Pika has everything worth having at home and no use for the cloud. Same idea,
+> for your AI.
 
 [![CI](https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml/badge.svg)](https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)

@@ -111,12 +111,15 @@ def choose_mode(info: SystemInfo, current: str, ask: AskFn | None = None) -> str
 _MODE_LABEL = {"express": "Express", "server": "Server"}
 
 
-def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> None:
+def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> SystemInfo:
     """Stop the stack we are switching away from, best effort.
 
     Both modes serve OpenWebUI on the same host port, so an abandoned stack does not
     just linger — it answers. `ensure_openwebui` would find the old container healthy,
     leave it alone, and open a UI that `lepika status` then reports as the other mode.
+
+    Returns `info` as it stands after the stop: detection ran before it, and Server's
+    pre-flight would otherwise refuse port 11434 for an Ollama that is already gone.
     """
     console.print(
         f"Switching from {_MODE_LABEL[previous]} to {_MODE_LABEL[cfg.mode]} mode — "
@@ -138,10 +141,14 @@ def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> None:
             and express.stop_ollama(info.os, old_cfg.engine_url, key=old_cfg.engine_key)
         ):
             console.print("Stopped the Ollama LePika had started.")
+            # True means the API went quiet, not just that a signal was sent: the
+            # snapshot is corrected from what was verified, never re-probed.
+            info = dataclasses.replace(info, ollama_running=False)
     except FriendlyError as exc:
         # A backend too broken to stop is usually why the user is leaving it. Say so
         # and carry on rather than trapping them in the mode that failed.
         console.print(f"[yellow]Could not stop it cleanly: {escape(exc.problem)}[/yellow]")
+    return info
 
 
 def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
@@ -155,7 +162,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         # business — asking here would make --dry-run shell out.
         server.ensure_docker(info)
     if cfg.mode != previous and not dry_run:
-        leave_mode(info, previous, cfg)
+        info = leave_mode(info, previous, cfg)
     console.print(detect.plan_sentence(info, cfg.mode))
     ref = choose_model(info, cfg)
     if dry_run:

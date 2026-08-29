@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -208,6 +209,29 @@ def test_leaving_express_mode_stops_the_ollama_lepika_started(
     # probe would read as "already down" and drop the pid file without stopping it.
     assert seen == [("linux", config.DEFAULT_ENGINE_URL, "s3cret")]
     assert "Stopped the Ollama LePika had started" in result.output
+
+
+def test_server_start_sees_the_ollama_as_stopped_after_the_switch(
+    switching: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Detection ran before the stop: handing the old snapshot to Server's pre-flight
+    made it refuse port 11434 for an Ollama that was already gone (E2E finding F13)."""
+    monkeypatch.setattr(
+        detect, "detect", lambda **k: dataclasses.replace(DOCKER, ollama_running=True)
+    )
+    monkeypatch.setattr(express, "stop_ollama", lambda os_name, url, **k: True)
+    seen: list[detect.SystemInfo] = []
+
+    def start(info: detect.SystemInfo, cfg: config.Config, **k: Any) -> str:
+        seen.append(info)
+        return started(info, cfg, **k)
+
+    monkeypatch.setattr(server, "start_stack", start)
+    answers = iter(["2", "1"])  # Server, then the model
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code == 0, result.output
+    assert [info.ollama_running for info in seen] == [False]
 
 
 def test_an_ollama_lepika_did_not_start_is_left_alone_and_unannounced(

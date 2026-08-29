@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.metadata
+import io
+import sys
 import webbrowser
+from collections.abc import Iterable
 from types import ModuleType
+from typing import TextIO
 
 import typer
 from rich.console import Console
@@ -406,8 +410,25 @@ def model_rm(
         console.print("That was the default model — run `lepika model add` to pick another.")
 
 
+def _utf8_stdio(streams: Iterable[TextIO] | None = None) -> None:
+    """Make stdout/stderr UTF-8 so ✓ and ✗ can be written wherever they go.
+
+    Windows opens a piped or redirected stdout with the ANSI code page, which has
+    no ✓ — every status line would then die with a UnicodeEncodeError traceback.
+    The wrapper is reconfigured in place, not replaced, so Rich and Typer, which
+    read sys.stdout at write time, follow along.
+    """
+    for stream in streams if streams is not None else (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper) and stream.encoding.lower() not in (
+            "utf-8",
+            "utf8",
+        ):
+            stream.reconfigure(encoding="utf-8")
+
+
 def run() -> None:
     """Console-script entry point."""
+    _utf8_stdio()
     try:
         app()
     except FriendlyError as exc:

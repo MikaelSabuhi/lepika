@@ -107,7 +107,7 @@ to install Docker.
 | `lepika` | The setup wizard: detect → (Express or Server) → pick a model → install → open the browser |
 | `lepika up` | Start the local AI stack and open the browser |
 | `lepika down` | Stop the stack (Express: OpenWebUI only; Server: all containers, models kept) |
-| `lepika status` | Show the mode, the engine and where it is, OpenWebUI, and the default model |
+| `lepika status` | Show the mode, the engine and where it is, OpenWebUI, whether it's exposed (Server mode), and the default model |
 | `lepika logs` | Print the tail of LePika's logs (Server mode: container logs too; `--lines`, default 50) |
 | `lepika doctor` | Diagnose the local setup; every ✗ comes with a one-line fix |
 | `lepika update` | Upgrade the engine and OpenWebUI (Server mode: pull newer images, then restart) |
@@ -182,10 +182,12 @@ lepika connect --local                            # back to this machine
 ```
 
 `lepika expose` (Server mode) puts a small Caddy proxy in front of the engine on port
-`11435`: only requests carrying the generated key get through. `--show` reprints the
-line, `--rotate` issues a new key (machines that already connected have to run
-`lepika connect` again with it), `--off` goes back to localhost only. If the box runs a
-full-weight repo on vLLM, `lepika expose` prints an OpenAI-compatible URL to add in
+`11435`: only requests carrying the generated key get through. It shares the engine this
+machine runs — or an unkeyed remote one — and refuses an engine that needs its own key,
+since the proxy would forward LePika's key to it and be told no every time. `--show`
+reprints the line, `--rotate` issues a new key (machines that already connected have to
+run `lepika connect` again with it), `--off` goes back to localhost only. If the box runs
+a full-weight repo on vLLM, `lepika expose` prints an OpenAI-compatible URL to add in
 OpenWebUI instead of a `connect` line.
 
 LePika never installs or starts anything on an engine it didn't set up — it only

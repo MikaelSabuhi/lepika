@@ -91,7 +91,7 @@ def up() -> None:
     """Start the local AI stack and open the browser."""
     info = detect.detect()
     cfg = config.load()
-    console.print(detect.plan_sentence(info, cfg.mode))
+    console.print(detect.plan_sentence(info, cfg.mode, engine=server.engine_label(cfg)))
     # A CPU-bound container on a GPU machine is a mystery worth one line up front.
     # `has_docker` first: gpu_note runs `docker info`, and without the binary that
     # would replace Server mode's Express hint with a generic "command not found".
@@ -136,6 +136,12 @@ def status() -> None:
         where = server.VLLM_URL
     table.add_row("Engine URL", escape(where))
     table.add_row("OpenWebUI", "[green]up[/green]" if webui_ok else "[red]down[/red]")
+    if cfg.mode == "server":
+        # Only Server mode can expose; a row that can only say "no" is noise in Express.
+        table.add_row(
+            "Exposed",
+            f"[yellow]yes[/yellow] — API on port {cfg.api_port}" if cfg.exposed else "no",
+        )
     table.add_row("Model", cfg.model or "[dim]not set[/dim]")
     console.print(table)
 
@@ -262,6 +268,16 @@ def expose(
         log.get_logger().info("expose.off")
         console.print("[green]✓ Back to localhost only.[/green]")
         return
+    if cfg.engine_key:
+        # Caddy checks LePika's key and then forwards the request — that same
+        # header included — to the upstream. A remote engine with its own key
+        # rejects every one of them, so the exposed API would only ever say 401.
+        raise FriendlyError(
+            f"`lepika expose` can't relay {cfg.engine_url}: that engine needs its own key, "
+            "and the proxy passes on the one it generates here.",
+            "Point other machines at that engine directly (`lepika expose --show` there), "
+            "or `lepika connect --local` first and expose an engine this machine runs.",
+        )
     # Written before the stack starts: `start_stack` refuses to run the `expose`
     # profile with an empty key, because Caddy would then match a bare `Bearer `.
     key = server.api_key(paths.stack_dir() / server.ENV_FILE, rotate=rotate)

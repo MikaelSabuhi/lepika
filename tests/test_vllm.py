@@ -333,3 +333,22 @@ def test_rotate_on_a_vllm_box_stays_off_the_ollama_connect_line(
     assert result.exit_code == 0, result.output
     assert "lepika connect http" not in result.output
     assert "old key" in result.output
+
+
+def test_engine_label_follows_the_model() -> None:
+    assert server.engine_label(config.Config(mode="server", model=REPO)) == "vLLM"
+    assert server.engine_label(config.Config(mode="server", model="qwen3:8b")) == "Ollama"
+    assert server.engine_label(config.Config(mode="express", model=REPO)) == "Ollama"
+
+
+def test_up_says_vllm_in_the_plan_sentence(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    config.save(config.Config(mode="server", model=REPO))
+    monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
+    monkeypatch.setattr(server, "gpu_note", lambda info, **k: None)
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "http://localhost:3000")
+    monkeypatch.setattr(cli, "_open_browser", lambda url: None)
+    result = runner.invoke(cli.app, ["up"])
+    assert result.exit_code == 0, result.output
+    assert "OpenWebUI + vLLM" in result.output

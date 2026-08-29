@@ -9,6 +9,7 @@ from typing import Any
 
 from lepika import config, detect, engine, express, proc, server
 from lepika.detect import SystemInfo
+from lepika.errors import FriendlyError
 
 # Advisory, not a hard failure: `cli.doctor` matches on this name, not a literal.
 RAM_CHECK = "RAM"
@@ -19,6 +20,17 @@ class CheckResult:
     name: str
     ok: bool
     hint: str = ""
+
+
+def _docker_answers(run: Callable[..., Any]) -> bool:
+    """`docker info` exits 0 — and a daemon that never answers counts as not running.
+
+    `run_logged` raises on a timeout; from a diagnosis that is a finding, not an abort.
+    """
+    try:
+        return bool(run(["docker", "info"], check=False, timeout=20, log=False).returncode == 0)
+    except FriendlyError:
+        return False
 
 
 def run_checks(
@@ -35,10 +47,7 @@ def run_checks(
         # Server mode installs nothing natively, so uv and a local Ollama are
         # irrelevant; Docker is the whole prerequisite. `and` short-circuits, so a
         # machine with no docker binary is never probed with one.
-        docker_ok = bool(
-            which("docker") is not None
-            and run(["docker", "info"], check=False, timeout=20, log=False).returncode == 0
-        )
+        docker_ok = bool(which("docker") is not None and _docker_answers(run))
         checks += [
             CheckResult(
                 "Docker running",

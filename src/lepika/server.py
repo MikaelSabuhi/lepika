@@ -234,6 +234,11 @@ def vllm_active(cfg: Config) -> bool:
     return cfg.mode == "server" and cfg.engine_managed and models.uses_vllm(cfg.model)
 
 
+def engine_label(cfg: Config) -> str:
+    """What to call the engine in a sentence: the model picks it (rule 10)."""
+    return "vLLM" if vllm_active(cfg) else "Ollama"
+
+
 def profiles(cfg: Config) -> list[str]:
     active: list[str] = []
     if cfg.engine_managed:
@@ -286,7 +291,7 @@ def compose_cmd(stack: Path, active: list[str], gpu_overlay: bool) -> list[str]:
     return cmd
 
 
-def ensure_docker(info: SystemInfo, run: RunFn = proc.run_logged) -> None:
+def ensure_docker(info: SystemInfo, run: RunFn = proc.run_logged, retry: str = "lepika up") -> None:
     if not info.has_docker:
         raise FriendlyError(
             "Server mode needs Docker, which is not installed.",
@@ -296,7 +301,7 @@ def ensure_docker(info: SystemInfo, run: RunFn = proc.run_logged) -> None:
     if run(["docker", "info"], check=False, timeout=20, log=False).returncode != 0:
         raise FriendlyError(
             "Docker is installed but not running.",
-            "Start Docker Desktop (or `sudo systemctl start docker`) and run `lepika up` again.",
+            f"Start Docker Desktop (or `sudo systemctl start docker`) and run `{retry}` again.",
         )
 
 
@@ -390,14 +395,19 @@ def start_stack(
     # terminal for minutes looks like a hang.
     if call([*base, "up", "-d", "--remove-orphans"]) != 0:
         raise _compose_failed("up")
-    # Compose does not stop services whose profile just went inactive; we do.
-    for profile, service in INACTIVE.items():
-        if profile not in active:
-            run(
-                [*compose_cmd(stack, [profile], gpu_overlay=False), "stop", service],
-                check=False,
-                timeout=60,
-            )
+    # Compose does not stop services whose profile just went inactive; we do —
+    # in one call, since compose takes several profiles and several services.
+    inactive = [profile for profile in INACTIVE if profile not in active]
+    if inactive:
+        run(
+            [
+                *compose_cmd(stack, inactive, gpu_overlay=False),
+                "stop",
+                *(INACTIVE[profile] for profile in inactive),
+            ],
+            check=False,
+            timeout=60,
+        )
     if "vllm" in active:
         # The first start downloads the full weights — tens of GB. A silent wait
         # that long is indistinguishable from a hang, so say what is happening.
@@ -418,7 +428,7 @@ def start_stack(
 
 def stop(info: SystemInfo, cfg: Config, run: RunFn = proc.run_logged) -> bool:
     """`lepika down` in Server mode: stop and remove the containers; volumes stay."""
-    ensure_docker(info, run=run)
+    ensure_docker(info, run=run, retry="lepika down")
     stack = install_stack()
     every = list(INACTIVE)  # every profile, so nothing is left behind
     result = run([*compose_cmd(stack, every, gpu_overlay=False), "down"], check=False, timeout=120)
@@ -433,7 +443,7 @@ def update(
     call: CallFn = subprocess.call,
 ) -> None:
     """`lepika update` in Server mode: pull newer images, then reconcile."""
-    ensure_docker(info, run=run)
+    ensure_docker(info, run=run, retry="lepika update")
     stack = install_stack()
     log.get_logger().info("stack.update")
     if call([*compose_cmd(stack, profiles(cfg), gpu_overlay=False), "pull"]) != 0:

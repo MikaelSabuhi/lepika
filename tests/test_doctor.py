@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fakes import Runner
@@ -190,3 +191,25 @@ def test_server_mode_never_probes_docker_when_it_is_not_installed(isolated_home:
     failed = {r.name: r for r in results if not r.ok}
     assert "Docker running" in failed
     assert "lepika --mode express" in failed["Docker running"].hint
+
+
+def test_a_docker_info_that_times_out_is_a_red_check_not_an_abort(isolated_home: Path) -> None:
+    """Docker Desktop mid-start accepts the socket and never answers: still a ✗ with a hint."""
+    from lepika import config
+    from lepika.errors import FriendlyError
+
+    config.save(config.Config(mode="server"))
+
+    def hang(cmd: list[str], **k: Any) -> Any:
+        raise FriendlyError("Command timed out after 20s: docker info", "Try again")
+
+    results = doctor.run_checks(
+        info(),
+        which=lambda n: "/usr/bin/docker" if n == "docker" else None,
+        api_up=lambda url, **k: True,
+        webui_up=lambda port, **k: True,
+        run=hang,
+    )
+    failed = {r.name: r for r in results if not r.ok}
+    assert "Docker running" in failed
+    assert "docker compose available" in failed

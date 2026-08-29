@@ -172,3 +172,28 @@ def test_logs_rejects_a_nonpositive_line_count(isolated_home: Path) -> None:
     result = runner.invoke(cli.app, ["logs", "--lines", "0"])
     assert result.exit_code != 0
     assert "line-one" not in result.output
+
+
+def test_status_shows_exposure_in_server_mode(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    config.save(config.Config(mode="server", exposed=True, api_port=12345))
+    out = runner.invoke(cli.app, ["status"]).output
+    assert "Exposed" in out
+    assert "12345" in out
+    config.save(config.Config(mode="server", exposed=False))
+    out = runner.invoke(cli.app, ["status"]).output
+    assert "Exposed" in out
+    assert "11435" not in out
+
+
+def test_status_has_no_exposure_row_in_express_mode(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """Exposure is a Server-mode feature; a row that can only ever say no is noise."""
+    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    config.save(config.Config(mode="express"))
+    assert "Exposed" not in runner.invoke(cli.app, ["status"]).output

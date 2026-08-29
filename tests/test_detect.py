@@ -122,3 +122,9 @@ def test_plan_sentence_describes_server_mode() -> None:
     info = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
     assert "Server mode" in detect.plan_sentence(info, mode="server")
     assert "docker compose" in detect.plan_sentence(info, mode="server")
+
+
+def test_plan_sentence_names_the_engine_it_is_given() -> None:
+    info = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
+    assert "OpenWebUI + vLLM" in detect.plan_sentence(info, mode="server", engine="vLLM")
+    assert "OpenWebUI + Ollama" in detect.plan_sentence(info, mode="server")

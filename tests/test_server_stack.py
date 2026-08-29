@@ -76,9 +76,12 @@ def test_start_stack_writes_env_ups_and_waits(isolated_home: Path) -> None:
     env = server.read_env(isolated_home / "stack" / ".env")
     assert env["OLLAMA_BASE_URL"] == "http://ollama:11434"
     assert events.index("engine-probe") < events.index("after") < events.index("ui-probe")
-    # Services from profiles that are not active are stopped explicitly.
+    # Services from profiles that are not active are stopped explicitly — in one
+    # compose call, not one per profile.
     stops = [c for c in run.calls if "stop" in c]
-    assert any("caddy" in c for c in stops)
+    assert len(stops) == 1
+    assert stops[0][stops[0].index("stop") + 1 :] == ["vllm", "caddy"]
+    assert stops[0].count("--profile") == 2
 
 
 # Port 11434 already answers: either our own ollama container (a second `lepika up`)
@@ -217,3 +220,20 @@ def test_logs_returns_compose_and_lepika_logs(isolated_home: Path) -> None:
     assert '"event": "x"' in sections["lepika.log"]
     tail_cmd = next(c for c in run.calls if "logs" in c)
     assert "--tail" in tail_cmd and "20" in tail_cmd
+
+
+def test_stop_with_the_daemon_down_says_to_retry_down(isolated_home: Path) -> None:
+    """`lepika down` cannot finish without the daemon: the containers come back with it."""
+    with pytest.raises(FriendlyError) as exc:
+        server.stop(LINUX_NVIDIA, config.Config(mode="server"), run=Runner(code=1))
+    assert "not running" in exc.value.problem
+    assert "lepika down" in exc.value.fix
+    assert "lepika up" not in exc.value.fix
+
+
+def test_update_with_the_daemon_down_says_to_retry_update(
+    isolated_home: Path,
+) -> None:
+    with pytest.raises(FriendlyError) as exc:
+        server.update(LINUX_NVIDIA, config.Config(mode="server"), run=Runner(code=1), call=Caller())
+    assert "lepika update" in exc.value.fix

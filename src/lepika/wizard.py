@@ -163,7 +163,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         server.ensure_docker(info)
     if cfg.mode != previous and not dry_run:
         info = leave_mode(info, previous, cfg)
-    console.print(detect.plan_sentence(info, cfg.mode))
+    console.print(detect.plan_sentence(info, cfg.mode, engine=server.engine_label(cfg)))
     ref = choose_model(info, cfg)
     if dry_run:
         # Nothing is written: a dry run that saved the config would leave the machine

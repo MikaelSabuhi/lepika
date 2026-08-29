@@ -6,6 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from lepika import cli, config, detect, paths, server
+from lepika.errors import FriendlyError
 
 runner = CliRunner()
 DOCKER = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
@@ -137,3 +138,45 @@ def test_rotate_tells_machines_that_already_connected_to_reconnect(
 def test_a_plain_expose_does_not_talk_about_reconnecting(exposed_box: list[str]) -> None:
     result = runner.invoke(cli.app, ["expose"])
     assert "connected before" not in result.output
+
+
+def test_expose_refuses_an_engine_that_needs_its_own_key(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """Caddy forwards the caller's key upstream, where a keyed remote engine rejects it."""
+    starts: list[str] = []
+    config.save(
+        config.Config(
+            mode="server", engine_managed=False, engine_url="http://gpu-box:11435", engine_key="k"
+        )
+    )
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: starts.append("start"))
+    result = runner.invoke(cli.app, ["expose"])
+    assert result.exit_code != 0
+    exc = result.exception
+    assert isinstance(exc, FriendlyError)
+    assert "gpu-box" in exc.problem
+    assert "lepika connect --local" in exc.fix
+    assert starts == []
+    assert config.load().exposed is False
+
+
+def test_expose_off_still_works_with_a_keyed_remote_engine(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    starts: list[str] = []
+    config.save(
+        config.Config(
+            mode="server",
+            exposed=True,
+            engine_managed=False,
+            engine_url="http://gpu-box:11435",
+            engine_key="k",
+        )
+    )
+    monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: starts.append("start"))
+    result = runner.invoke(cli.app, ["expose", "--off"])
+    assert result.exit_code == 0, result.output
+    assert config.load().exposed is False
+    assert starts == ["start"]

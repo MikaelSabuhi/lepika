@@ -76,6 +76,45 @@ def test_list_models_unreachable_is_friendly() -> None:
     assert "lepika doctor" in exc.value.fix
 
 
+def test_an_unreachable_remote_engine_is_not_told_to_run_lepika_up() -> None:
+    """`lepika up` never starts someone else's engine (rule 9), so that hint is wrong."""
+
+    def down(request: Any, timeout: float = 0) -> Any:
+        raise urllib.error.URLError("refused")
+
+    with pytest.raises(FriendlyError) as exc:
+        engine.list_models("http://gpu-box:11435", key="k", urlopen=down, managed=False)
+    assert "gpu-box" in exc.value.problem
+    assert "lepika up" not in exc.value.fix
+    assert "lepika connect http://gpu-box:11435 --key" in exc.value.fix
+    assert "lepika connect --local" in exc.value.fix
+
+
+def test_an_unreachable_managed_engine_still_says_lepika_up() -> None:
+    def down(request: Any, timeout: float = 0) -> Any:
+        raise urllib.error.URLError("refused")
+
+    with pytest.raises(FriendlyError) as exc:
+        engine.list_models("http://127.0.0.1:11434", urlopen=down)
+    assert "lepika up" in exc.value.fix
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("qwen3", "qwen3:latest", True),
+        ("qwen3:8b", "qwen3:8b", True),
+        ("qwen3:8b", "qwen3:latest", False),
+        ("hf.co/org/repo-GGUF", "hf.co/org/repo-GGUF:latest", True),
+        ("hf.co/org/repo-GGUF:Q4_K_M", "hf.co/org/repo-GGUF", False),
+        ("qwen3", "qwen3.5", False),
+    ],
+)
+def test_same_model_treats_a_missing_tag_as_latest(a: str, b: str, same: bool) -> None:
+    """Ollama stores an untagged ref as `name:latest` and lists it that way."""
+    assert engine.same_model(a, b) is same
+
+
 def test_delete_model_uses_delete_verb_and_json_body() -> None:
     seen: list[Any] = []
     engine.delete_model("http://x", "qwen3:8b", urlopen=opener_returning(b"", seen))

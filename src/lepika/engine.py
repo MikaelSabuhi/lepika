@@ -54,11 +54,17 @@ def _opener(urlopen: UrlOpenFn | None) -> UrlOpenFn:
     return urlopen if urlopen is not None else urllib.request.urlopen
 
 
-def _unreachable(url: str) -> FriendlyError:
-    return FriendlyError(
-        f"Could not reach the engine at {url}.",
-        "Run `lepika up` to start it, or `lepika doctor` to see what's wrong.",
-    )
+def _unreachable(url: str, managed: bool = True) -> FriendlyError:
+    if managed:
+        fix = "Run `lepika up` to start it, or `lepika doctor` to see what's wrong."
+    else:
+        # `lepika up` never starts someone else's engine (rule 9): the only moves
+        # from here are checking that box, reconnecting, or going local again.
+        fix = (
+            "Check that machine is up and `lepika expose` is still on there, then "
+            f"`lepika connect {url} --key <key>` again — or `lepika connect --local`."
+        )
+    return FriendlyError(f"Could not reach the engine at {url}.", fix)
 
 
 def _rejected(url: str) -> FriendlyError:
@@ -79,6 +85,23 @@ def human_size(n_bytes: int) -> str:
     return f"{size:.1f} GB"  # pragma: no cover - the loop always returns
 
 
+def _canonical(name: str) -> str:
+    """`qwen3` → `qwen3:latest`: the tag Ollama fills in when the ref has none.
+
+    The tag is the `:` after the last `/`, so `hf.co/org/repo-GGUF` gets one and a
+    port in a hostname never counts as one.
+    """
+    _, _, tail = name.rpartition("/")
+    if ":" in tail:
+        return name
+    return f"{name}:latest"
+
+
+def same_model(a: str, b: str) -> bool:
+    """Do two refs name the same Ollama model, tag or no tag?"""
+    return _canonical(a) == _canonical(b)
+
+
 def vllm_up(url: str, urlopen: UrlOpenFn | None = None) -> bool:
     """Is the vLLM server answering? `GET /health` — a probe, so nothing is logged."""
     try:
@@ -88,7 +111,9 @@ def vllm_up(url: str, urlopen: UrlOpenFn | None = None) -> bool:
     return True
 
 
-def list_models(url: str, key: str = "", urlopen: UrlOpenFn | None = None) -> list[tuple[str, int]]:
+def list_models(
+    url: str, key: str = "", managed: bool = True, urlopen: UrlOpenFn | None = None
+) -> list[tuple[str, int]]:
     """Every installed model as `(name, size_bytes)`, from `GET /api/tags`."""
     # Parsing sits inside the guard on purpose: something that answers on the port
     # without speaking Ollama is a failure to reach the engine, not a traceback.
@@ -99,12 +124,14 @@ def list_models(url: str, key: str = "", urlopen: UrlOpenFn | None = None) -> li
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             raise _rejected(url) from exc
-        raise _unreachable(url) from exc
+        raise _unreachable(url, managed) from exc
     except Exception as exc:
-        raise _unreachable(url) from exc
+        raise _unreachable(url, managed) from exc
 
 
-def delete_model(url: str, name: str, key: str = "", urlopen: UrlOpenFn | None = None) -> None:
+def delete_model(
+    url: str, name: str, key: str = "", managed: bool = True, urlopen: UrlOpenFn | None = None
+) -> None:
     """Remove one model from the engine via `DELETE /api/delete`."""
     request = _request(url, "/api/delete", key, "DELETE", {"model": name})
     try:
@@ -117,9 +144,9 @@ def delete_model(url: str, name: str, key: str = "", urlopen: UrlOpenFn | None =
             ) from exc
         if exc.code in (401, 403):
             raise _rejected(url) from exc
-        raise _unreachable(url) from exc
+        raise _unreachable(url, managed) from exc
     except Exception as exc:
-        raise _unreachable(url) from exc
+        raise _unreachable(url, managed) from exc
     log.get_logger().info("engine.delete", model=name, url=url)
 
 
@@ -135,6 +162,7 @@ def pull_model(
     url: str,
     ref: ModelRef,
     key: str = "",
+    managed: bool = True,
     urlopen: UrlOpenFn | None = None,
     progress: ProgressFn | None = None,
 ) -> None:
@@ -147,9 +175,9 @@ def pull_model(
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             raise _rejected(url) from exc
-        raise _unreachable(url) from exc
+        raise _unreachable(url, managed) from exc
     except Exception as exc:
-        raise _unreachable(url) from exc
+        raise _unreachable(url, managed) from exc
     finished = False
     # The whole stream is guarded, not just the opener: the timeout above governs
     # every subsequent read, so a stall, a dropped connection or a truncated JSON

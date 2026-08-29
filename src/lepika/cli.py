@@ -368,7 +368,7 @@ def model_add(
     else:
         # A remote engine is someone else's to run: check it, never install for it.
         express.check_remote_engine(cfg, api_up=detect.api_up)
-    engine.pull_model(cfg.engine_url, model_ref, key=cfg.engine_key)
+    engine.pull_model(cfg.engine_url, model_ref, key=cfg.engine_key, managed=cfg.engine_managed)
     cfg.model = model_ref.raw
     config.save(cfg)
     console.print(f"[green]✓ Added:[/green] {escape(model_ref.raw)}")
@@ -379,7 +379,7 @@ def model_list() -> None:
     """List downloaded models."""
     cfg = config.load()
     _refuse_ollama_only(cfg, "there is no Ollama model list to show.")
-    installed = engine.list_models(cfg.engine_url, key=cfg.engine_key)
+    installed = engine.list_models(cfg.engine_url, key=cfg.engine_key, managed=cfg.engine_managed)
     if not installed:
         console.print("No models yet — run `lepika model add`.", markup=False)
         return
@@ -387,7 +387,7 @@ def model_list() -> None:
     table.add_column("Name")
     table.add_column("Size", justify="right")
     for name, size in installed:
-        marker = " [dim](default)[/dim]" if name == cfg.model else ""
+        marker = " [dim](default)[/dim]" if cfg.model and engine.same_model(name, cfg.model) else ""
         table.add_row(escape(name) + marker, engine.human_size(size))
     console.print(table)
 
@@ -399,9 +399,9 @@ def model_rm(
     """Remove a downloaded model."""
     cfg = config.load()
     _refuse_ollama_only(cfg, "there is nothing to remove from Ollama.")
-    engine.delete_model(cfg.engine_url, name, key=cfg.engine_key)
+    engine.delete_model(cfg.engine_url, name, key=cfg.engine_key, managed=cfg.engine_managed)
     console.print(f"[green]✓ Removed:[/green] {escape(name)}")
-    if name == cfg.model:
+    if cfg.model and engine.same_model(name, cfg.model):
         # A config still naming a model the engine no longer has makes `status`
         # and `up` claim a default that cannot answer. `_ready` says "No model
         # yet" once the field is empty.

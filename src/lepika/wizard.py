@@ -200,7 +200,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         # The model is saved only once the pull succeeded: recording a model the
         # machine failed to download leaves the config pointing at something that
         # isn't there.
-        engine.pull_model(cfg.engine_url, ref, key=cfg.engine_key)
+        engine.pull_model(cfg.engine_url, ref, key=cfg.engine_key, managed=cfg.engine_managed)
         cfg.model = ref.raw
         config.save(cfg)
 

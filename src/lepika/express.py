@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from lepika import detect, proc
+from lepika import detect, log, proc
 from lepika.config import Config, config_path
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
@@ -81,11 +81,13 @@ def install_ollama(
 
 
 def start_ollama(os_name: str, popen: PopenFn = subprocess.Popen) -> None:
-    log = (logs_dir() / "ollama.log").open("ab")
+    log_file = (logs_dir() / "ollama.log").open("ab")
     try:
-        proc_handle = popen(["ollama", "serve"], stdout=log, stderr=log, **_detach_kwargs(os_name))
+        proc_handle = popen(
+            ["ollama", "serve"], stdout=log_file, stderr=log_file, **_detach_kwargs(os_name)
+        )
     except FileNotFoundError as exc:
-        log.close()
+        log_file.close()
         raise FriendlyError(
             "Ollama is installed but not on your PATH yet.",
             "Close this terminal, open a new one, and run `lepika` again.",
@@ -347,7 +349,7 @@ def start_openwebui(
     env["DATA_DIR"] = str(data_dir)
     # Never logged, never in argv.
     env["WEBUI_SECRET_KEY"] = _webui_secret(data_dir)
-    log = (logs_dir() / "openwebui.log").open("ab")
+    log_file = (logs_dir() / "openwebui.log").open("ab")
     try:
         proc_handle = popen(
             [
@@ -370,12 +372,12 @@ def start_openwebui(
                 str(port),
             ],
             env=env,
-            stdout=log,
-            stderr=log,
+            stdout=log_file,
+            stderr=log_file,
             **_detach_kwargs("windows" if os.name == "nt" else "posix"),
         )
     except FileNotFoundError as exc:
-        log.close()
+        log_file.close()
         raise FriendlyError(
             "uv is required to run OpenWebUI but was not found.",
             "Install uv: https://docs.astral.sh/uv/getting-started/installation/",
@@ -519,6 +521,7 @@ def start_stack(
     wizard pulls a model here), then the UI that talks to it. `lepika up` passes no
     hook; the wizard passes its pull.
     """
+    log.get_logger().info("stack.up", mode="express", engine_managed=cfg.engine_managed)
     if cfg.engine_managed:
         ensure_ollama(info, url=cfg.engine_url)
     else:
@@ -533,7 +536,9 @@ def start_stack(
 def stop(info: SystemInfo, cfg: Config) -> bool:
     """`lepika down` in Express mode: stop OpenWebUI; Ollama stays as a shared service."""
     # The port is what proves the recorded pid is still our OpenWebUI.
-    return stop_openwebui(info.os, port=cfg.webui_port)
+    stopped = stop_openwebui(info.os, port=cfg.webui_port)
+    log.get_logger().info("stack.down", mode="express", stopped=stopped)
+    return stopped
 
 
 def update(

@@ -93,6 +93,19 @@ def test_model_list_uses_the_configured_engine_and_key(
     assert seen == [("http://gpu-box:11435", "k")]
 
 
+def test_model_list_tells_the_engine_whether_it_is_ours(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """The unreachable hint depends on it: `lepika up` cannot start a remote engine."""
+    seen: list[bool] = []
+    config.save(config.Config(engine_managed=False, engine_url="http://gpu-box:11435"))
+    monkeypatch.setattr(
+        engine, "list_models", lambda url, managed=True, **k: bool(seen.append(managed)) or []
+    )
+    assert runner.invoke(cli.app, ["model", "list"]).exit_code == 0
+    assert seen == [False]
+
+
 def test_model_list_failure_is_friendly(monkeypatch: pytest.MonkeyPatch) -> None:
     def boom(url: str, **k: Any) -> list[tuple[str, int]]:
         raise FriendlyError("Could not reach the engine at http://x.", "Run `lepika doctor`.")
@@ -131,6 +144,27 @@ def test_model_rm_of_another_model_leaves_the_default_alone(
     assert result.exit_code == 0, result.output
     assert config.load().model == "qwen3:8b"
     assert "default model" not in result.output
+
+
+def test_model_rm_of_the_default_under_its_latest_tag_clears_it(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """The config says `qwen3`; `model list` — and the user — say `qwen3:latest`."""
+    config.save(config.Config(model="qwen3"))
+    monkeypatch.setattr(engine, "delete_model", lambda url, name, **k: None)
+    result = runner.invoke(cli.app, ["model", "rm", "qwen3:latest"])
+    assert result.exit_code == 0, result.output
+    assert config.load().model == ""
+
+
+def test_model_list_marks_the_default_under_its_latest_tag(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    config.save(config.Config(model="qwen3"))
+    monkeypatch.setattr(engine, "list_models", lambda url, **k: [("qwen3:latest", 1_000)])
+    result = runner.invoke(cli.app, ["model", "list"])
+    assert result.exit_code == 0, result.output
+    assert "(default)" in result.output
 
 
 def test_model_add_help_lists_all_three_model_ref_shapes() -> None:

@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from lepika import express, paths
+from lepika import express, log, paths
 from lepika.config import Config
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
@@ -170,6 +170,27 @@ def test_stop_is_the_backend_stop_for_express(monkeypatch: pytest.MonkeyPatch) -
     )
     assert express.stop(info, Config(webui_port=3210)) is True
     assert seen == [("linux", 3210)]
+
+
+def _log_events() -> list[str]:
+    text = (paths.logs_dir() / log.LOG_FILE).read_text(encoding="utf-8")
+    return [json.loads(line)["event"] for line in text.splitlines() if line.strip()]
+
+
+def test_start_stack_writes_one_stack_up_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Server mode logs `stack.up`; the log must say the same about Express."""
+    info = SystemInfo("linux", "x86_64", "none", 16.0, False, True, True)
+    monkeypatch.setattr(express, "ensure_ollama", lambda info, url=None, **k: None)
+    monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: None)
+    express.start_stack(info, Config())
+    assert _log_events().count("stack.up") == 1
+
+
+def test_stop_writes_a_stack_down_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    info = SystemInfo("linux", "x86_64", "none", 16.0, False, True, True)
+    monkeypatch.setattr(express, "stop_openwebui", lambda os_name, port=None, **k: False)
+    assert express.stop(info, Config()) is False
+    assert "stack.down" in _log_events()
 
 
 def test_logs_returns_the_tail_of_every_log_file(isolated_home: Path) -> None:

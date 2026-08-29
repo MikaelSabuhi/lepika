@@ -91,13 +91,16 @@ def run_checks(
             vllm_up(server.VLLM_URL) if vllm else api_up(cfg.engine_url, key=cfg.engine_key),
             "Run `lepika up` to start it; logs: `lepika logs`"
             if cfg.engine_managed
-            else f"{cfg.engine_url} is not answering — check that machine, "
-            "or `lepika connect --local`",
+            # A rotated key and a dead box look identical from here, so name both.
+            else f"{cfg.engine_url} is not answering — check that machine, or the key "
+            f"changed: `lepika connect {cfg.engine_url} --key <key>` — or "
+            "`lepika connect --local`",
         ),
         CheckResult(
             "OpenWebUI responding",
             webui_up(cfg.webui_port),
-            f"Run `lepika up`; if the port is busy, change webui_port in {config.config_path()}",
+            "Run `lepika up`; if it fails, `lepika logs` shows openwebui.log; "
+            f"if the port is busy, change webui_port in {config.config_path()}",
         ),
         CheckResult(
             RAM_CHECK,

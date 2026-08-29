@@ -177,3 +177,17 @@ def test_dry_run_writes_config_and_executes_nothing(
     assert result.exit_code == 0
     assert "would:" in result.output
     assert config.load().model == "llama3.2:3b"
+
+
+def test_choose_model_prompt_lists_all_three_model_ref_shapes() -> None:
+    """Two of three shapes reads as "vLLM refs are not accepted here"."""
+    prompts: list[str] = []
+    wizard.choose_model(
+        INFO,
+        config.Config(),
+        ask=lambda prompt, **k: bool(prompts.append(prompt)) or "1",
+        curated=CURATED,
+    )
+    assert "qwen3:8b" in prompts[0]
+    assert "hf.co/<org>/<repo>-GGUF" in prompts[0]
+    assert "· <org>/<repo>" in prompts[0]

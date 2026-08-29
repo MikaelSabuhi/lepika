@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sys
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
@@ -52,6 +53,15 @@ def _unreachable(url: str) -> FriendlyError:
     )
 
 
+def _rejected(url: str) -> FriendlyError:
+    """A 401/403 is a key the engine refuses — `lepika up` cannot fix someone else's box."""
+    return FriendlyError(
+        f"The engine at {url} rejected the API key.",
+        "Run `lepika expose --show` on that machine, then "
+        f"`lepika connect {url} --key <key>` here.",
+    )
+
+
 def human_size(n_bytes: int) -> str:
     size = float(n_bytes)
     for unit in ("B", "KB", "MB", "GB"):
@@ -78,6 +88,10 @@ def list_models(url: str, key: str = "", urlopen: UrlOpenFn | None = None) -> li
         with _opener(urlopen)(_request(url, "/api/tags", key), timeout=_TAGS_TIMEOUT) as response:
             payload = json.loads(response.read().decode("utf-8"))
         return [(str(m["name"]), int(m.get("size", 0))) for m in payload["models"]]
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise _rejected(url) from exc
+        raise _unreachable(url) from exc
     except Exception as exc:
         raise _unreachable(url) from exc
 
@@ -93,6 +107,8 @@ def delete_model(url: str, name: str, key: str = "", urlopen: UrlOpenFn | None =
             raise FriendlyError(
                 f"Model '{name}' is not installed.", "See `lepika model list` for what is."
             ) from exc
+        if exc.code in (401, 403):
+            raise _rejected(url) from exc
         raise _unreachable(url) from exc
     except Exception as exc:
         raise _unreachable(url) from exc
@@ -120,6 +136,10 @@ def pull_model(
     request = _request(url, "/api/pull", key, "POST", {"model": ref.raw, "stream": True})
     try:
         response = _opener(urlopen)(request, timeout=_PULL_IDLE_TIMEOUT)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise _rejected(url) from exc
+        raise _unreachable(url) from exc
     except Exception as exc:
         raise _unreachable(url) from exc
     finished = False
@@ -167,6 +187,9 @@ def _bar(ref: ModelRef, progress: ProgressFn | None) -> Iterator[ProgressFn]:
         BarColumn(),
         DownloadColumn(),
         TransferSpeedColumn(),
+        # Piped or redirected, a live bar renders as one frozen "0/549 bytes" line
+        # that never updates. The JSON log already records the pull.
+        disable=not sys.stdout.isatty(),
     )
     bar.start()
     task = bar.add_task(ref.raw, total=None)

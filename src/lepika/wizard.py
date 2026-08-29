@@ -57,7 +57,7 @@ def choose_model(
             table.add_row(str(i), escape(m.name), escape(m.ref))
         console.print(table)
 
-    prompt = "Pick a number, or type any model (qwen3:8b · hf.co/<org>/<repo>-GGUF)"
+    prompt = "Pick a number, or type any model (qwen3:8b · hf.co/<org>/<repo>-GGUF · <org>/<repo>)"
 
     def picked(answer: str) -> ModelRef | None:
         # isdecimal, not isdigit: "²".isdigit() is True but int("²") raises.

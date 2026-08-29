@@ -109,6 +109,39 @@ def test_model_rm_deletes_through_the_engine(monkeypatch: pytest.MonkeyPatch) ->
     assert deleted == ["qwen3:8b"]
 
 
+def test_model_rm_of_the_default_clears_it_from_the_config(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """A config still naming a deleted model makes `status` and `up` lie about it."""
+    config.save(config.Config(model="qwen3:8b"))
+    monkeypatch.setattr(engine, "delete_model", lambda url, name, **k: None)
+    result = runner.invoke(cli.app, ["model", "rm", "qwen3:8b"])
+    assert result.exit_code == 0, result.output
+    assert config.load().model == ""
+    assert "default model" in result.output
+
+
+def test_model_rm_of_another_model_leaves_the_default_alone(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    config.save(config.Config(model="qwen3:8b"))
+    monkeypatch.setattr(engine, "delete_model", lambda url, name, **k: None)
+    result = runner.invoke(cli.app, ["model", "rm", "llama3.2:3b"])
+    assert result.exit_code == 0, result.output
+    assert config.load().model == "qwen3:8b"
+    assert "default model" not in result.output
+
+
+def test_model_add_help_lists_all_three_model_ref_shapes() -> None:
+    """Listing two of three reads as "a full-weight repo is not accepted here"."""
+    result = runner.invoke(cli.app, ["model", "add", "--help"])
+    assert result.exit_code == 0
+    assert "qwen3:8b" in result.output
+    assert "<org>/<repo>" in result.output
+    # The bare `<org>/<repo>` shape is the one that was missing; only it says vLLM.
+    assert "(vLLM)" in result.output
+
+
 def test_model_add_in_server_mode_brings_the_engine_container_up_first(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:

@@ -391,3 +391,17 @@ def test_start_openwebui_binds_to_localhost_only(isolated_home: Path) -> None:
     argv = popen.calls[0]
     assert argv[argv.index("--host") + 1] == "127.0.0.1"
     popen.kwargs[0]["stdout"].close()
+
+
+def test_wait_until_down_hint_does_not_name_a_single_caller() -> None:
+    """`lepika connect` restarts the UI too — the hint must not say `lepika update`."""
+    with pytest.raises(FriendlyError) as exc:
+        express.wait_until_down(3210, up=lambda port, **k: True, attempts=2, sleep=lambda s: None)
+    assert exc.value.fix == "Stop whatever is listening on port 3210, then try again."
+
+
+def test_wait_for_hint_points_at_lepika_logs() -> None:
+    """A raw ~/.lepika/logs path is the wrong place in Server mode; `lepika logs` is not."""
+    with pytest.raises(FriendlyError) as exc:
+        express.wait_for(lambda: False, seconds=1, what="OpenWebUI", sleep=lambda s: None)
+    assert exc.value.fix == "Run `lepika logs` to see why, then `lepika doctor`."

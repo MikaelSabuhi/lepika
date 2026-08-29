@@ -90,6 +90,34 @@ def test_remote_engine_skips_the_local_install_check_and_uses_the_key(isolated_h
     assert seen == ["k"]
 
 
+def test_a_remote_engine_hint_offers_reconnecting_with_a_new_key(isolated_home: Path) -> None:
+    """A rotated key looks exactly like a dead box; the hint has to cover both."""
+    from lepika import config
+
+    config.save(config.Config(engine_managed=False, engine_url="http://gpu-box:11435"))
+    results = doctor.run_checks(
+        info(),
+        which=lambda n: f"/usr/bin/{n}",
+        api_up=lambda url, **k: False,
+        webui_up=lambda port, **k: True,
+    )
+    hint = next(r for r in results if r.name == "Engine responding").hint
+    assert "lepika connect http://gpu-box:11435 --key <key>" in hint
+    assert "lepika connect --local" in hint
+
+
+def test_the_openwebui_hint_points_at_the_log_that_holds_the_cause(isolated_home: Path) -> None:
+    results = doctor.run_checks(
+        info(),
+        which=lambda n: f"/usr/bin/{n}",
+        api_up=lambda url, **k: True,
+        webui_up=lambda port, **k: False,
+    )
+    hint = next(r for r in results if r.name == "OpenWebUI responding").hint
+    assert "lepika logs" in hint
+    assert "openwebui.log" in hint
+
+
 def test_doctor_command_exits_zero_when_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(detect, "detect", lambda **k: info())
     monkeypatch.setattr(

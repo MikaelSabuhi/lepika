@@ -329,7 +329,8 @@ def _refuse_ollama_only(cfg: config.Config, detail: str) -> None:
 @model_app.command("add")
 def model_add(
     ref: str | None = typer.Argument(
-        None, help="qwen3:8b · hf.co/<org>/<repo>-GGUF · leave empty to browse"
+        None,
+        help="qwen3:8b · hf.co/<org>/<repo>-GGUF · <org>/<repo> (vLLM) · leave empty to browse",
     ),
 ) -> None:
     """Download a model and make it the default."""
@@ -396,6 +397,13 @@ def model_rm(
     _refuse_ollama_only(cfg, "there is nothing to remove from Ollama.")
     engine.delete_model(cfg.engine_url, name, key=cfg.engine_key)
     console.print(f"[green]✓ Removed:[/green] {escape(name)}")
+    if name == cfg.model:
+        # A config still naming a model the engine no longer has makes `status`
+        # and `up` claim a default that cannot answer. `_ready` says "No model
+        # yet" once the field is empty.
+        cfg.model = ""
+        config.save(cfg)
+        console.print("That was the default model — run `lepika model add` to pick another.")
 
 
 def run() -> None:

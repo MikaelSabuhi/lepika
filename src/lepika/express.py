@@ -96,7 +96,9 @@ def wait_for(
         sleep(1)
     raise FriendlyError(
         f"{what} did not become ready within {seconds}s.",
-        f"Check the logs in {logs_dir()} and run `lepika doctor`.",
+        # `lepika logs`, not a raw path: in Server mode the cause is in the
+        # container's logs, which no file under ~/.lepika/logs holds.
+        "Run `lepika logs` to see why, then `lepika doctor`.",
     )
 
 
@@ -336,7 +338,8 @@ def wait_until_down(
         sleep(1)
     raise FriendlyError(
         f"OpenWebUI on port {port} is still answering after {attempts} shutdown checks.",
-        f"Stop whatever is listening on port {port}, then run `lepika update` again.",
+        # `lepika connect` restarts the UI too, so the hint names no single caller.
+        f"Stop whatever is listening on port {port}, then try again.",
     )
 
 

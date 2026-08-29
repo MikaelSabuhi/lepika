@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import sys
+import urllib.error
 from typing import Any
 
 import pytest
@@ -170,6 +172,56 @@ def test_list_models_with_an_unreadable_reply_is_friendly(payload: bytes) -> Non
     with pytest.raises(FriendlyError) as exc:
         engine.list_models("http://x", urlopen=opener_returning(payload))
     assert "lepika doctor" in exc.value.fix
+
+
+def rejecting(code: int) -> Any:
+    def opener(req: Any, timeout: float = 0) -> Any:
+        raise urllib.error.HTTPError(req.full_url, code, "Unauthorized", {}, None)  # type: ignore[arg-type]
+
+    return opener
+
+
+CALLS: list[tuple[str, Any]] = [
+    ("list_models", lambda opener: engine.list_models("http://gpu-box:11435", urlopen=opener)),
+    (
+        "delete_model",
+        lambda opener: engine.delete_model("http://gpu-box:11435", "q:1b", urlopen=opener),
+    ),
+    (
+        "pull_model",
+        lambda opener: engine.pull_model(
+            "http://gpu-box:11435", ModelRef(raw="q:1b", kind="ollama"), urlopen=opener
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize("name,call", CALLS, ids=[c[0] for c in CALLS])
+@pytest.mark.parametrize("code", [401, 403])
+def test_a_rejected_key_is_named_as_such(name: str, call: Any, code: int) -> None:
+    """`lepika up` cannot fix someone else's engine saying no to our key."""
+    with pytest.raises(FriendlyError) as exc:
+        call(rejecting(code))
+    assert exc.value.problem == "The engine at http://gpu-box:11435 rejected the API key."
+    assert "lepika connect http://gpu-box:11435 --key <key>" in exc.value.fix
+
+
+@pytest.mark.parametrize("name,call", CALLS, ids=[c[0] for c in CALLS])
+def test_a_server_error_is_still_unreachable(name: str, call: Any) -> None:
+    with pytest.raises(FriendlyError) as exc:
+        call(rejecting(500))
+    assert "Could not reach the engine" in exc.value.problem
+
+
+def test_the_pull_bar_is_disabled_when_stdout_is_not_a_tty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-tty run got one frozen '0/549 bytes' line; the JSON log is the record."""
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", out)
+    with engine._bar(ModelRef(raw="q:1b", kind="ollama"), None) as report:
+        report(40, 100)
+    assert out.getvalue() == ""
 
 
 def test_human_size() -> None:

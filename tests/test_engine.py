@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import io
+import itertools
 import json
 import sys
 import urllib.error
 from typing import Any
 
 import pytest
+from rich.progress import Progress
 
 from lepika import engine
 from lepika.errors import FriendlyError
@@ -222,6 +224,23 @@ def test_the_pull_bar_is_disabled_when_stdout_is_not_a_tty(
     with engine._bar(ModelRef(raw="q:1b", kind="ollama"), None) as report:
         report(40, 100)
     assert out.getvalue() == ""
+
+
+def test_speed_column_is_blank_until_a_speed_is_known() -> None:
+    """A cached model completes in one event; rich would print '489/489 bytes ?'."""
+    bar = Progress(disable=True)
+    task_id = bar.add_task("q:1b", total=None)
+    bar.update(task_id, completed=489, total=489)
+    assert engine._SpeedColumn().render(bar.tasks[0]).plain == ""
+
+
+def test_speed_column_shows_a_rate_once_bytes_flow() -> None:
+    clock = itertools.count(0.0, 0.5)
+    bar = Progress(disable=True, get_time=lambda: next(clock))
+    task_id = bar.add_task("q:1b", total=1000)
+    bar.update(task_id, completed=100)
+    bar.update(task_id, completed=300)
+    assert engine._SpeedColumn().render(bar.tasks[0]).plain.endswith("/s")
 
 
 def test_human_size() -> None:

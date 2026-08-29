@@ -10,7 +10,15 @@ import urllib.request
 from collections.abc import Callable, Iterator
 from typing import Any
 
-from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TransferSpeedColumn
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    Task,
+    TextColumn,
+    TransferSpeedColumn,
+)
+from rich.text import Text
 
 from lepika import log
 from lepika.errors import FriendlyError
@@ -172,6 +180,19 @@ def pull_model(
     logger.info("engine.pull", model=ref.raw, result="success")
 
 
+class _SpeedColumn(TransferSpeedColumn):
+    """`TransferSpeedColumn` that stays blank while no speed has been measured.
+
+    A model already on disk arrives as one `completed == total` event, and rich
+    renders the unmeasured speed as a bare `?` after the byte count.
+    """
+
+    def render(self, task: Task) -> Text:
+        if (task.finished_speed or task.speed) is None:
+            return Text("")
+        return super().render(task)
+
+
 @contextlib.contextmanager
 def _bar(ref: ModelRef, progress: ProgressFn | None) -> Iterator[ProgressFn]:
     """Yield a `(completed, total)` reporter: the injected one, or a rich bar.
@@ -186,7 +207,7 @@ def _bar(ref: ModelRef, progress: ProgressFn | None) -> Iterator[ProgressFn]:
         TextColumn("[bold]{task.description}"),
         BarColumn(),
         DownloadColumn(),
-        TransferSpeedColumn(),
+        _SpeedColumn(),
         # Piped or redirected, a live bar renders as one frozen "0/549 bytes" line
         # that never updates. The JSON log already records the pull.
         disable=not sys.stdout.isatty(),

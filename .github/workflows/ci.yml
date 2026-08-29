@@ -13,8 +13,8 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
       - name: Sync dependencies
@@ -31,3 +31,22 @@ jobs:
         run: uv run bandit -c pyproject.toml -r src -q
       - name: Security audit (dependencies)
         run: uv run pip-audit
+
+  # The suite fakes every external effect, so this is about the platform itself:
+  # paths, signals, file modes, `ps` vs `tasklist`. Lint and types are the same
+  # everywhere and run once, above.
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --dev
+      - name: Tests
+        run: uv run pytest -q

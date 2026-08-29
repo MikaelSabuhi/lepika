@@ -228,8 +228,10 @@ Star the repo to follow along, or open an issue with what you'd want next.
 
 ## Contributing
 
-Work happens in a git worktree on a feature branch and lands via PR; `main` is never
-committed to directly. Conventional commits (`feat:`, `fix:`, `docs:`…), squash-merged.
+Issues and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) has the short
+version of how a change gets in. Work happens on a feature branch and lands via PR;
+`main` is never committed to directly. Conventional commits (`feat:`, `fix:`, `docs:`…),
+squash-merged.
 
 ```sh
 uv sync --dev

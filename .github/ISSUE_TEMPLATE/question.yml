@@ -1,0 +1,11 @@
+name: Question
+description: Something unclear about how LePika works.
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: If it's about your own setup, the output of `lepika status` and `lepika doctor` helps.
+    validations:
+      required: true

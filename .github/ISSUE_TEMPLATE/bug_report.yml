@@ -1,0 +1,64 @@
+name: Bug report
+description: Something LePika did, or failed to do, on your machine.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The two command outputs below are what make a bug fixable in one round, so please paste them in full. LePika masks keys and tokens in its logs; still, skim before you paste.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, what you saw, and what you expected instead.
+      placeholder: |
+        I ran `lepika` and picked Express mode. After pulling the model it printed
+        "✗ OpenWebUI did not become ready within 180s". I expected the browser to open.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `lepika doctor`
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output of `lepika logs`
+      description: Paste the whole thing; the last lines are usually the useful ones.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: LePika version
+      description: Output of `lepika --version`.
+      placeholder: lepika 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Express (default, no Docker)
+        - Server (docker compose)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Machine
+      description: OS and version, and the GPU if you have one.
+      placeholder: Windows 11, RTX 4070 · macOS 15, M2 · Ubuntu 24.04, no GPU
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Model you picked, whether Ollama was already installed, anything unusual about the setup.

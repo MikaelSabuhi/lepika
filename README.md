@@ -18,7 +18,6 @@ Got Docker and a homelab? Server mode runs the same thing as one `docker compose
 > for your AI.
 
 [![CI](https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml/badge.svg)](https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml)
-[![Smoke](https://github.com/MikaelSabuhi/lepika/actions/workflows/smoke.yml/badge.svg)](https://github.com/MikaelSabuhi/lepika/actions/workflows/smoke.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 <p align="center">
@@ -100,10 +99,6 @@ Ollama already installed? LePika reuses it instead of installing a second copy.
 
 Server mode is asked about only when Docker is already installed; LePika never asks you
 to install Docker.
-
-Every Monday a smoke run installs LePika on fresh Linux, macOS, and Windows machines
-(Express mode) and a fresh Linux box (Server mode, including `lepika expose`), pulls a
-model, and asks it a question — so an upstream change breaks CI before it breaks you.
 
 ## Everyday commands
 

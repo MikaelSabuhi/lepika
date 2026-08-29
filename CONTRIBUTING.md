@@ -52,3 +52,6 @@ the same pattern.
 
 Use the bug report template. `lepika doctor` and `lepika logs` output is what makes a
 report actionable, so please include both.
+
+Security problems go through private reporting instead of an issue — see
+[SECURITY.md](SECURITY.md).

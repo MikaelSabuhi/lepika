@@ -150,7 +150,7 @@ until you run `lepika expose`. Then the
 chat UI needs a sign-in (first sign-up is the admin) and the engine API needs the
 generated key. The key lives only in `~/.lepika/stack/.env` (mode `0600`) on the box and
 in `~/.lepika/config.toml` (`0600`) on machines you connected from; it is never written
-to logs.
+to logs. Found a security problem? [SECURITY.md](SECURITY.md) says how to report it privately.
 
 ## Pick any model
 

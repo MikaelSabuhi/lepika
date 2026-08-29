@@ -21,7 +21,9 @@ Got Docker and a homelab? Server mode runs the same thing as one `docker compose
 [![Smoke](https://github.com/MikaelSabuhi/lepika/actions/workflows/smoke.yml/badge.svg)](https://github.com/MikaelSabuhi/lepika/actions/workflows/smoke.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-<!-- demo GIF goes here — see the Roadmap -->
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="lepika: detect the machine, pick a model, chat UI ready" width="720">
+</p>
 
 ## Install
 
@@ -229,7 +231,6 @@ Both modes above are v0.1 and work today. Still to come:
 
 - **A published package** — so installing is a plain name instead of a repo URL.
   The install one-liners already work today either way.
-- **A demo GIF** at the top of this page, because one command deserves one picture.
 
 Star the repo to follow along, or open an issue with what you'd want next.
 

@@ -153,7 +153,7 @@ def test_wizard_keeps_the_old_model_when_the_pull_fails(
     assert config.load().model == "previous:model"
 
 
-def test_dry_run_writes_config_and_executes_nothing(
+def test_dry_run_writes_nothing_and_executes_nothing(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
@@ -175,8 +175,10 @@ def test_dry_run_writes_config_and_executes_nothing(
 
     result = runner.invoke(cli.app, ["--dry-run"])
     assert result.exit_code == 0
-    assert "would:" in result.output
-    assert config.load().model == "llama3.2:3b"
+    assert "would: pull model llama3.2:3b" in result.output
+    # "would:" means would: a dry run leaves no config behind either.
+    assert not config.config_path().exists()
+    assert not (isolated_home / "stack").exists()
 
 
 def test_choose_model_prompt_lists_all_three_model_ref_shapes() -> None:

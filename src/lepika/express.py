@@ -12,7 +12,7 @@ import subprocess
 import time
 import urllib.request
 from collections.abc import Callable, Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from lepika import detect, proc
@@ -83,13 +83,99 @@ def install_ollama(
 def start_ollama(os_name: str, popen: PopenFn = subprocess.Popen) -> None:
     log = (logs_dir() / "ollama.log").open("ab")
     try:
-        popen(["ollama", "serve"], stdout=log, stderr=log, **_detach_kwargs(os_name))
+        proc_handle = popen(["ollama", "serve"], stdout=log, stderr=log, **_detach_kwargs(os_name))
     except FileNotFoundError as exc:
         log.close()
         raise FriendlyError(
             "Ollama is installed but not on your PATH yet.",
             "Close this terminal, open a new one, and run `lepika` again.",
         ) from exc
+    # Recorded so a mode switch can tell the engine LePika started from one the
+    # machine already ran: only a pid we wrote down is ever ours to stop.
+    pid_file("ollama").write_text(str(int(proc_handle.pid)))
+
+
+def _is_ollama_process(pid: int, os_name: str, run: RunFn) -> bool:
+    """Does this pid belong to an Ollama, or has the number been recycled?
+
+    `ollama.pid` outlives `lepika down`, which leaves the engine running on purpose,
+    so it is the one pid file that routinely survives a reboot. By then the OS may
+    have handed the number to a stranger while its own Ollama service answers on
+    11434 — the API probe alone would approve signalling that stranger.
+    """
+    # log=False: a pure read, and a pid that is simply gone is not a failure.
+    if os_name == "windows":
+        listed = run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], check=False, log=False
+        )
+        return "ollama" in str(listed.stdout).lower()
+    listed = run(["ps", "-p", str(pid), "-o", "comm="], check=False, log=False)
+    # `comm=` is a bare name on Linux and a full path on macOS; both end in the binary.
+    return PurePosixPath(str(listed.stdout).strip()).name.startswith("ollama")
+
+
+def stop_ollama(
+    os_name: str,
+    url: str,
+    run: RunFn = proc.run_logged,
+    kill: Callable[[int, int], None] = os.kill,
+    api_up: Callable[..., bool] = detect.api_up,
+    key: str = "",
+    attempts: int = 30,
+    sleep: SleepFn = time.sleep,
+) -> bool:
+    """Stop the native Ollama LePika started — never one the machine already ran.
+
+    Not part of `stop`: `lepika down` leaves the engine up on purpose, because it is
+    a shared service. A mode switch is the one case that has to reclaim port 11434.
+
+    Three things must agree before anything is signalled: a pid file we wrote, an
+    engine answering on `url`, and a process by that pid that really is an Ollama.
+    """
+    pf = pid_file("ollama")
+    if not pf.exists():
+        # Homebrew, systemd, or the tray app started it: not ours, not our business.
+        return False
+    try:
+        pid = int(pf.read_text().strip())
+    except ValueError:
+        # Truncated or garbage pid file: nothing to stop, just clear the stale file.
+        pf.unlink(missing_ok=True)
+        return False
+    if pid <= 0:
+        # `os.kill(0, SIGTERM)` signals our whole process group, and negatives
+        # signal a group too — neither is ever what a stale pid file meant.
+        pf.unlink(missing_ok=True)
+        return False
+    if not api_up(url, key=key) or not _is_ollama_process(pid, os_name, run):
+        # Nothing is answering, or the pid is not an Ollama: either way the recorded
+        # number is not our engine, and a stale pid file is never a licence to signal
+        # it (rule 7).
+        pf.unlink(missing_ok=True)
+        return False
+    try:
+        if os_name == "windows":
+            run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
+        else:
+            kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        # Gone, or recycled into a process we don't own (a truncated pid can
+        # parse to a live foreign pid) — the wait below decides what that meant.
+        pass
+    # Signalled is not stopped: Ollama unloads its models on the way out, and the
+    # caller's next move is a Server stack that wants port 11434. Counted in probes
+    # like `wait_until_down`, because each pass also pays `api_up`'s own timeout.
+    for _ in range(attempts):
+        if not api_up(url, key=key):
+            pf.unlink(missing_ok=True)
+            return True
+        sleep(1)
+    # The pid file stays: it is the only record of which engine was ours, and a
+    # retry that has lost it can never stop this process at all.
+    raise FriendlyError(
+        f"Ollama at {url} is still answering after {attempts} shutdown checks.",
+        'Stop it yourself (`pkill -f "ollama serve"`), then run `lepika --mode server` again.',
+    )
 
 
 def wait_for(

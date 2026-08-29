@@ -138,7 +138,9 @@ and LePika keeps your pins on every `lepika up` / `lepika update`. Models and ch
 Docker volumes and survive `lepika down`.
 
 Both modes serve the UI on the same port, so switching between them stops the stack
-you're leaving before it starts the one you're moving to.
+you're leaving before it starts the one you're moving to — including the native Ollama
+LePika started for Express, since the Server stack wants that port. An Ollama you
+installed and run yourself is never stopped.
 
 **Security.** Nothing LePika starts listens beyond localhost in either mode — Express
 starts OpenWebUI on `127.0.0.1`, and the Server stack publishes every port there too —

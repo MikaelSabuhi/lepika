@@ -16,6 +16,18 @@ NO_DOCKER = detect.SystemInfo("macos", "arm64", "apple", 16.0, False, True, True
 CURATED = [models.CuratedModel(name="Small", ref="llama3.2:3b", min_ram_gb=6)]
 
 
+def started(
+    info: detect.SystemInfo,
+    cfg: config.Config,
+    after_engine: Callable[[], None] | None = None,
+    **k: Any,
+) -> str:
+    """A backend start that runs the hook, which is what both real ones do."""
+    if after_engine is not None:
+        after_engine()
+    return "http://localhost:3000"
+
+
 def test_choose_mode_is_silent_without_docker() -> None:
     """Never ask a non-Docker user about Docker — not even to say no."""
     asked: list[str] = []
@@ -64,13 +76,15 @@ def test_wizard_in_server_mode_uses_the_server_backend(
     assert result.exit_code == 0, result.output
     assert events == ["pull", "server", "browser"]
     assert config.load().mode == "server"
+    assert config.load().model == "llama3.2:3b"
 
 
 def test_mode_flag_skips_the_question(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> None:
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "1")  # only the model question
-    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "http://localhost:3000")
+    monkeypatch.setattr(server, "start_stack", started)
+    monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: None)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
     result = runner.invoke(cli.app, ["--mode", "server"])
     assert result.exit_code == 0, result.output
@@ -125,8 +139,9 @@ def switching(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> list[str]
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(express, "stop", lambda info, cfg, **k: stops.append("express") or True)
     monkeypatch.setattr(server, "stop", lambda info, cfg, **k: stops.append("server") or True)
-    monkeypatch.setattr(express, "start_stack", lambda info, cfg, **k: "http://localhost:3000")
-    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "http://localhost:3000")
+    monkeypatch.setattr(express, "start_stack", started)
+    monkeypatch.setattr(server, "start_stack", started)
+    monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: None)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
     return stops
 
@@ -172,6 +187,84 @@ def test_dry_run_switches_nothing_off(
     result = runner.invoke(cli.app, ["--dry-run", "--mode", "server"])
     assert result.exit_code == 0, result.output
     assert switching == []
+
+
+def test_leaving_express_mode_stops_the_ollama_lepika_started(
+    switching: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Server's pre-flight refuses a port 11434 that our own native Ollama still holds."""
+    config.save(config.Config(mode="express", engine_key="s3cret"))
+    seen: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        express,
+        "stop_ollama",
+        lambda os_name, url, key="", **k: bool(seen.append((os_name, url, key))) or True,
+    )
+    answers = iter(["2", "1"])  # Server, then the model
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code == 0, result.output
+    # The key goes with it: a keyed engine answers 401 unauthenticated, which the
+    # probe would read as "already down" and drop the pid file without stopping it.
+    assert seen == [("linux", config.DEFAULT_ENGINE_URL, "s3cret")]
+    assert "Stopped the Ollama LePika had started" in result.output
+
+
+def test_an_ollama_lepika_did_not_start_is_left_alone_and_unannounced(
+    switching: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No pid file means Homebrew or systemd owns it: say nothing, stop nothing."""
+    monkeypatch.setattr(express, "stop_ollama", lambda os_name, url, **k: False)
+    answers = iter(["2", "1"])
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code == 0, result.output
+    assert "Stopped the Ollama" not in result.output
+
+
+def test_leaving_express_mode_never_stops_a_remote_engine(
+    switching: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rule 9: an engine someone else runs is never started or stopped by us."""
+    config.save(config.Config(mode="express", engine_managed=False))
+    monkeypatch.setattr(
+        express, "stop_ollama", lambda *a, **k: pytest.fail("must not touch a remote engine")
+    )
+    answers = iter(["2", "1"])
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    assert runner.invoke(cli.app, []).exit_code == 0
+
+
+def test_leaving_server_mode_does_not_stop_a_native_ollama(
+    switching: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stack we are leaving is the containers; a native Ollama was never ours here."""
+    config.save(config.Config(mode="server"))
+    monkeypatch.setattr(
+        express, "stop_ollama", lambda *a, **k: pytest.fail("Server mode started no native Ollama")
+    )
+    answers = iter(["1", "1"])  # Express, then the model
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    assert runner.invoke(cli.app, []).exit_code == 0
+
+
+def test_the_mode_is_saved_only_once_the_engine_is_up(
+    switching: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-flight that refuses must not leave a config claiming a mode that never started."""
+
+    def refuse(info: detect.SystemInfo, cfg: config.Config, **k: Any) -> str:
+        raise FriendlyError("Ollama is already running natively on port 11434.", "Stop it.")
+
+    config.save(config.Config(mode="express", model="previous:model"))
+    monkeypatch.setattr(express, "stop_ollama", lambda os_name, url, **k: False)
+    monkeypatch.setattr(server, "start_stack", refuse)
+    answers = iter(["2", "1"])  # Server, then the model
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code != 0
+    assert config.load().mode == "express"
+    assert config.load().model == "previous:model"
 
 
 def test_a_backend_too_broken_to_stop_does_not_trap_the_user_in_it(

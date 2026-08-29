@@ -128,6 +128,16 @@ def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> None:
     try:
         # The bool is "was anything running", which is not a reason to stop switching.
         backend.stop(info, old_cfg)
+        # `lepika down` leaves Ollama up on purpose, but Server's pre-flight refuses a
+        # port 11434 that a native engine holds. Only the one LePika started is stopped
+        # — anything else has no pid file — and rule 9 keeps a remote engine untouched,
+        # which is what `engine_managed` short-circuits before the call.
+        if (
+            previous == "express"
+            and old_cfg.engine_managed
+            and express.stop_ollama(info.os, old_cfg.engine_url, key=old_cfg.engine_key)
+        ):
+            console.print("Stopped the Ollama LePika had started.")
     except FriendlyError as exc:
         # A backend too broken to stop is usually why the user is leaving it. Say so
         # and carry on rather than trapping them in the mode that failed.
@@ -149,8 +159,8 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     console.print(detect.plan_sentence(info, cfg.mode))
     ref = choose_model(info, cfg)
     if dry_run:
-        cfg.model = ref.raw
-        config.save(cfg)
+        # Nothing is written: a dry run that saved the config would leave the machine
+        # in a state the run said it would only describe.
         if cfg.mode == "server":
             # Built from lepika_home(), not stack_dir(): a dry run creates nothing.
             env_path = paths.lepika_home() / "stack" / server.ENV_FILE
@@ -171,14 +181,18 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         # saved before the stack starts rather than after. A start that then fails
         # is fixed by `lepika model add`, not by a stale config.
         cfg.model = ref.raw
-    # The mode is decided now; an Ollama model is saved only after its pull succeeds.
-    config.save(cfg)
+        config.save(cfg)
 
     def pull_then_save() -> None:
         if models.uses_vllm(ref.raw):
             return  # vLLM downloads its own weights while starting; nothing to pull
-        # Saved only once the pull succeeded: recording a model the machine failed
-        # to download leaves the config pointing at something that isn't there.
+        # The mode is saved here, not before `start_stack`: this hook runs only once
+        # the engine is up, so a pre-flight that refuses can no longer leave a config
+        # claiming a mode that never started.
+        config.save(cfg)
+        # The model is saved only once the pull succeeded: recording a model the
+        # machine failed to download leaves the config pointing at something that
+        # isn't there.
         engine.pull_model(cfg.engine_url, ref, key=cfg.engine_key)
         cfg.model = ref.raw
         config.save(cfg)

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import signal
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes import Runner
 
-from lepika import express
+from lepika import express, paths
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.paths import logs_dir
@@ -43,13 +46,17 @@ class CallRecorder:
         return self.code
 
 
+class FakeProc:
+    pid = 4242
+
+
 class PopenRecorder:
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], dict[str, Any]]] = []
 
-    def __call__(self, cmd: list[str], **kwargs: Any) -> Any:
+    def __call__(self, cmd: list[str], **kwargs: Any) -> FakeProc:
         self.calls.append((list(cmd), dict(kwargs)))
-        return None
+        return FakeProc()
 
 
 def test_install_ollama_macos_uses_brew() -> None:
@@ -123,6 +130,240 @@ def test_start_ollama_missing_binary_is_friendly() -> None:
     with pytest.raises(FriendlyError) as exc:
         express.start_ollama("linux", popen=missing)
     assert "PATH" in exc.value.problem
+    assert not paths.pid_file("ollama").exists()
+
+
+def test_start_ollama_records_the_pid(isolated_home: Path) -> None:
+    """Without the pid file a mode switch cannot tell our Ollama from anyone else's."""
+    popen = PopenRecorder()
+    express.start_ollama("linux", popen=popen)
+    assert paths.pid_file("ollama").read_text() == "4242"
+    popen.calls[0][1]["stdout"].close()
+
+
+def test_stop_ollama_no_pidfile_returns_false(isolated_home: Path) -> None:
+    """An Ollama LePika did not start (brew, systemd, tray app) is never ours to stop."""
+
+    def never(*a: Any, **k: Any) -> Any:
+        raise AssertionError("must not probe or signal anything without a pid file")
+
+    assert express.stop_ollama("linux", "http://127.0.0.1:11434", kill=never, api_up=never) is False
+
+
+def test_stop_ollama_malformed_pidfile_is_cleaned_up(isolated_home: Path) -> None:
+    pf = paths.pid_file("ollama")
+    pf.write_text("not-a-pid\n")
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("should not signal anything")
+
+    assert (
+        express.stop_ollama(
+            "linux", "http://127.0.0.1:11434", kill=never, api_up=lambda *a, **k: True
+        )
+        is False
+    )
+    assert not pf.exists()
+
+
+@pytest.mark.parametrize("content", ["0", "-5\n"])
+def test_stop_ollama_nonpositive_pid_is_never_signalled(isolated_home: Path, content: str) -> None:
+    """`os.kill(0, ...)` signals the whole process group; 0 and negatives never reach kill."""
+    pf = paths.pid_file("ollama")
+    pf.write_text(content)
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("should not signal anything")
+
+    assert (
+        express.stop_ollama(
+            "linux", "http://127.0.0.1:11434", kill=never, api_up=lambda *a, **k: True
+        )
+        is False
+    )
+    assert not pf.exists()
+
+
+def test_stop_ollama_stale_pidfile_is_never_signalled(isolated_home: Path) -> None:
+    """After a reboot the recorded pid can belong to a stranger — the API decides (rule 7)."""
+    pf = paths.pid_file("ollama")
+    pf.write_text("4242")
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("must not signal a process we cannot confirm is ours")
+
+    stopped = express.stop_ollama(
+        "linux", "http://127.0.0.1:11434", kill=never, api_up=lambda *a, **k: False
+    )
+    assert stopped is False
+    assert not pf.exists()
+
+
+def ollama_ps(pid: int = 4242) -> Runner:
+    """A `run` whose process listing says the pid really is an Ollama."""
+    return Runner(
+        stdout={
+            f"ps -p {pid}": "/usr/local/bin/ollama\n",
+            "tasklist": f'"ollama.exe","{pid}","Console","1","94,208 K"\n',
+        }
+    )
+
+
+def dying(*answers: bool) -> Callable[..., bool]:
+    """An `api_up` that walks a canned sequence: the gate probe, then the wait."""
+    values = iter(answers)
+    return lambda url, **k: next(values)
+
+
+def test_stop_ollama_signals_when_the_api_answers(isolated_home: Path) -> None:
+    paths.pid_file("ollama").write_text("4242")
+    killed: list[tuple[int, int]] = []
+    probed: list[str] = []
+    answers = iter([True, False])
+    run = ollama_ps()
+    stopped = express.stop_ollama(
+        "linux",
+        "http://gpu-box.local:11434",
+        run=run,
+        kill=lambda pid, sig: killed.append((pid, sig)),
+        api_up=lambda url, **k: bool(probed.append(url)) or next(answers),
+    )
+    assert stopped is True
+    assert killed == [(4242, signal.SIGTERM)]
+    # Probed where the config says the engine is, not on the local default.
+    assert probed == ["http://gpu-box.local:11434"] * 2
+    assert run.calls == [["ps", "-p", "4242", "-o", "comm="]]
+    assert not paths.pid_file("ollama").exists()
+
+
+def test_stop_ollama_passes_the_engine_key_to_the_probe(isolated_home: Path) -> None:
+    """A keyed engine answers 401 without the key, which would read as "already down"."""
+    paths.pid_file("ollama").write_text("4242")
+    keys: list[str] = []
+    answers = iter([True, False])
+    express.stop_ollama(
+        "linux",
+        "http://127.0.0.1:11434",
+        run=ollama_ps(),
+        kill=lambda pid, sig: None,
+        api_up=lambda url, key="", **k: bool(keys.append(key)) or next(answers),
+        key="s3cret",
+    )
+    assert keys == ["s3cret", "s3cret"]
+
+
+def test_stop_ollama_waits_for_the_engine_to_actually_exit(isolated_home: Path) -> None:
+    """Ollama unloads models on the way out; port 11434 is only free once it is gone."""
+    pf = paths.pid_file("ollama")
+    pf.write_text("4242")
+    kept: list[bool] = []
+    stopped = express.stop_ollama(
+        "linux",
+        "http://127.0.0.1:11434",
+        run=ollama_ps(),
+        kill=lambda pid, sig: None,
+        api_up=dying(True, True, True, False),
+        # The pid file is what a retry would need: it stays until the engine is gone.
+        sleep=lambda s: kept.append(pf.exists()),
+    )
+    assert stopped is True
+    assert kept == [True, True]
+    assert not pf.exists()
+
+
+def test_stop_ollama_that_never_dies_is_friendly_and_keeps_the_pid_file(
+    isolated_home: Path,
+) -> None:
+    """Returning True here would send the wizard straight into a busy port 11434."""
+    pf = paths.pid_file("ollama")
+    pf.write_text("4242")
+    with pytest.raises(FriendlyError) as exc:
+        express.stop_ollama(
+            "linux",
+            "http://127.0.0.1:11434",
+            run=ollama_ps(),
+            kill=lambda pid, sig: None,
+            api_up=lambda *a, **k: True,
+            attempts=2,
+            sleep=lambda s: None,
+        )
+    assert "still answering" in exc.value.problem
+    assert "ollama serve" in exc.value.fix
+    # Left behind on purpose: the next attempt still needs to know which pid is ours.
+    assert pf.read_text() == "4242"
+
+
+def test_stop_ollama_never_signals_a_pid_that_is_not_an_ollama(isolated_home: Path) -> None:
+    """`ollama.pid` outlives `lepika down`, so a reboot can recycle it onto a stranger."""
+    pf = paths.pid_file("ollama")
+    pf.write_text("4242")
+    run = Runner(stdout={"ps -p 4242": "/Applications/Safari.app/Contents/MacOS/Safari\n"})
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("must not signal a process that is not ours")
+
+    stopped = express.stop_ollama(
+        "linux", "http://127.0.0.1:11434", run=run, kill=never, api_up=lambda *a, **k: True
+    )
+    assert stopped is False
+    assert not pf.exists()
+
+
+def test_stop_ollama_windows_checks_tasklist_then_taskkills(isolated_home: Path) -> None:
+    paths.pid_file("ollama").write_text("4242")
+    run = ollama_ps()
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("Windows has no SIGTERM")
+
+    stopped = express.stop_ollama(
+        "windows",
+        "http://127.0.0.1:11434",
+        run=run,
+        kill=never,
+        api_up=dying(True, False),
+    )
+    assert stopped is True
+    assert run.calls == [
+        ["tasklist", "/FI", "PID eq 4242", "/FO", "CSV", "/NH"],
+        ["taskkill", "/PID", "4242", "/T", "/F"],
+    ]
+    assert not paths.pid_file("ollama").exists()
+
+
+def test_stop_ollama_windows_leaves_a_pid_that_is_not_an_ollama_alone(isolated_home: Path) -> None:
+    pf = paths.pid_file("ollama")
+    pf.write_text("4242")
+    run = Runner(stdout={"tasklist": '"notepad.exe","4242","Console","1","9,208 K"\n'})
+    assert (
+        express.stop_ollama(
+            "windows", "http://127.0.0.1:11434", run=run, api_up=lambda *a, **k: True
+        )
+        is False
+    )
+    assert run.calls == [["tasklist", "/FI", "PID eq 4242", "/FO", "CSV", "/NH"]]
+    assert not pf.exists()
+
+
+def test_stop_ollama_permission_error_is_not_fatal(isolated_home: Path) -> None:
+    """A truncated pid can parse to a live foreign pid — refusing it is not a crash."""
+    pf = paths.pid_file("ollama")
+    pf.write_text("1")
+
+    def denied(pid: int, sig: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    assert (
+        express.stop_ollama(
+            "linux",
+            "http://127.0.0.1:11434",
+            run=ollama_ps(1),
+            kill=denied,
+            api_up=dying(True, False),
+        )
+        is True
+    )
+    assert not pf.exists()
 
 
 def test_ensure_ollama_skips_install_and_start_when_running() -> None:

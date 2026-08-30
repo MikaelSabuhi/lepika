@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from fakes import Caller, Runner
 
-from lepika import config, detect, server
+from lepika import config, detect, log, paths, server
 from lepika.errors import FriendlyError
 
 LINUX_NVIDIA = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
@@ -237,3 +238,19 @@ def test_update_with_the_daemon_down_says_to_retry_update(
     with pytest.raises(FriendlyError) as exc:
         server.update(LINUX_NVIDIA, config.Config(mode="server"), run=Runner(code=1), call=Caller())
     assert "lepika update" in exc.value.fix
+
+
+def test_start_stack_names_the_mode_in_the_stack_up_line(isolated_home: Path) -> None:
+    """Both backends write `stack.up`; only the mode tells the two apart in the log."""
+    server.start_stack(
+        LINUX_NVIDIA,
+        config.Config(mode="server", model="qwen3:8b"),
+        run=Runner({"docker info": '{"nvidia": {}}\n'}),
+        call=Caller(),
+        api_up=lambda url, **k: True,
+        up=lambda port, **k: True,
+        sleep=lambda s: None,
+    )
+    text = (paths.logs_dir() / log.LOG_FILE).read_text(encoding="utf-8")
+    line = next(json.loads(x) for x in text.splitlines() if json.loads(x)["event"] == "stack.up")
+    assert line["mode"] == "server"

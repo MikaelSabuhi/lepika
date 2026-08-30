@@ -18,7 +18,7 @@ def exposed_box(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> list[st
     config.save(config.Config(mode="server", model="qwen3:8b"))
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
     monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: starts.append("start") or "u")
-    monkeypatch.setattr(server, "lan_ip", lambda **k: "192.168.1.20")
+    monkeypatch.setattr(server, "lan_ips", lambda **k: ["192.168.1.20"])
     return starts
 
 
@@ -102,7 +102,7 @@ def test_the_key_is_in_the_env_before_the_stack_starts(
     seen: list[str] = []
     config.save(config.Config(mode="server"))
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
-    monkeypatch.setattr(server, "lan_ip", lambda **k: "192.168.1.20")
+    monkeypatch.setattr(server, "lan_ips", lambda **k: ["192.168.1.20"])
 
     def record_start(info: detect.SystemInfo, cfg: config.Config, **kwargs: object) -> str:
         seen.append(server.read_env(paths.stack_dir() / server.ENV_FILE).get("LEPIKA_API_KEY", ""))
@@ -180,3 +180,32 @@ def test_expose_off_still_works_with_a_keyed_remote_engine(
     assert result.exit_code == 0, result.output
     assert config.load().exposed is False
     assert starts == ["start"]
+
+
+def test_expose_lists_the_other_addresses_this_box_answers_on(
+    exposed_box: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One NIC is the common case, but a box on Wi-Fi and Ethernet answers on both."""
+    monkeypatch.setattr(server, "lan_ips", lambda **k: ["192.168.1.20", "10.0.0.5"])
+    result = runner.invoke(cli.app, ["expose"])
+    assert result.exit_code == 0, result.output
+    assert "http://192.168.1.20:3000" in result.output
+    assert "Also reachable on: http://10.0.0.5:3000" in result.output
+
+
+def test_expose_with_one_address_prints_no_extra_line(exposed_box: list[str]) -> None:
+    result = runner.invoke(cli.app, ["expose"])
+    assert result.exit_code == 0, result.output
+    assert "Also reachable on" not in result.output
+
+
+def test_expose_says_so_when_no_address_resolves(
+    exposed_box: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Offline or locked down: the placeholder is words, and no probe is dialled twice."""
+    monkeypatch.setattr(server, "lan_ips", lambda **k: [])
+    monkeypatch.setattr(server, "lan_ip", lambda **k: pytest.fail("the route was already probed"))
+    result = runner.invoke(cli.app, ["expose"])
+    assert result.exit_code == 0, result.output
+    assert server.NO_ROUTE in result.output
+    assert "Also reachable on" not in result.output

@@ -213,3 +213,100 @@ def test_a_docker_info_that_times_out_is_a_red_check_not_an_abort(isolated_home:
     failed = {r.name: r for r in results if not r.ok}
     assert "Docker running" in failed
     assert "docker compose available" in failed
+
+
+def test_a_compose_probe_that_times_out_is_a_red_check_not_an_abort(isolated_home: Path) -> None:
+    """`docker compose version` hangs the way `docker info` does: a finding, not an abort."""
+    from lepika import config
+    from lepika.errors import FriendlyError
+
+    config.save(config.Config(mode="server"))
+    answering = Runner(stdout={"docker info --format": '{"nvidia": {}}'})
+
+    def hang_on_compose(cmd: list[str], **k: Any) -> Any:
+        if cmd[:3] == ["docker", "compose", "version"]:
+            raise FriendlyError("Command timed out after 20s: docker compose version", "Try again")
+        return answering(cmd, **k)
+
+    results = doctor.run_checks(
+        info(),
+        which=lambda n: "/usr/bin/docker" if n == "docker" else None,
+        api_up=lambda url, **k: True,
+        webui_up=lambda port, **k: True,
+        run=hang_on_compose,
+    )
+    rows = {r.name: r for r in results}
+    assert rows["Docker running"].ok is True
+    assert rows["docker compose available"].ok is False
+    assert rows["docker compose available"].hint
+
+
+def test_the_compose_probe_is_bounded_by_a_timeout(isolated_home: Path) -> None:
+    """Unbounded, `run_logged` waits forever on a daemon that accepts and never answers."""
+    from lepika import config
+
+    config.save(config.Config(mode="server"))
+    answering = Runner(stdout={"docker info --format": '{"nvidia": {}}'})
+    seen: list[dict[str, Any]] = []
+
+    def record(cmd: list[str], **k: Any) -> Any:
+        seen.append({"cmd": cmd, **k})
+        return answering(cmd, **k)
+
+    doctor.run_checks(
+        info(),
+        which=lambda n: "/usr/bin/docker" if n == "docker" else None,
+        api_up=lambda url, **k: True,
+        webui_up=lambda port, **k: True,
+        run=record,
+    )
+    compose = next(c for c in seen if c["cmd"][:3] == ["docker", "compose", "version"])
+    assert compose["timeout"] == 20
+
+
+def test_a_gpu_probe_that_times_out_is_a_red_check_not_an_abort(isolated_home: Path) -> None:
+    """The GPU probe is a third `docker info`: a Docker that hangs must not abort doctor."""
+    from lepika import config
+    from lepika.errors import FriendlyError
+
+    config.save(config.Config(mode="server"))
+    answering = Runner()
+
+    def hang_on_the_gpu_probe(cmd: list[str], **k: Any) -> Any:
+        if "--format" in cmd:
+            raise FriendlyError("Command timed out after 20s: docker info", "Try again")
+        return answering(cmd, **k)
+
+    results = doctor.run_checks(
+        info(),
+        which=lambda n: "/usr/bin/docker" if n == "docker" else None,
+        api_up=lambda url, **k: True,
+        webui_up=lambda port, **k: True,
+        run=hang_on_the_gpu_probe,
+    )
+    rows = {r.name: r for r in results}
+    assert rows["Docker running"].ok is True
+    assert rows["NVIDIA GPU visible to Docker"].ok is False
+    assert rows["NVIDIA GPU visible to Docker"].hint
+
+
+def test_the_gpu_probe_is_bounded_by_a_timeout(isolated_home: Path) -> None:
+    from lepika import config
+
+    config.save(config.Config(mode="server"))
+    answering = Runner(stdout={"docker info --format": '{"nvidia": {}}'})
+    seen: list[dict[str, Any]] = []
+
+    def record(cmd: list[str], **k: Any) -> Any:
+        seen.append({"cmd": cmd, **k})
+        return answering(cmd, **k)
+
+    doctor.run_checks(
+        info(),
+        which=lambda n: "/usr/bin/docker" if n == "docker" else None,
+        api_up=lambda url, **k: True,
+        webui_up=lambda port, **k: True,
+        run=record,
+    )
+    gpu = next(c for c in seen if "--format" in c["cmd"])
+    assert gpu["timeout"] == 20

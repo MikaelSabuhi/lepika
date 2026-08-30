@@ -55,6 +55,8 @@ PRESERVED_DEFAULTS = {
 INACTIVE = {"engine": "ollama", "vllm": "vllm", "expose": "caddy"}
 # B104: host names compared against an engine URL, never an address we bind.
 _LOOPBACK = {"127.0.0.1", "localhost", "0.0.0.0"}  # nosec B104
+# Printed in place of an address when the machine has no route out at all.
+NO_ROUTE = "<this machine's IP>"
 
 
 def install_stack() -> Path:
@@ -156,7 +158,37 @@ def lan_ip(connect: Callable[[socket.socket], None] | None = None) -> str:
     except OSError:
         # No route at all (offline, or a locked-down host): say so in the connect
         # line rather than printing something that looks like an address.
-        return "<this machine's IP>"
+        return NO_ROUTE
+
+
+def lan_ips(
+    connect: Callable[[socket.socket], None] | None = None,
+    getaddrinfo: Callable[..., Any] = socket.getaddrinfo,
+    hostname: Callable[[], str] = socket.gethostname,
+) -> list[str]:
+    """Every address other machines could reach us on, the default route's pick first.
+
+    One address is the usual answer, but a box on Wi-Fi and Ethernet (or behind a
+    VPN, or with a Docker bridge) answers on several, and the route pick is only
+    the one the kernel would use outbound — not necessarily the one the laptop in
+    the next room can reach.
+    """
+    found: list[str] = []
+    route = lan_ip(connect=connect)
+    if route != NO_ROUTE:
+        found.append(route)
+    try:
+        addresses = getaddrinfo(hostname(), None, socket.AF_INET)
+    except OSError:
+        # An unresolvable hostname is normal on a laptop; the route pick still stands.
+        addresses = []
+    for entry in addresses:
+        ip = str(entry[4][0])
+        # Loopback and link-local are addresses nobody on the network dials.
+        if ip.startswith(("127.", "169.254.")) or ip in found:
+            continue
+        found.append(ip)
+    return found
 
 
 def container_engine_url(url: str) -> str:
@@ -168,10 +200,16 @@ def container_engine_url(url: str) -> str:
     return url
 
 
-def _authority(url: str) -> str:
-    """`host[:port]` — what Caddy's `reverse_proxy` wants, with no scheme or path."""
+def _upstream(url: str) -> str:
+    """`LEPIKA_UPSTREAM` for Caddy's `reverse_proxy`: `host[:port]`, no path.
+
+    A bare `host:port` makes Caddy speak plain HTTP to the upstream, so an engine
+    behind TLS keeps its `https://` — that scheme is the only way to ask for it.
+    """
     parts = urlsplit(url)
-    return f"{parts.hostname or ''}:{parts.port}" if parts.port else (parts.hostname or "")
+    host = parts.hostname or ""
+    authority = f"{host}:{parts.port}" if parts.port else host
+    return f"https://{authority}" if parts.scheme == "https" else authority
 
 
 def env_values(cfg: Config, info: SystemInfo, existing: dict[str, str]) -> dict[str, str]:
@@ -184,7 +222,7 @@ def env_values(cfg: Config, info: SystemInfo, existing: dict[str, str]) -> dict[
     )
     # Caddy proxies to whatever the engine actually is: with a remote engine the
     # `engine` profile is inactive, so `ollama:11434` would be a 502 on every request.
-    upstream = "ollama:11434" if cfg.engine_managed else _authority(engine_url)
+    upstream = "ollama:11434" if cfg.engine_managed else _upstream(engine_url)
     api_configs = json.dumps({"0": {"key": cfg.engine_key}}) if cfg.engine_key else "{}"
     values |= {
         "COMPOSE_PROJECT_NAME": "lepika",
@@ -235,8 +273,14 @@ def vllm_active(cfg: Config) -> bool:
 
 
 def engine_label(cfg: Config) -> str:
-    """What to call the engine in a sentence: the model picks it (rule 10)."""
-    return "vLLM" if vllm_active(cfg) else "Ollama"
+    """What to call the engine in a sentence: the model picks it (rule 10).
+
+    A remote engine is nameless on purpose — `lepika connect` never asks what runs
+    over there, so calling it "Ollama" would be a guess printed as a fact.
+    """
+    if vllm_active(cfg):
+        return "vLLM"
+    return "Ollama" if cfg.engine_managed else "a remote engine"
 
 
 def profiles(cfg: Config) -> list[str]:
@@ -271,7 +315,9 @@ def nvidia_in_docker(info: SystemInfo, run: RunFn = proc.run_logged) -> bool:
         return False
     if info.os != "linux":
         return True  # Docker Desktop (WSL2) exposes the GPU without a named runtime
-    result = run(["docker", "info", "--format", "{{json .Runtimes}}"], check=False, log=False)
+    result = run(
+        ["docker", "info", "--format", "{{json .Runtimes}}"], check=False, timeout=20, log=False
+    )
     return bool(result.returncode == 0 and "nvidia" in result.stdout)
 
 
@@ -390,7 +436,7 @@ def start_stack(
         )
     write_env(env_path, values)
     base = compose_cmd(stack, active, gpu_overlay=gpu)
-    log.get_logger().info("stack.up", profiles=active, gpu=info.gpu)
+    log.get_logger().info("stack.up", mode="server", profiles=active, gpu=info.gpu)
     # Streamed, not captured: the first run pulls gigabytes of images and a silent
     # terminal for minutes looks like a hang.
     if call([*base, "up", "-d", "--remove-orphans"]) != 0:

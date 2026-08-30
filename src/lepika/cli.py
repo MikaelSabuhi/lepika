@@ -234,6 +234,14 @@ def connect(
             "Engine URLs start with http:// or https://",
             "Give the whole address, e.g. `lepika connect http://gpu-box:11435`.",
         )
+    if key and cfg.exposed:
+        # The mirror of `expose`'s refusal: Caddy in front of us forwards the request
+        # with the key it generates here, which the keyed remote rejects. Connecting
+        # first and exposing later is the same 401-only proxy, built the other way round.
+        raise FriendlyError(
+            f"This machine is exposed, and the proxy can't relay a keyed engine at {url}.",
+            "Run `lepika expose --off` first, then connect again — or connect without --key.",
+        )
     if not detect.api_up(url, key=key):
         raise FriendlyError(
             f"No engine answered at {url}.",
@@ -289,12 +297,20 @@ def expose(
         config.save(cfg)
         server.start_stack(detect.detect(), cfg)
         log.get_logger().info("expose.on", api_port=cfg.api_port)
-    ip = server.lan_ip()
+    ips = server.lan_ips()
+    # Nothing resolved at all (offline, or a locked-down host): say so in words
+    # rather than print something that reads like an address.
+    ip = ips[0] if ips else server.NO_ROUTE
     if cfg.exposed:
         console.print(f"[green]✓ Exposed.[/green] Chat UI: http://{ip}:{cfg.webui_port}")
     else:
         console.print("Not exposed yet — run `lepika expose` to turn it on.")
         console.print(f"Chat UI once it is on: http://{ip}:{cfg.webui_port}")
+    if len(ips) > 1:
+        # The route pick is the address this box would dial out on, which is not
+        # always the one the laptop in the next room can reach.
+        others = ", ".join(f"http://{other}:{cfg.webui_port}" for other in ips[1:])
+        console.print(f"Also reachable on: {others}", markup=False, soft_wrap=True)
     console.print("The chat UI asks for a sign-in; the engine API wants the key below.")
     # soft_wrap on the copied lines: an 80-column wrap breaks a URL or a key.
     if server.vllm_active(cfg):

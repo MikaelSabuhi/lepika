@@ -185,3 +185,45 @@ def test_connect_in_server_mode_reconciles_the_stack_instead_of_restarting_expre
     result = runner.invoke(cli.app, ["connect", "http://gpu-box:11435"])
     assert result.exit_code == 0, result.output
     assert started == ["http://gpu-box:11435"]
+
+
+def test_connect_with_a_key_refuses_while_this_machine_is_exposed(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """The Caddy in front of us forwards our own key, so a keyed remote only ever 401s."""
+    config.save(config.Config(mode="server", exposed=True))
+    monkeypatch.setattr(detect, "api_up", lambda url, **k: pytest.fail("must not probe"))
+    result = runner.invoke(cli.app, ["connect", "http://gpu-box:11435", "--key", "k"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, FriendlyError)
+    assert "http://gpu-box:11435" in result.exception.problem
+    assert "lepika expose --off" in result.exception.fix
+    assert config.load().engine_managed is True
+
+
+def test_connect_without_a_key_is_fine_while_exposed(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """Only a keyed remote is the problem: the proxy relays an open engine happily."""
+    from lepika import server
+
+    config.save(config.Config(mode="server", exposed=True))
+    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "")
+    result = runner.invoke(cli.app, ["connect", "http://gpu-box:11435"])
+    assert result.exit_code == 0, result.output
+    assert config.load().engine_url == "http://gpu-box:11435"
+
+
+def test_connect_local_is_unaffected_by_exposure(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    from lepika import server
+
+    config.save(config.Config(mode="server", exposed=True, engine_managed=False, engine_key="k"))
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "")
+    result = runner.invoke(cli.app, ["connect", "--local"])
+    assert result.exit_code == 0, result.output
+    assert config.load().engine_managed is True

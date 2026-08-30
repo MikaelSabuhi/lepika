@@ -128,3 +128,9 @@ def test_plan_sentence_names_the_engine_it_is_given() -> None:
     info = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
     assert "OpenWebUI + vLLM" in detect.plan_sentence(info, mode="server", engine="vLLM")
     assert "OpenWebUI + Ollama" in detect.plan_sentence(info, mode="server")
+
+
+def test_plan_sentence_names_a_remote_engine() -> None:
+    info = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
+    sentence = detect.plan_sentence(info, mode="server", engine="a remote engine")
+    assert "OpenWebUI + a remote engine)." in sentence

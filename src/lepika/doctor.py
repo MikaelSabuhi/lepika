@@ -22,15 +22,22 @@ class CheckResult:
     hint: str = ""
 
 
-def _docker_answers(run: Callable[..., Any]) -> bool:
-    """`docker info` exits 0 — and a daemon that never answers counts as not running.
+def _finding(probe: Callable[[], bool]) -> bool:
+    """Run a probe and turn its refusal into a ✗ row rather than an abort.
 
-    `run_logged` raises on a timeout; from a diagnosis that is a finding, not an abort.
+    `run_logged` raises on a timeout or a missing binary; from a diagnosis both are
+    findings — a Docker daemon mid-start accepts the socket and then says nothing,
+    and every probe here is bounded so that it says so instead of hanging.
     """
     try:
-        return bool(run(["docker", "info"], check=False, timeout=20, log=False).returncode == 0)
+        return probe()
     except FriendlyError:
         return False
+
+
+def _answers(run: Callable[..., Any], cmd: list[str]) -> bool:
+    """Does `cmd` exit 0 — and does it answer at all?"""
+    return _finding(lambda: bool(run(cmd, check=False, timeout=20, log=False).returncode == 0))
 
 
 def run_checks(
@@ -47,7 +54,7 @@ def run_checks(
         # Server mode installs nothing natively, so uv and a local Ollama are
         # irrelevant; Docker is the whole prerequisite. `and` short-circuits, so a
         # machine with no docker binary is never probed with one.
-        docker_ok = bool(which("docker") is not None and _docker_answers(run))
+        docker_ok = bool(which("docker") is not None and _answers(run, ["docker", "info"]))
         checks += [
             CheckResult(
                 "Docker running",
@@ -57,11 +64,7 @@ def run_checks(
             ),
             CheckResult(
                 "docker compose available",
-                bool(
-                    docker_ok
-                    and run(["docker", "compose", "version"], check=False, log=False).returncode
-                    == 0
-                ),
+                bool(docker_ok and _answers(run, ["docker", "compose", "version"])),
                 "Docker Compose v2 ships with Docker Desktop; on Linux: docker-compose-plugin",
             ),
         ]
@@ -71,7 +74,7 @@ def run_checks(
             checks.append(
                 CheckResult(
                     "NVIDIA GPU visible to Docker",
-                    server.nvidia_in_docker(info, run=run),
+                    _finding(lambda: server.nvidia_in_docker(info, run=run)),
                     "Install the NVIDIA Container Toolkit: https://docs.nvidia.com/"
                     "datacenter/cloud-native/container-toolkit/install-guide.html",
                 )

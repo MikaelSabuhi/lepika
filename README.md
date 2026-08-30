@@ -200,11 +200,14 @@ lepika connect --local                            # back to this machine
 `lepika expose` (Server mode) puts a small Caddy proxy in front of the engine on port
 `11435`: only requests carrying the generated key get through. It shares the engine this
 machine runs — or an unkeyed remote one — and refuses an engine that needs its own key,
-since the proxy would forward LePika's key to it and be told no every time. `--show`
-reprints the line, `--rotate` issues a new key (machines that already connected have to
-run `lepika connect` again with it), `--off` goes back to localhost only. If the box runs
-a full-weight repo on vLLM, `lepika expose` prints an OpenAI-compatible URL to add in
-OpenWebUI instead of a `connect` line.
+since the proxy would forward LePika's key to it and be told no every time (`lepika connect
+--key` refuses on an exposed machine for the same reason). It prints the address this box
+would dial out on, plus every other address it answers on when there is more than one — the
+one your laptop can reach is not always the first. `--show` reprints the line, `--rotate`
+issues a new key (machines that already connected have to run `lepika connect` again with
+it), `--off` goes back to localhost only. If the box runs a full-weight repo on vLLM,
+`lepika expose` prints an OpenAI-compatible URL to add in OpenWebUI instead of a
+`connect` line.
 
 LePika never installs or starts anything on an engine it didn't set up — it only
 checks that it answers, and says so plainly when it doesn't. If the chat UI is

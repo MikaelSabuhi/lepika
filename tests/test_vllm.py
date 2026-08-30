@@ -262,7 +262,7 @@ def test_expose_on_a_vllm_box_prints_an_openai_url_not_a_connect_line(
     config.save(config.Config(mode="server", model=REPO))
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
     monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
-    monkeypatch.setattr(server, "lan_ip", lambda **k: "192.168.1.20")
+    monkeypatch.setattr(server, "lan_ips", lambda **k: ["192.168.1.20"])
     result = runner.invoke(cli.app, ["expose"])
     assert result.exit_code == 0, result.output
     key = server.read_env(paths.stack_dir() / server.ENV_FILE)["LEPIKA_API_KEY"]
@@ -337,7 +337,7 @@ def test_rotate_on_a_vllm_box_stays_off_the_ollama_connect_line(
     config.save(config.Config(mode="server", model=REPO))
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
     monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
-    monkeypatch.setattr(server, "lan_ip", lambda **k: "192.168.1.20")
+    monkeypatch.setattr(server, "lan_ips", lambda **k: ["192.168.1.20"])
     runner.invoke(cli.app, ["expose"])
     result = runner.invoke(cli.app, ["expose", "--rotate"])
     assert result.exit_code == 0, result.output

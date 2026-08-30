@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import stat
 import sys
 from pathlib import Path
@@ -178,3 +179,91 @@ def test_write_env_keeps_a_dollar_literal_in_a_double_quoted_value(tmp_path: Pat
     assert 'KEY="it\'s $$HOME"' in text
     # A value with no `'` stays single-quoted, where `$` is already literal.
     assert "PLAIN='no $HOME here'" in text
+
+
+def test_engine_label_says_remote_when_the_engine_is_not_ours() -> None:
+    """`lepika up` and the wizard both hand it a config: a remote engine is not "Ollama"."""
+    remote = config.Config(mode="server", engine_managed=False, engine_url="http://gpu-box:11435")
+    assert server.engine_label(remote) == "a remote engine"
+    assert server.engine_label(config.Config(mode="server")) == "Ollama"
+    assert server.engine_label(config.Config(mode="express", engine_managed=False)) == (
+        "a remote engine"
+    )
+
+
+def test_upstream_keeps_https_for_a_remote_behind_tls() -> None:
+    """Caddy's reverse_proxy speaks plain HTTP to a bare host:port — TLS needs the scheme."""
+    assert server._upstream("https://gpu-box:11435") == "https://gpu-box:11435"
+    assert server._upstream("https://gpu-box") == "https://gpu-box"
+    assert server._upstream("http://gpu-box:11435") == "gpu-box:11435"
+    assert server._upstream("http://gpu-box") == "gpu-box"
+
+
+def test_env_upstream_keeps_the_scheme_of_an_https_remote() -> None:
+    cfg = config.Config(mode="server", engine_managed=False, engine_url="https://gpu-box:11435")
+    assert server.env_values(cfg, INFO, existing={})["LEPIKA_UPSTREAM"] == "https://gpu-box:11435"
+
+
+def _addresses(*ips: str) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+    """What `socket.getaddrinfo(host, None, AF_INET)` returns: the address is entry[4][0]."""
+    return [(socket.AF_INET, 0, 0, "", (ip, 0)) for ip in ips]
+
+
+def test_lan_ips_lists_every_address_route_pick_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The route pick cannot be faked through `connect`: only an address this machine
+    # really holds can be bound, and the answer is read back from the socket.
+    monkeypatch.setattr(server, "lan_ip", lambda **k: "192.168.1.20")
+    ips = server.lan_ips(
+        getaddrinfo=lambda *a, **k: _addresses(
+            "127.0.0.1", "169.254.1.9", "192.168.1.20", "10.0.0.5"
+        ),
+        hostname=lambda: "box",
+    )
+    # The route pick leads; loopback and link-local are not addresses anyone dials,
+    # and the pick must not repeat itself.
+    assert ips == ["192.168.1.20", "10.0.0.5"]
+
+
+def test_lan_ips_with_one_address_is_just_the_route_pick(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "lan_ip", lambda **k: "192.168.1.20")
+    ips = server.lan_ips(
+        getaddrinfo=lambda *a, **k: _addresses("192.168.1.20"), hostname=lambda: "box"
+    )
+    assert ips == ["192.168.1.20"]
+
+
+def test_lan_ips_passes_the_route_probe_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The injected `connect` is the one `lan_ip` uses — nothing dials a real network."""
+    ips = server.lan_ips(
+        connect=lambda sock: sock.bind(("127.0.0.1", 0)),
+        getaddrinfo=lambda *a, **k: [],
+        hostname=lambda: "box",
+    )
+    assert ips == ["127.0.0.1"]
+
+
+def test_lan_ips_survives_a_hostname_that_does_not_resolve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unresolvable hostname is normal on a laptop; the route pick still stands."""
+
+    def boom(*a: Any, **k: Any) -> Any:
+        raise OSError("no such host")
+
+    monkeypatch.setattr(server, "lan_ip", lambda **k: "192.168.1.20")
+    ips = server.lan_ips(getaddrinfo=boom, hostname=lambda: "box")
+    assert ips == ["192.168.1.20"]
+
+
+def test_lan_ips_drops_the_placeholder_when_there_is_no_route() -> None:
+    """`lan_ip`'s "<this machine's IP>" is words, not an address: it is not a list entry."""
+
+    def no_route(sock: Any) -> None:
+        raise OSError("no route")
+
+    ips = server.lan_ips(
+        connect=no_route,
+        getaddrinfo=lambda *a, **k: _addresses("192.168.1.20"),
+        hostname=lambda: "box",
+    )
+    assert ips == ["192.168.1.20"]

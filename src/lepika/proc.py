@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
-from collections.abc import Mapping, Sequence
+import sys
+from collections import deque
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Any, BinaryIO
 
 from lepika.errors import FriendlyError
 from lepika.log import LOG_FILE, get_logger
@@ -71,12 +75,68 @@ def run_logged(
     return result
 
 
+_SEGMENT = re.compile(rb"[\r\n]")
+
+
+def stream(
+    cmd: Sequence[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+    popen: Callable[..., Any] = subprocess.Popen,
+    sink: BinaryIO | None = None,
+) -> tuple[int, str]:
+    """Run a command the user has to watch, keeping only its tail for the log.
+
+    `hf download` and `ollama create` take minutes and draw progress bars; captured
+    by `run_logged` they look like a hang. The merged output is copied to the
+    terminal byte for byte (carriage returns included, so bars redraw in place),
+    while the last 40 segments are kept: a failure still gets rule 12's tail
+    without the log holding a download's worth of bars. A secret travels in
+    `env`, never on the command line.
+    """
+    out: BinaryIO = sink if sink is not None else sys.stdout.buffer
+    try:
+        child = popen(
+            list(cmd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=dict(env) if env is not None else None,
+            cwd=str(cwd) if cwd is not None else None,
+        )
+    except FileNotFoundError as exc:
+        get_logger().error("proc.stream", cmd=list(cmd), outcome="not found", output=str(exc))
+        raise FriendlyError(
+            f"Command not found: {cmd[0]}",
+            f"Install {cmd[0]} or run `lepika doctor` for setup help.",
+        ) from exc
+    tail: deque[str] = deque(maxlen=40)
+    pending = b""
+    with child:
+        # `read1` returns whatever has arrived rather than blocking until EOF, which
+        # is what keeps a progress bar live; it is a `BufferedReader` method the
+        # `IO[bytes]` hint on `stdout` does not carry.
+        pipe: Any = child.stdout
+        while chunk := pipe.read1(65536):
+            out.write(chunk)
+            out.flush()
+            *done, pending = _SEGMENT.split(pending + chunk)
+            tail.extend(s.decode("utf-8", "replace") for s in done if s.strip())
+    if pending.strip():
+        tail.append(pending.decode("utf-8", "replace"))
+    code = int(child.returncode)
+    text = "\n".join(tail)
+    if code != 0:
+        get_logger().warning("proc.stream", cmd=list(cmd), exit=code, output=text)
+    return code, text
+
+
 def _decode(exc: subprocess.TimeoutExpired) -> str:
     parts: list[str] = []
-    for stream in (exc.stdout, exc.stderr):
-        if stream is None:
+    for part in (exc.stdout, exc.stderr):
+        if part is None:
             continue
-        parts.append(stream.decode("utf-8", "replace") if isinstance(stream, bytes) else stream)
+        parts.append(part.decode("utf-8", "replace") if isinstance(part, bytes) else part)
     return "".join(parts)
 
 

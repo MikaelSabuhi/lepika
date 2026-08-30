@@ -120,3 +120,9 @@ def test_save_tightens_a_stale_world_readable_temp_file(isolated_home: Path) -> 
     os.chmod(tmp, 0o644)
     config.save(config.Config(engine_key="abc"))
     assert stat.S_IMODE(os.stat(config.config_path()).st_mode) == 0o600
+
+
+def test_hf_token_round_trips_and_defaults_empty(isolated_home: Path) -> None:
+    assert config.load().hf_token == ""
+    config.save(config.Config(hf_token="hf_abc"))
+    assert config.load().hf_token == "hf_abc"

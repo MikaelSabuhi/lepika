@@ -30,3 +30,16 @@ class Caller:
     def __call__(self, cmd: list[str]) -> int:
         self.calls.append(list(cmd))
         return self.code
+
+
+class Streamer:
+    """Stands in for proc.stream: records argv and kwargs, returns a canned (code, tail)."""
+
+    def __init__(self, code: int = 0, tail: str = "") -> None:
+        self.calls: list[tuple[list[str], dict[str, Any]]] = []
+        self.code = code
+        self.tail = tail
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> tuple[int, str]:
+        self.calls.append((list(cmd), dict(kwargs)))
+        return self.code, self.tail

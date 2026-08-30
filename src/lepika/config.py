@@ -26,6 +26,10 @@ class Config:
     # Server). False: `lepika connect` pointed us at an engine someone else runs.
     engine_managed: bool = True
     engine_key: str = ""
+    # Hugging Face token for gated repos (Express imports). Server mode keeps its
+    # own copy in stack/.env, the file compose reads. Never logged: `hf_token` is a
+    # redacted key name (log.py).
+    hf_token: str = ""
     webui_port: int = 3000
     api_port: int = 11435
     exposed: bool = False

@@ -25,3 +25,8 @@ def test_stack_dir_lives_under_home(isolated_home: Path) -> None:
 def test_openwebui_data_dir_lives_under_home(isolated_home: Path) -> None:
     assert paths.openwebui_data_dir() == isolated_home / "openwebui"
     assert paths.openwebui_data_dir().is_dir()
+
+
+def test_hf_dir_is_under_home(isolated_home: Path) -> None:
+    assert paths.hf_dir() == isolated_home / "hf"
+    assert paths.hf_dir().is_dir()

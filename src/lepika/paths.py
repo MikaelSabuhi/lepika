@@ -32,3 +32,9 @@ def openwebui_data_dir() -> Path:
     d = lepika_home() / "openwebui"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def hf_dir() -> Path:
+    d = lepika_home() / "hf"
+    d.mkdir(parents=True, exist_ok=True)
+    return d

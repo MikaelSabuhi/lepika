@@ -351,9 +351,13 @@ def _versioned(text: str) -> Any:
 
 def test_import_model_writes_a_modelfile_and_runs_ollama_create(tmp_path: Path) -> None:
     stream = Streamer()
-    ref = ModelRef(raw="Qwen/Qwen3.5-2B", kind="hf_repo")
     engine.import_model(
-        "http://x", ref, tmp_path, stream=stream, urlopen=_versioned("0.33.0"), environ={}
+        "http://x",
+        "Qwen/Qwen3.5-2B",
+        tmp_path,
+        stream=stream,
+        urlopen=_versioned("0.33.0"),
+        environ={},
     )
     assert (tmp_path / "Modelfile").read_text() == "FROM .\n"
     cmd, kwargs = stream.calls[0]
@@ -386,7 +390,7 @@ def test_import_model_logs_and_raises_when_the_imported_model_will_not_load(
     with pytest.raises(FriendlyError) as exc:
         engine.import_model(
             "http://x",
-            ModelRef(raw="o/r", kind="hf_repo"),
+            "o/r",
             tmp_path,
             stream=stream,
             urlopen=opener,
@@ -399,12 +403,82 @@ def test_import_model_logs_and_raises_when_the_imported_model_will_not_load(
     assert "MLX" in entry["result"]
 
 
+def test_import_model_not_owned_never_writes_into_the_source(tmp_path: Path) -> None:
+    """A folder the user owns is read, not staged: the Modelfile lives in a temp cwd."""
+    seen: dict[str, Any] = {}
+
+    def stream(cmd: list[str], **kwargs: Any) -> tuple[int, str]:
+        cwd = Path(kwargs["cwd"])
+        # Read while the TemporaryDirectory is alive — it is gone once import_model returns.
+        seen["cwd"] = cwd
+        seen["modelfile"] = (cwd / "Modelfile").read_text()
+        return 0, ""
+
+    engine.import_model(
+        "http://x",
+        "local-model",
+        tmp_path,
+        owned=False,
+        stream=stream,
+        urlopen=_versioned("0.33.0"),
+        environ={},
+    )
+    assert not (tmp_path / "Modelfile").exists()
+    assert seen["cwd"] != tmp_path
+    assert seen["modelfile"] == f"FROM {tmp_path.resolve()}\n"
+
+
+def test_import_model_logs_where_the_weights_came_from(tmp_path: Path) -> None:
+    engine.import_model(
+        "http://x",
+        "o/r",
+        tmp_path,
+        stream=Streamer(),
+        urlopen=_versioned("0.33.0"),
+        environ={},
+    )
+    entry = json.loads((paths.logs_dir() / "lepika.log").read_text().splitlines()[-1])
+    assert entry["source"] == str(tmp_path)
+
+
+def test_version_tuple_pads_a_short_version() -> None:
+    """`0.32` means 0.32.0; unpadded it sorts below the floor and would be refused."""
+    assert engine._version_tuple("0.32") == (0, 32, 0)
+
+
+def test_import_model_accepts_a_two_component_version(tmp_path: Path) -> None:
+    stream = Streamer()
+    engine.import_model(
+        "http://x",
+        "o/r",
+        tmp_path,
+        stream=stream,
+        urlopen=_versioned("0.32"),
+        environ={},
+    )
+    assert len(stream.calls) == 1
+
+
+def test_import_model_quantizes_with_the_quant_it_is_given(tmp_path: Path) -> None:
+    stream = Streamer()
+    engine.import_model(
+        "http://x",
+        "o/r",
+        tmp_path,
+        quant="int4",
+        stream=stream,
+        urlopen=_versioned("0.33.0"),
+        environ={},
+    )
+    assert stream.calls[0][0][-2:] == ["-q", "int4"]
+
+
 def test_import_model_refuses_an_old_ollama(tmp_path: Path) -> None:
     stream = Streamer()
     with pytest.raises(FriendlyError) as exc:
         engine.import_model(
             "http://x",
-            ModelRef(raw="o/r", kind="hf_repo"),
+            "o/r",
             tmp_path,
             stream=stream,
             urlopen=_versioned("0.31.2"),
@@ -427,10 +501,32 @@ def test_import_model_maps_create_failures(tmp_path: Path, tail: str, needle: st
     with pytest.raises(FriendlyError) as exc:
         engine.import_model(
             "http://x",
-            ModelRef(raw="o/r", kind="hf_repo"),
+            "o/r",
             tmp_path,
             stream=Streamer(code=1, tail=tail),
             urlopen=_versioned("0.33.0"),
             environ={},
         )
     assert needle in exc.value.problem
+
+
+@pytest.mark.parametrize(
+    ("owned", "kept"),
+    [(True, True), (False, False)],
+)
+def test_import_model_only_promises_a_kept_download_for_its_own_staging(
+    tmp_path: Path, owned: bool, kept: bool
+) -> None:
+    """`~/.lepika/hf` is kept for a retry; the user's own folder was never downloaded."""
+    with pytest.raises(FriendlyError) as exc:
+        engine.import_model(
+            "http://x",
+            "o/r",
+            tmp_path,
+            owned=owned,
+            stream=Streamer(code=1, tail="Error: something else"),
+            urlopen=_versioned("0.33.0"),
+            environ={},
+        )
+    assert ("the download is kept" in exc.value.fix) is kept
+    assert "Run the same command again" in exc.value.fix

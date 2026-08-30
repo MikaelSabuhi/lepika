@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -9,11 +10,21 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, engine, express, hf
+from lepika import acquire, cli, config, detect, engine, express, hf
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
 
 runner = CliRunner()
+
+
+def _plain(output: str) -> str:
+    """CLI output with the colour stripped and the wrapping collapsed.
+
+    Typer forces colour under CI (GITHUB_ACTIONS/FORCE_COLOR), and rich's highlighter
+    then wraps fragments in escape codes that split the substring being looked for.
+    """
+    return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", output).split())
+
 
 INFO = detect.SystemInfo(
     os="linux",
@@ -67,7 +78,13 @@ def test_model_add_rejects_full_weight_repo_where_nothing_can_serve_it(
 @pytest.fixture()
 def fake_import(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> dict[str, Any]:
     """Every effect of the import path, recorded: preflight, download, create, cleanup."""
-    seen: dict[str, Any] = {"pulled": [], "downloaded": [], "imported": [], "confirms": []}
+    seen: dict[str, Any] = {
+        "pulled": [],
+        "downloaded": [],
+        "imported": [],
+        "confirms": [],
+        "quants": [],
+    }
     monkeypatch.setattr(detect, "detect", lambda **k: MAC)
     monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
     monkeypatch.setattr(
@@ -83,11 +100,12 @@ def fake_import(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> dict[st
 
     monkeypatch.setattr(hf, "download", download)
 
-    def import_model(url: str, ref: ModelRef, source: Path, **k: Any) -> None:
-        seen["imported"].append((ref.raw, source))
+    def import_model(url: str, name: str, source: Path, **k: Any) -> None:
+        seen["imported"].append((name, source))
+        seen["quants"].append(k.get("quant"))
 
     monkeypatch.setattr(engine, "import_model", import_model)
-    monkeypatch.setattr(cli, "_confirm", lambda q: seen["confirms"].append(q) or True)
+    monkeypatch.setattr(acquire, "confirm", lambda q: seen["confirms"].append(q) or True)
     return seen
 
 
@@ -100,12 +118,26 @@ def test_model_add_imports_a_safetensors_repo_and_cleans_up(
     assert fake_import["downloaded"] == [("Qwen/Qwen3.5-2B", dest)]
     assert fake_import["imported"] == [("Qwen/Qwen3.5-2B", dest)]
     assert not dest.exists()  # Ollama holds its own copy; 4 GB is not kept twice
+    assert not dest.parent.exists()  # and the org directory does not linger empty
     assert config.load().model == "Qwen/Qwen3.5-2B"
-    assert "4.0 GB" in fake_import["confirms"][0]
-    assert "nvfp4" in fake_import["confirms"][0]
+    # "Fetch", not "Download": a file already in the hub cache is copied, not fetched,
+    # and it costs the disk the question is asking about all the same.
+    assert fake_import["confirms"][0].startswith("Fetch 4.0 GB onto disk and import as nvfp4")
+    assert fake_import["quants"] == ["nvfp4"]  # the default, with no --quant
     assert fake_import["pulled"] == []
     # The MLX engine is checked on the machine the import runs on, whatever it is.
     assert fake_import["mlx"] == ["macos"]
+
+
+def test_model_add_keeps_an_org_directory_another_repo_still_uses(
+    fake_import: dict[str, Any], isolated_home: Path
+) -> None:
+    """`rmdir` removes the org only when it is empty, so a sibling download survives."""
+    sibling = isolated_home / "hf" / "Qwen" / "Qwen3.5-32B"
+    sibling.mkdir(parents=True)
+    result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
+    assert result.exit_code == 0, result.output
+    assert sibling.is_dir()
 
 
 def test_model_add_ensures_the_mlx_engine_before_downloading(
@@ -127,10 +159,33 @@ def test_model_add_ensures_the_mlx_engine_before_downloading(
     assert order == ["mlx", "download"]
 
 
+def test_model_add_quant_chooses_the_quantization(fake_import: dict[str, Any]) -> None:
+    """--quant reaches `ollama create -q`, and the size question says which one it is."""
+    result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B", "--quant", "int4"])
+    assert result.exit_code == 0, result.output
+    assert fake_import["quants"] == ["int4"]
+    assert "int4" in fake_import["confirms"][0]
+
+
+def test_model_add_rejects_a_quant_ollama_does_not_take(fake_import: dict[str, Any]) -> None:
+    result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B", "--quant", "q8"])
+    assert result.exit_code == 2  # Typer's usage error, before anything is downloaded
+    assert "--quant must be one of nvfp4, int4." in _plain(result.output)
+    assert fake_import["downloaded"] == []
+
+
+def test_model_add_ignores_quant_on_a_pull(fake_engine: list[str]) -> None:
+    """A tag is pulled, not built: the flag is only meaningful once an import happens."""
+    result = runner.invoke(cli.app, ["model", "add", "qwen3:8b", "--quant", "int4"])
+    assert result.exit_code == 0, result.output
+    assert fake_engine == ["qwen3:8b"]
+    assert config.load().model == "qwen3:8b"
+
+
 def test_model_add_declined_import_adds_nothing(
     fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli, "_confirm", lambda q: False)
+    monkeypatch.setattr(acquire, "confirm", lambda q: False)
     result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
     assert result.exit_code == 0
     assert fake_import["downloaded"] == []
@@ -140,7 +195,7 @@ def test_model_add_declined_import_adds_nothing(
 def test_model_add_keeps_the_download_when_the_import_fails(
     fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
-    def boom(url: str, ref: ModelRef, source: Path, **k: Any) -> None:
+    def boom(url: str, name: str, source: Path, **k: Any) -> None:
         raise FriendlyError("Import of Qwen/Qwen3.5-2B failed.", "Run it again.")
 
     monkeypatch.setattr(engine, "import_model", boom)
@@ -401,12 +456,9 @@ def test_model_add_help_lists_all_three_model_ref_shapes() -> None:
     """Listing two of three reads as "a full-weight repo is not accepted here"."""
     result = runner.invoke(cli.app, ["model", "add", "--help"])
     assert result.exit_code == 0
-    # Typer forces colour under CI (GITHUB_ACTIONS/FORCE_COLOR), and rich's highlighter
-    # then wraps `<org>` in escape codes that split the substring being looked for.
-    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
     # The help is also wrapped into a box at 80 columns, which splits "(full weights)"
-    # across two lines: drop the borders and collapse the whitespace before looking.
-    plain = " ".join(re.sub(r"[│╭╮╰╯─]", " ", plain).split())
+    # across two lines: drop the borders as well as the colour before looking.
+    plain = " ".join(re.sub(r"[│╭╮╰╯─]", " ", _plain(result.output)).split())
     assert "qwen3:8b" in plain
     # The bare `<org>/<repo>` shape is the one that was missing; only it says what it is.
     assert "<org>/<repo> (full weights)" in plain
@@ -482,8 +534,8 @@ def test_model_add_import_without_a_terminal_is_friendly(
     def no_terminal(question: str, default: bool = False) -> bool:
         raise EOFError
 
-    monkeypatch.setattr(cli.Confirm, "ask", no_terminal)
-    monkeypatch.setattr(cli, "_confirm", cli._ask_confirm)  # the fixture's auto-yes, undone
+    monkeypatch.setattr(acquire.Confirm, "ask", no_terminal)
+    monkeypatch.setattr(acquire, "confirm", acquire.ask_confirm)  # the fixture's auto-yes, undone
     result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
     assert result.exit_code != 0
     assert isinstance(result.exception, FriendlyError)
@@ -500,3 +552,160 @@ def test_model_add_warns_when_the_import_may_not_fit_in_ram_but_proceeds(
     assert result.exit_code == 0, result.output
     assert "may not fit" in " ".join(result.output.split())
     assert fake_import["imported"][0][0] == "Qwen/Qwen3.5-2B"
+
+
+@pytest.fixture()
+def weights(tmp_path: Path) -> Path:
+    """A folder shaped like what `hf download` leaves behind."""
+    folder = tmp_path / "Qwen3.5-2B"
+    folder.mkdir()
+    (folder / "config.json").write_text("{}")
+    (folder / "model.safetensors").write_bytes(b"\0" * 4096)
+    return folder
+
+
+@pytest.fixture()
+def fake_local(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> dict[str, Any]:
+    """Every effect of `model import`, recorded — and no disk, engine or bundle touched."""
+    seen: dict[str, Any] = {"imported": [], "ensured": []}
+    monkeypatch.setattr(detect, "detect", lambda **k: MAC)
+    monkeypatch.setattr(
+        express, "ensure_ollama", lambda info, **k: seen["ensured"].append("ollama")
+    )
+    monkeypatch.setattr(express, "ensure_mlx", lambda info, **k: seen["ensured"].append("mlx"))
+    # Not a directory, so the disk check falls back to ~/.lepika (the isolated one).
+    monkeypatch.setattr(express, "ollama_store", lambda **k: isolated_home / "no-ollama-here")
+    monkeypatch.setattr(engine, "list_models", lambda url, **k: [])
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda p: SimpleNamespace(total=0, used=0, free=10**12)
+    )
+
+    def import_model(url: str, name: str, source: Path, **k: Any) -> None:
+        seen["imported"].append((name, source, k.get("owned"), k.get("quant")))
+
+    monkeypatch.setattr(engine, "import_model", import_model)
+    return seen
+
+
+def test_model_import_imports_a_local_folder_and_makes_it_the_default(
+    fake_local: dict[str, Any], weights: Path
+) -> None:
+    result = runner.invoke(cli.app, ["model", "import", str(weights)])
+    assert result.exit_code == 0, result.output
+    # owned=False: the folder is the user's, so Ollama reads it and nothing writes to it.
+    assert fake_local["imported"] == [("Qwen3.5-2B", weights, False, "nvfp4")]
+    assert config.load().model == "Qwen3.5-2B"
+    assert "✓ Imported:" in result.output
+    assert fake_local["ensured"] == ["ollama", "mlx"]
+    assert not (weights / "Modelfile").exists()
+
+
+def test_model_import_name_wins_over_the_folder_name(
+    fake_local: dict[str, Any], weights: Path
+) -> None:
+    result = runner.invoke(
+        cli.app, ["model", "import", str(weights), "--name", "Qwen/Qwen3.5-2B", "--quant", "int4"]
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_local["imported"] == [("Qwen/Qwen3.5-2B", weights, False, "int4")]
+    assert config.load().model == "Qwen/Qwen3.5-2B"
+
+
+def test_model_import_names_a_dot_path_after_the_real_folder(
+    fake_local: dict[str, Any], weights: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`.` and a trailing slash have no `name` of their own — resolve to find one."""
+    monkeypatch.chdir(weights)
+    assert runner.invoke(cli.app, ["model", "import", "."]).exit_code == 0
+    assert runner.invoke(cli.app, ["model", "import", f"{weights}/"]).exit_code == 0
+    assert [name for name, *_rest in fake_local["imported"]] == ["Qwen3.5-2B", "Qwen3.5-2B"]
+
+
+def test_model_import_never_names_a_model_dot_dot(
+    fake_local: dict[str, Any], weights: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Path("..").name` is `".."`, which Ollama would happily build under that name."""
+    (weights / "checkpoint").mkdir()
+    monkeypatch.chdir(weights / "checkpoint")
+    result = runner.invoke(cli.app, ["model", "import", ".."])
+    assert result.exit_code == 0, result.output
+    assert fake_local["imported"][0][0] == "Qwen3.5-2B"
+    assert config.load().model == "Qwen3.5-2B"
+
+
+def test_model_import_refuses_a_folder_without_weights(
+    fake_local: dict[str, Any], tmp_path: Path
+) -> None:
+    empty = tmp_path / "not-a-model"
+    empty.mkdir()
+    (empty / "model.safetensors").write_bytes(b"\0")  # weights, but no config.json
+    result = runner.invoke(cli.app, ["model", "import", str(empty)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, FriendlyError)
+    assert "does not look like a safetensors model folder" in result.exception.problem
+    assert "lepika model add <org>/<repo>" in result.exception.fix
+    assert fake_local["imported"] == []
+    # A typo'd path must not be how a machine ends up with Ollama installed on it.
+    assert fake_local["ensured"] == []
+
+
+@pytest.mark.parametrize("bad", ["a/b/c", "..", ".", "./x"])
+def test_model_import_refuses_a_name_ollama_cannot_use(
+    fake_local: dict[str, Any], weights: Path, bad: str
+) -> None:
+    """Every part starts alphanumeric, so a path-shaped name is our refusal, not Ollama's."""
+    result = runner.invoke(cli.app, ["model", "import", str(weights), "--name", bad])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, FriendlyError)
+    assert result.exception.problem == f"'{bad}' is not a valid model name."
+    assert "at most one slash" in result.exception.fix
+    assert fake_local["imported"] == []
+    assert fake_local["ensured"] == []  # checked before the engine is installed
+
+
+def test_model_import_needs_express_mode_with_a_local_engine(
+    fake_local: dict[str, Any], weights: Path
+) -> None:
+    """Server mode runs no MLX engine of its own — refuse before touching the engine."""
+    config.save(config.Config(mode="server"))
+    result = runner.invoke(cli.app, ["model", "import", str(weights)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, FriendlyError)
+    assert "Express mode" in result.exception.problem
+    assert "GGUF" in result.exception.fix
+    assert fake_local["ensured"] == []  # nothing installed, nothing started
+    assert fake_local["imported"] == []
+
+
+def test_model_import_skips_a_model_ollama_already_serves(
+    fake_local: dict[str, Any], weights: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine, "list_models", lambda url, **k: [("Qwen3.5-2B:latest", 1)])
+    result = runner.invoke(cli.app, ["model", "import", str(weights)])
+    assert result.exit_code == 0, result.output
+    assert "already imported" in result.output
+    assert fake_local["imported"] == []
+    assert config.load().model == "Qwen3.5-2B"
+
+
+def test_model_import_refuses_when_the_store_disk_is_too_small(
+    fake_local: dict[str, Any], weights: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: SimpleNamespace(total=0, used=0, free=1))
+    result = runner.invoke(cli.app, ["model", "import", str(weights)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, FriendlyError)
+    assert "Not enough disk" in result.exception.problem
+    assert "Free some space" in result.exception.fix
+    assert fake_local["imported"] == []
+
+
+def test_model_import_warns_when_it_may_not_fit_in_ram_but_proceeds(
+    fake_local: dict[str, Any], weights: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same advisory `model add` prints, from the same helper."""
+    monkeypatch.setattr(detect, "detect", lambda **k: dataclasses.replace(MAC, ram_gb=0.0))
+    result = runner.invoke(cli.app, ["model", "import", str(weights)])
+    assert result.exit_code == 0, result.output
+    assert "may not fit" in " ".join(result.output.split())
+    assert len(fake_local["imported"]) == 1

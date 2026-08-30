@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping
@@ -39,6 +40,7 @@ _PULL_IDLE_TIMEOUT = 300.0
 _LOAD_TIMEOUT = 600  # a 27B read from disk into memory
 
 IMPORT_QUANT = "nvfp4"  # what Ollama's own MLX library builds use
+IMPORT_QUANTS: tuple[str, ...] = ("nvfp4", "int4")  # what its MLX runner accepts for `-q`
 IMPORT_MIN_VERSION = (0, 32, 0)  # the x/create rewrite: the Qwen3.5 nvfp4 corruption fix
 MLX_HINT = (
     "Apple Silicon has it built in; on Linux/Windows LePika installs Ollama's MLX bundle "
@@ -294,7 +296,10 @@ def version(url: str, key: str = "", urlopen: UrlOpenFn | None = None) -> str:
 
 
 def _version_tuple(text: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
+    """`0.32` → `(0, 32, 0)`. Padded, because a short tuple sorts below a long one:
+    unpadded, `(0, 32) < (0, 32, 0)` is True and Ollama 0.32 would refuse itself."""
+    parts = [int(part) for part in re.findall(r"\d+", text)[:3]]
+    return tuple(parts + [0] * (3 - len(parts)))
 
 
 def _runner_failed(name: str, detail: str) -> FriendlyError:
@@ -330,36 +335,60 @@ def load_model(url: str, name: str, key: str = "", urlopen: UrlOpenFn | None = N
         raise _unreachable(url, True) from exc
 
 
-def _import_failed(ref: ModelRef, tail: str) -> FriendlyError:
+def _import_failed(name: str, tail: str, owned: bool) -> FriendlyError:
     low = tail.lower()
-    repo = ref.raw.rpartition("/")[2]
+    repo = name.rpartition("/")[2]
     if "unsupported architecture" in low or "not a supported safetensors" in low:
         return FriendlyError(
-            f"Ollama cannot import {ref.raw}'s architecture yet.",
+            f"Ollama cannot import {name}'s architecture yet.",
             f"Use a GGUF build instead, e.g. hf.co/<org>/{repo}-GGUF — or `lepika update` "
             "for a newer Ollama.",
         )
+    # Only LePika's own staging area is worth reassuring about: a retry there resumes a
+    # download that is kept on purpose. A folder the user pointed at never went anywhere.
+    kept = " (the download is kept)" if owned else ""
     return FriendlyError(
-        f"Import of {ref.raw} failed.",
-        "Run the same command again (the download is kept); if it keeps failing, "
-        "run `lepika doctor` and file an issue with the log.",
+        f"Import of {name} failed.",
+        f"Run the same command again{kept}; if it keeps failing, run `lepika doctor` and "
+        "file an issue with the log.",
     )
+
+
+@contextlib.contextmanager
+def _staged(source: Path, owned: bool) -> Iterator[Path]:
+    """The directory `ollama create` runs in — a Modelfile and nothing else is added.
+
+    LePika's own download is staged in place (`FROM .`), which is the E2E-proven path.
+    A folder the user pointed at is never written to, not even a file we would delete
+    afterwards: the Modelfile goes in a temp directory and names the source absolutely.
+    """
+    if owned:
+        # `FROM .` and nothing else: templates and parsers are Ollama's to detect.
+        (source / "Modelfile").write_text("FROM .\n", encoding="utf-8")
+        yield source
+        return
+    with tempfile.TemporaryDirectory(prefix="lepika-import-") as tmp:
+        staging = Path(tmp)
+        (staging / "Modelfile").write_text(f"FROM {source.resolve()}\n", encoding="utf-8")
+        yield staging
 
 
 def import_model(
     url: str,
-    ref: ModelRef,
+    name: str,
     source: Path,
     key: str = "",
     quant: str = IMPORT_QUANT,
+    owned: bool = True,
     stream: StreamFn = proc.stream,
     urlopen: UrlOpenFn | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> None:
-    """`ollama create <org/repo> --experimental -q <quant>` from a staged safetensors dir.
+    """`ollama create <name> --experimental -q <quant>` from a safetensors directory.
 
     The name is the ref itself: Ollama accepts `Qwen/Qwen3.8-27B` verbatim, so the
-    config, `model list` and `same_model` need no mapping table.
+    config, `model list` and `same_model` need no mapping table. `owned` says whose
+    directory `source` is — LePika's staged download, or a folder the user pointed at.
     """
     have = version(url, key, urlopen)
     if _version_tuple(have) < IMPORT_MIN_VERSION:
@@ -367,22 +396,22 @@ def import_model(
             f"Importing full-weight repos needs Ollama 0.32 or newer (you have {have}).",
             "Run `lepika update`.",
         )
-    # `FROM .` and nothing else: templates and parsers are Ollama's to detect.
-    (source / "Modelfile").write_text("FROM .\n", encoding="utf-8")
     env = dict(environ if environ is not None else os.environ)
     env["OLLAMA_HOST"] = url  # the CLI talks to the engine LePika manages, not a default
     logger = log.get_logger()
-    code, tail = stream(
-        ["ollama", "create", ref.raw, "--experimental", "-q", quant], env=env, cwd=source
-    )
+    argv = ["ollama", "create", name, "--experimental", "-q", quant]
+    with _staged(source, owned) as cwd:
+        code, tail = stream(argv, env=env, cwd=cwd)
     if code != 0:
-        logger.warning("engine.import", model=ref.raw, quant=quant, result=tail)
-        raise _import_failed(ref, tail)
+        logger.warning("engine.import", model=name, quant=quant, source=str(source), result=tail)
+        raise _import_failed(name, tail, owned)
     try:
-        load_model(url, ref.raw, key, urlopen)
+        load_model(url, name, key, urlopen)
     except FriendlyError as exc:
         # The build worked and the weights are on disk, but nothing can run them —
         # an attempt that leaves no line would look like it never happened.
-        logger.warning("engine.import", model=ref.raw, quant=quant, result=exc.problem)
+        logger.warning(
+            "engine.import", model=name, quant=quant, source=str(source), result=exc.problem
+        )
         raise
-    logger.info("engine.import", model=ref.raw, quant=quant, result="success")
+    logger.info("engine.import", model=name, quant=quant, source=str(source), result="success")

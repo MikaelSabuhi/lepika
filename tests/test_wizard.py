@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, engine, express, models, wizard
+from lepika import acquire, cli, config, detect, engine, express, models, wizard
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
@@ -208,7 +208,7 @@ def test_dry_run_says_it_would_import_a_full_weight_repo(monkeypatch: pytest.Mon
     assert "would: pull" not in result.output
 
 
-def test_wizard_acquires_the_model_through_cli_acquire(
+def test_wizard_acquires_the_model_through_acquire(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
@@ -218,7 +218,7 @@ def test_wizard_acquires_the_model_through_cli_acquire(
     monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: None)
     monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
-    monkeypatch.setattr(cli, "_acquire", lambda info, cfg, ref: "Qwen/Qwen3.5-2B")
+    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref: "Qwen/Qwen3.5-2B")
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     assert config.load().model == "Qwen/Qwen3.5-2B"
@@ -236,7 +236,7 @@ def test_wizard_declined_download_keeps_the_old_model(
     monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: None)
     monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
-    monkeypatch.setattr(cli, "_acquire", lambda info, cfg, ref: None)
+    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref: None)
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     assert config.load().model == "previous:model"

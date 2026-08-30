@@ -10,7 +10,7 @@ from rich.markup import escape
 from rich.prompt import Prompt
 from rich.table import Table
 
-from lepika import config, detect, engine, express, models, paths, server
+from lepika import acquire, config, detect, engine, express, models, paths, server
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import CuratedModel, ModelRef
@@ -211,9 +211,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         # The model is saved only once it is actually there: recording a model the
         # machine failed to download or import leaves the config pointing at
         # something that isn't.
-        from lepika import cli
-
-        served = cli._acquire(info, cfg, ref)
+        served = acquire.acquire(info, cfg, ref)
         if served is None:
             return  # declined: the stack is up, the model is chosen next time
         cfg.model = served

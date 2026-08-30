@@ -631,6 +631,24 @@ def test_ensure_mlx_refuses_an_old_driver(tmp_path: Path) -> None:
     assert "CUDA 13" in exc.value.problem
 
 
+@pytest.mark.parametrize("missing", ["curl", "tar"])
+def test_ensure_mlx_needs_curl_and_tar_on_linux(tmp_path: Path, missing: str) -> None:
+    """The pipeline is `curl | zstd | tar`; a missing link fails halfway through a gigabyte."""
+    root, _ = _linux_install(tmp_path)
+
+    def which(name: str) -> str | None:
+        if name == "ollama":
+            return str(root / "bin" / "ollama")
+        return None if name == missing else f"/usr/bin/{name}"
+
+    call = CallRecorder()
+    with pytest.raises(FriendlyError) as exc:
+        express.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=call)
+    assert exc.value.problem == "Installing Ollama's MLX engine bundle needs curl and tar."
+    assert "sudo apt install curl tar" in exc.value.fix
+    assert call.calls == []  # nothing downloaded before the pipeline could run
+
+
 def test_ensure_mlx_needs_zstd_on_linux(tmp_path: Path) -> None:
     root, _ = _linux_install(tmp_path)
 

@@ -596,7 +596,7 @@ def ensure_mlx(
         # That is a stale PATH, not a broken install, and it has its own fix.
         raise FriendlyError(
             "Ollama is installed but not on your PATH yet.",
-            "Close this terminal, open a new one, and run `lepika model add` again.",
+            "Close this terminal, open a new one, and try again.",
         )
     if not (install_dir / "lib" / "ollama").is_dir():
         # Name the directory that was probed: "not a standard install" is only
@@ -622,6 +622,14 @@ def ensure_mlx(
             raise FriendlyError(
                 "zstd is needed to unpack Ollama's MLX engine bundle.",
                 "Install it (apt-get install zstd · dnf install zstd · pacman -S zstd) "
+                "and try again.",
+            )
+        # The other two ends of the pipeline. A minimal container image has neither,
+        # and `sh -c` would report only the exit status of the last stage — tar's.
+        if which("curl") is None or which("tar") is None:
+            raise FriendlyError(
+                "Installing Ollama's MLX engine bundle needs curl and tar.",
+                "Install them with your package manager (e.g. `sudo apt install curl tar`) "
                 "and try again.",
             )
         # `lib/ollama`, not the install root: that is the directory tar writes into,

@@ -18,9 +18,15 @@ class RealNetworkCall(BaseException):
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point LEPIKA_HOME at a temp dir so no test touches the real ~/.lepika."""
+    """Point LEPIKA_HOME at a temp dir so no test touches the real ~/.lepika.
+
+    HF_HUB_CACHE goes with it: `hf.preflight` stats the hub cache to size a file the
+    listing reports as `-`, and the fallback is `~/.cache/huggingface/hub` — a real
+    directory on a developer's machine, whose contents would decide the assertion.
+    """
     home = tmp_path / "lepika-home"
     monkeypatch.setenv("LEPIKA_HOME", str(home))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub-cache"))
     return home
 
 

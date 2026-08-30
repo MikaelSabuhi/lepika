@@ -118,6 +118,7 @@ to install Docker.
 | `lepika connect <url> [--key K]` | Use an engine on another machine (`--local` to go back) |
 | `lepika expose [--off\|--show\|--rotate]` | Share the engine + UI on your network behind a generated API key (Server mode) |
 | `lepika model add [ref]` | Download a model and make it the default (no ref → browse) |
+| `lepika model import <dir>` | Import safetensors weights already on disk into Ollama and make it the default (`--name`, `--quant`) |
 | `lepika model list` | List downloaded models (size, default marked) |
 | `lepika model rm <name>` | Remove a downloaded model |
 
@@ -168,15 +169,19 @@ lepika model add Qwen/Qwen3.8-27B                  # full-weight repo — import
 
 The third shape is the original safetensors release. In Express mode on Apple Silicon, and on
 Linux/Windows with a 64-bit x86 (amd64) NVIDIA GPU, LePika downloads it and imports it into
-Ollama with 4-bit quantization — say yes to the size it shows first: a 27B is ~55 GB to
-download and ~15 GB once imported, and the download is deleted after a successful import. On
-NVIDIA, the first import also installs Ollama's MLX engine bundle (~1 GB, once, and a `sudo`
-prompt on Linux if Ollama lives somewhere you don't own); it needs a CUDA 13+ driver, which
-`nvidia-smi` prints top right. In Server mode on Linux + NVIDIA the same ref runs on vLLM
-instead. Anywhere else LePika refuses it and points you at the GGUF build. Paste a
-`huggingface.co/…` link of either kind and LePika works out which it is. Gated
-repos need a Hugging Face token: export `HF_TOKEN` or answer the one-time prompt (stored in
-`~/.lepika/config.toml`, 0600; Server mode keeps it in `stack/.env`).
+Ollama with 4-bit quantization — `nvfp4`, or `--quant int4` if you'd rather have that one.
+Say yes to the size it shows first: a 27B is ~55 GB to download and ~15 GB once imported, and
+the download is deleted after a successful import. On NVIDIA, the first import also installs
+Ollama's MLX engine bundle (~1 GB, once, and a `sudo` prompt on Linux if Ollama lives
+somewhere you don't own); it needs a CUDA 13+ driver, which `nvidia-smi` prints top right. In
+Server mode on Linux + NVIDIA the same ref runs on vLLM instead. Anywhere else LePika refuses
+it and points you at the GGUF build. Paste a `huggingface.co/…` link of either kind and
+LePika works out which it is. Gated repos need a Hugging Face token: export `HF_TOKEN` or
+answer the one-time prompt (stored in `~/.lepika/config.toml`, 0600; Server mode keeps it in
+`stack/.env`).
+
+Already downloaded the repo yourself? `lepika model import ~/models/Qwen3.5-2B` imports
+weights that are already on disk — the folder is only read, never modified or deleted.
 
 Run `lepika model add` with no argument and you get the curated list filtered to your
 RAM, so there is no guessing whether a 27B fits in 16 GB.

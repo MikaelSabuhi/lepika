@@ -55,9 +55,11 @@ class GatedRepo(FriendlyError):
 class Preflight:
     files: tuple[str, ...]
     total_bytes: int
-    # What `download` will actually fetch: `--dry-run` lists the whole repo (so
-    # `has_gguf` can see a .gguf), but EXCLUDES keeps the twins off the disk. Sizing
-    # a download by `total_bytes` would double-count a repo that ships both.
+    # What the download leaves under `~/.lepika/hf`: `--dry-run` lists the whole repo
+    # (so `has_gguf` can see a .gguf), but EXCLUDES keeps the twins off the disk, and
+    # sizing by `total_bytes` would double-count a repo that ships both. Not the same
+    # as bytes off the network — a file `hf` already holds is copied out of its hub
+    # cache, which costs no download and the same disk.
     download_bytes: int
 
     @property
@@ -91,12 +93,53 @@ def _parse_size(text: str) -> int:
     """`hf` prints human sizes in powers of 1000: `390.0`, `2.9K`, `4.5G`."""
     value = text.strip().upper()
     if value == "-":
-        # What `hf` prints for a file it already holds in ~/.cache/huggingface: it
-        # still ships in the repo, it just costs no download.
+        # What `hf` prints for a file it already holds in ~/.cache/huggingface. The
+        # caller stats the cached copy; 0 is only the answer when it cannot find it.
         return 0
     unit = value[-1] if value and value[-1] in _UNITS else ""
     number = value[:-1] if unit else value
     return int(float(number) * _UNITS.get(unit, 1))
+
+
+def cache_dir(environ: Mapping[str, str] | None = None) -> Path:
+    """Where `huggingface_hub` keeps its download cache, resolved as the library does."""
+    env = environ if environ is not None else os.environ
+    if hub := env.get("HF_HUB_CACHE", "").strip():
+        return Path(hub)
+    if home := env.get("HF_HOME", "").strip():
+        return Path(home) / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _cached_size(repo: str, name: str, cache: Path) -> int:
+    """Bytes of a file `hf` reported as `-`, read from the hub cache; 0 if it is not there.
+
+    A download that costs no bytes still costs disk: `hf download --local-dir` copies
+    the cached file into `~/.lepika/hf`, so it belongs in the estimate. The snapshot
+    entry is a symlink into `blobs/`, which `stat()` follows. The first snapshot
+    holding the file answers: this is an estimate, and two revisions of the same
+    weights are the same size to within rounding.
+    """
+    if Path(name).is_absolute() or ".." in Path(name).parts:
+        # Defence in depth: the name comes from `hf`'s own JSON, but a size estimate is
+        # no reason to stat anything outside the cache directory we built the path from.
+        return 0
+    snapshots = cache / f"models--{repo.replace('/', '--')}" / "snapshots"
+    try:
+        revisions = sorted(snapshots.iterdir())
+    except OSError:  # no cache, or nothing cached for this repo
+        return 0
+    for revision in revisions:
+        try:
+            return (revision / name).stat().st_size
+        except OSError:  # not in this snapshot, or a broken symlink
+            continue
+    return 0
+
+
+def _size_of(repo: str, name: str, text: str, cache: Path) -> int:
+    """One listing entry's size on disk, cached or not."""
+    return _cached_size(repo, name, cache) if text.strip() == "-" else _parse_size(text)
 
 
 def _env(token: str, environ: Mapping[str, str] | None) -> dict[str, str]:
@@ -157,9 +200,13 @@ def preflight(
         )
     try:
         entries = _parse_listing(result.stdout)
-        files = tuple(str(e["file"]) for e in entries)
-        total = sum(_parse_size(str(e["size"])) for e in entries)
-        wanted = sum(_parse_size(str(e["size"])) for e in entries if not _excluded(str(e["file"])))
+        cache = cache_dir(environ)
+        sized = [
+            (str(e["file"]), _size_of(repo, str(e["file"]), str(e["size"]), cache)) for e in entries
+        ]
+        files = tuple(name for name, _size in sized)
+        total = sum(size for _name, size in sized)
+        wanted = sum(size for name, size in sized if not _excluded(name))
     except (ValueError, KeyError, TypeError) as exc:
         raise FriendlyError(
             f"Could not read the file list of '{repo}'.",

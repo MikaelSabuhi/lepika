@@ -5,23 +5,20 @@ from __future__ import annotations
 import dataclasses
 import importlib.metadata
 import io
-import shutil
 import sys
 import webbrowser
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
+from pathlib import Path
 from types import ModuleType
 from typing import TextIO
 
 import typer
 from rich.console import Console
 from rich.markup import escape
-from rich.prompt import Confirm
 from rich.table import Table
 
-from lepika import config, detect, engine, express, hf, log, models, paths, server
-from lepika.detect import SystemInfo
+from lepika import acquire, config, detect, engine, express, log, models, paths, server
 from lepika.errors import FriendlyError
-from lepika.models import ModelRef
 
 app = typer.Typer(
     help="One command → local AI chat in your browser.",
@@ -350,114 +347,33 @@ def _refuse_ollama_only(cfg: config.Config, detail: str) -> None:
         )
 
 
-def _ask_confirm(question: str) -> bool:
-    try:
-        return bool(Confirm.ask(question, default=False))
-    except EOFError as exc:
-        # Piped, redirected or in CI: rich sees EOF on stdin. A download this size is
-        # never started on a guess, so say what is missing instead of tracebacking.
-        raise FriendlyError(
-            "Importing a full-weight repo needs a yes/no answer, and there is no terminal to ask.",
-            "Run `lepika model add <repo>` from an interactive shell.",
-        ) from exc
+def _checked_quant(quant: str) -> str:
+    """Refuse a `-q` Ollama's MLX runner would only reject minutes into a build."""
+    if quant not in engine.IMPORT_QUANTS:
+        raise typer.BadParameter(f"--quant must be one of {', '.join(engine.IMPORT_QUANTS)}.")
+    return quant
 
 
-# Patched in tests; the one interactive question on the import path.
-_confirm: Callable[[str], bool] = _ask_confirm
+# One description for both import paths: `model add <org>/<repo>` and `model import <dir>`.
+QUANT_OPTION = typer.Option(
+    engine.IMPORT_QUANT,
+    "--quant",
+    help="Quantization for a full-weight import: nvfp4 (default) or int4.",
+)
+# Out here rather than in the signature: ruff's B008 allows a call in a default only
+# when the annotation is a known-immutable type, and `Path` is not one.
+WEIGHTS_ARGUMENT = typer.Argument(..., help="Folder holding config.json and *.safetensors")
 
 
-def _preflight_with_token(repo: str, cfg: config.Config) -> tuple[hf.Preflight, str]:
-    """List the repo; on a gated answer ask for a token once and try again."""
-    token = hf.token_for(cfg)
-    try:
-        return hf.preflight(repo, token), token
-    except hf.GatedRepo:
-        token = hf.ask_token(cfg)
-        if not token:
-            raise
-        return hf.preflight(repo, token), token
+def _default_name(path: Path) -> str:
+    """What Ollama should call a folder the user did not name.
 
-
-def _import_repo(info: SystemInfo, cfg: config.Config, ref: ModelRef) -> str | None:
-    """Download a full-weight repo and import it into Ollama; the name it now serves."""
-    repo = ref.raw
-    installed = engine.list_models(cfg.engine_url, key=cfg.engine_key, managed=cfg.engine_managed)
-    if any(engine.same_model(name, repo) for name, _size in installed):
-        # Ollama already serves it: downloading the weights again to rebuild the same
-        # model is minutes and gigabytes for nothing.
-        console.print(f"{escape(repo)} is already imported.")
-        return repo
-    pre, token = _preflight_with_token(repo, cfg)
-    if pre.has_gguf and not pre.has_safetensors:
-        # A GGUF build typed without `hf.co/`: Ollama pulls those itself.
-        gguf = models.parse_model_ref(f"hf.co/{repo}")
-        engine.pull_model(cfg.engine_url, gguf, key=cfg.engine_key, managed=cfg.engine_managed)
-        return gguf.raw
-    if not pre.has_safetensors:
-        raise FriendlyError(
-            f"'{repo}' has no safetensors or GGUF weights.",
-            "Pick a repo that ships model weights.",
-        )
-    # Only what download fetches (download_bytes skips the GGUF/PyTorch twins), plus
-    # the quantized copy Ollama writes. Two filesystems can be involved: the download
-    # lands under ~/.lepika, while Ollama writes into its own store — on a stock Linux
-    # service install that is /usr/share/ollama/.ollama, often not the disk $HOME is on.
-    # The smaller of the two decides, because either one filling up fails the import.
-    need = int(pre.download_bytes * 1.3)
-    disks = {paths.lepika_home()}  # created on access, so it is always there
-    store = express.ollama_store()
-    if store.exists():
-        disks.add(store)
-    free = min(shutil.disk_usage(disk).free for disk in disks)
-    if free < need:
-        raise FriendlyError(
-            f"Not enough disk: {repo} needs ~{engine.human_size(need)} free "
-            f"({engine.human_size(free)} available).",
-            "Free some space or pick a smaller model.",
-        )
-    quantized = pre.download_bytes // 4
-    if quantized > info.ram_gb * 0.75 * 2**30:
-        console.print(
-            f"[yellow]{escape(repo)} is about {engine.human_size(quantized)} after "
-            f"quantization — it may not fit comfortably in {info.ram_gb:.0f} GB.[/yellow]"
-        )
-    if not _confirm(
-        f"Download {engine.human_size(pre.download_bytes)} and import as {engine.IMPORT_QUANT} "
-        f"(~{engine.human_size(quantized)})?"
-    ):
-        return None
-    if info.os != "macos":
-        console.print("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
-    express.ensure_mlx(info)
-    dest = hf.download_dir(repo)
-    hf.download(repo, dest, token)
-    engine.import_model(cfg.engine_url, ref, dest, key=cfg.engine_key)
-    # Ollama holds its own copy now; a failed import above keeps `dest` for a resumed retry.
-    shutil.rmtree(dest, ignore_errors=True)
-    return repo
-
-
-def _acquire(info: SystemInfo, cfg: config.Config, ref: ModelRef) -> str | None:
-    """Get `ref` into Ollama — pulled or imported — and return the name it serves.
-
-    None means the user declined the download. Ollama decides the format of an
-    `hf.co/…` ref (NotGGUF falls through to an import); the file list decides a
-    bare `org/repo` (rule 10).
+    `path.name` first: it keeps the name as typed when the folder is a symlink into a
+    cache snapshot. But it is empty for `.` and `/`, and literally `..` for a parent
+    reference — `..` is spellable as an Ollama model name, so without this it would
+    be built and saved as the default. Neither names a model: resolve to the real one.
     """
-    if ref.kind == "hf_repo":
-        return _import_repo(info, cfg, ref)
-    try:
-        engine.pull_model(cfg.engine_url, ref, key=cfg.engine_key, managed=cfg.engine_managed)
-    except engine.NotGGUF:
-        if ref.kind != "hf_gguf" or not express.import_allowed(cfg, info):
-            raise
-        # `hf.co/<org>/<repo>:tag` — the tag is Ollama's, not part of the repo id.
-        repo = ref.raw.removeprefix("hf.co/")
-        head, sep, tail = repo.rpartition("/")
-        repo = head + sep + tail.partition(":")[0]
-        console.print(f"{escape(ref.raw)} ships full weights — importing it into Ollama instead.")
-        return _import_repo(info, cfg, models.parse_model_ref(repo))
-    return ref.raw
+    return path.name if path.name not in ("", "..") else path.resolve().name
 
 
 @model_app.command("add")
@@ -469,8 +385,13 @@ def model_add(
             "leave empty to browse"
         ),
     ),
+    quant: str = QUANT_OPTION,
 ) -> None:
     """Download a model and make it the default."""
+    # Checked before anything is detected or downloaded. Not refused on a pull, though:
+    # an `hf.co/…` ref can still fall through to an import, so the flag is not wrong
+    # there — it is simply ignored when the pull succeeds.
+    quant = _checked_quant(quant)
     # Imported here, not at module scope: `wizard` imports `cli._open_browser`.
     from lepika import wizard
 
@@ -501,13 +422,47 @@ def model_add(
     else:
         # A remote engine is someone else's to run: check it, never install for it.
         express.check_remote_engine(cfg, api_up=detect.api_up)
-    served = _acquire(info, cfg, model_ref)
+    served = acquire.acquire(info, cfg, model_ref, quant=quant)
     if served is None:
         console.print("Nothing added.")
         return
     cfg.model = served
     config.save(cfg)
     console.print(f"[green]✓ Added:[/green] {escape(served)}")
+
+
+@model_app.command("import")
+def model_import(
+    path: Path = WEIGHTS_ARGUMENT,
+    name: str = typer.Option("", "--name", help="What Ollama calls it (default: the folder name)."),
+    quant: str = QUANT_OPTION,
+) -> None:
+    """Import safetensors weights already on disk into Ollama."""
+    quant = _checked_quant(quant)
+    info = detect.detect()
+    cfg = config.load()
+    if not express.import_allowed(cfg, info):
+        # Before any engine call: a Server-mode config must not have an Ollama
+        # installed or started for a model this machine could never build.
+        raise FriendlyError(
+            "Importing weights needs Express mode with an engine on this machine "
+            "(Apple Silicon, or an NVIDIA GPU on 64-bit Linux/Windows).",
+            "Run `lepika --mode express` on such a machine, or use a GGUF build: "
+            "`lepika model add hf.co/<org>/<repo>-GGUF`.",
+        )
+    # Before the engine: a typo'd path is no reason to install Ollama on a machine that
+    # does not have it. `check_local` is pure, so `import_local` runs it again.
+    name = name or _default_name(path)
+    acquire.check_local(path, name)
+    # `import_allowed` already means Express with a managed engine, so there is no
+    # container or remote case to branch on the way `model add` has to.
+    express.ensure_ollama(info, url=cfg.engine_url)
+    # Resolved from here on: the "Importing … from …" line and the `source=` log field
+    # name the folder unambiguously, whatever the shell was sitting in.
+    served = acquire.import_local(info, cfg, path.resolve(), name, quant)
+    cfg.model = served
+    config.save(cfg)
+    console.print(f"[green]✓ Imported:[/green] {escape(served)}")
 
 
 @model_app.command("list")

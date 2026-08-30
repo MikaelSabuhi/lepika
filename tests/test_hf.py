@@ -37,7 +37,7 @@ def test_parse_size_reads_the_units_hf_prints(text: str, expected: int) -> None:
     assert hf._parse_size(text) == expected
 
 
-def test_preflight_reads_a_listing_with_cached_files() -> None:
+def test_preflight_reads_a_listing_with_cached_files(tmp_path: Path) -> None:
     """`hf` prints `-` for anything already in ~/.cache/huggingface — not a parse error.
 
     The file still ships in the repo, so it must stay in `files`: a cached
@@ -50,11 +50,84 @@ def test_preflight_reads_a_listing_with_cached_files() -> None:
             {"file": "tokenizer.json", "size": "2.9K"},
         ]
     )
-    pre = hf.preflight("Qwen/Qwen3.5-2B", run=Runner(stdout={"uv tool run": cached}), environ={})
+    pre = hf.preflight(
+        "Qwen/Qwen3.5-2B",
+        run=Runner(stdout={"uv tool run": cached}),
+        # An empty cache: nothing to stat, so a `-` stays 0 rather than guessing.
+        environ={"HF_HUB_CACHE": str(tmp_path / "empty-hub")},
+    )
     assert pre.has_safetensors is True
     assert "model.safetensors" in pre.files
     assert pre.total_bytes == 2_900
     assert pre.download_bytes == 2_900
+
+
+def test_cache_dir_follows_the_hub_environment_variables(tmp_path: Path) -> None:
+    hub, home = str(tmp_path / "hub"), str(tmp_path / "hf")
+    assert hf.cache_dir({"HF_HUB_CACHE": hub}) == tmp_path / "hub"
+    assert hf.cache_dir({"HF_HOME": home}) == tmp_path / "hf" / "hub"
+    # The library's own precedence: the specific variable beats the general one…
+    assert hf.cache_dir({"HF_HUB_CACHE": hub, "HF_HOME": home}) == tmp_path / "hub"
+    # …but an exported-and-empty one is not a choice, so it falls through.
+    assert hf.cache_dir({"HF_HUB_CACHE": "  ", "HF_HOME": home}) == tmp_path / "hf" / "hub"
+    assert hf.cache_dir({}) == Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def test_preflight_never_stats_outside_the_hub_cache(tmp_path: Path) -> None:
+    """A `-` size is not a reason to stat a path that climbs out of the cache directory."""
+    cache = tmp_path / "hub"
+    (cache / "models--org--repo" / "snapshots" / "aaa").mkdir(parents=True)
+    (tmp_path / "secret").write_bytes(b"\0" * 999)
+    listing = json.dumps([{"file": "../../../secret", "size": "-"}])
+    pre = hf.preflight(
+        "org/repo", run=Runner(stdout={"uv": listing}), environ={"HF_HUB_CACHE": str(cache)}
+    )
+    assert pre.download_bytes == 0
+
+
+def test_preflight_sizes_a_cached_file_from_the_hub_cache(tmp_path: Path) -> None:
+    """A cached file costs no download, but `hf download` copies it onto our disk anyway.
+
+    Sizing it 0 undercounts exactly the repos a user is most likely to import twice.
+    """
+    cache = tmp_path / "hub"
+    snapshot = cache / "models--Qwen--Qwen3.5-2B" / "snapshots" / "a1b2c3"
+    snapshot.mkdir(parents=True)
+    (snapshot / "model.safetensors").write_bytes(b"\0" * 4096)
+    (snapshot / "model.gguf").write_bytes(b"\0" * 8192)
+    listing = json.dumps(
+        [
+            {"file": "model.safetensors", "size": "-"},
+            {"file": "model.gguf", "size": "-"},  # cached too, but EXCLUDES skips it
+            {"file": "tokenizer.json", "size": "2.9K"},
+        ]
+    )
+    pre = hf.preflight(
+        "Qwen/Qwen3.5-2B",
+        run=Runner(stdout={"uv": listing}),
+        environ={"HF_HUB_CACHE": str(cache)},
+    )
+    assert pre.total_bytes == 4096 + 8192 + 2_900
+    assert pre.download_bytes == 4096 + 2_900
+
+
+def test_preflight_reads_the_cached_size_through_the_snapshot_symlink(tmp_path: Path) -> None:
+    """The snapshot entry is a symlink into `blobs/` — `stat()` is what follows it."""
+    cache = tmp_path / "hub"
+    repo = cache / "models--org--repo"
+    blob = repo / "blobs" / "deadbeef"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"\0" * 2048)
+    # Two snapshots, and only the second holds the file: the first must not stop the search.
+    (repo / "snapshots" / "aaa").mkdir(parents=True)
+    snapshot = repo / "snapshots" / "bbb"
+    snapshot.mkdir(parents=True)
+    (snapshot / "model.safetensors").symlink_to(blob)
+    listing = json.dumps([{"file": "model.safetensors", "size": "-"}])
+    pre = hf.preflight(
+        "org/repo", run=Runner(stdout={"uv": listing}), environ={"HF_HUB_CACHE": str(cache)}
+    )
+    assert pre.download_bytes == 2048
 
 
 def test_preflight_lists_files_and_sums_sizes() -> None:

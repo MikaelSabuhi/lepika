@@ -159,13 +159,17 @@ One field, three shapes. The wizard and `lepika model add` both take all of them
 ```sh
 lepika model add qwen3:8b                          # any tag from the Ollama library
 lepika model add hf.co/unsloth/gemma-3-4b-it-GGUF  # any GGUF build on Hugging Face
-lepika model add meta-llama/Llama-3.3-70B-Instruct # full-weight HF repo — vLLM, Server mode on Linux + NVIDIA
+lepika model add Qwen/Qwen3.8-27B                  # full-weight repo — imported into Ollama, or vLLM in Server mode
 ```
 
-The third shape runs on vLLM inside the Server-mode stack (Linux + NVIDIA only, and only
-with LePika's own engine — not a `connect`ed one; anywhere else LePika refuses it and
-points you at the GGUF build). Gated repos need a Hugging Face token: export `HF_TOKEN`
-or answer the one-time prompt; it is stored in `~/.lepika/stack/.env` (0600).
+The third shape is the original safetensors release. In Express mode on Apple Silicon LePika
+downloads it and imports it into Ollama with 4-bit quantization — say yes to the size it
+shows first: a 27B is ~55 GB to download and ~15 GB once imported, and the download is
+deleted after a successful import. In Server mode on Linux + NVIDIA the same ref runs on
+vLLM instead. Anywhere else LePika refuses it and points you at the GGUF build. Paste a
+`huggingface.co/…` link of either kind and LePika works out which it is. Gated repos need a
+Hugging Face token: export `HF_TOKEN` or answer the one-time prompt (stored in
+`~/.lepika/config.toml`, 0600; Server mode keeps it in `stack/.env`).
 
 Run `lepika model add` with no argument and you get the curated list filtered to your
 RAM, so there is no guessing whether a 27B fits in 16 GB.
@@ -197,7 +201,8 @@ already running, `lepika connect` restarts it so the switch takes effect right a
 ## Requirements
 
 - **Disk** for the models: ~0.5 GB for a tiny one, ~5 GB for a good all-rounder,
-  40 GB+ for the flagships.
+  40 GB+ for the flagships. A full-weight import needs about 1.3× the download free
+  while it runs — a 27B is ~55 GB down, ~72 GB free, ~15 GB kept.
 - **8 GB RAM** recommended. Less works: LePika just steers you to smaller models.
 - **A GPU is optional.** CPU-only machines run everything; they run it slowly, and
   LePika tells you so up front.

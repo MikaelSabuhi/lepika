@@ -90,6 +90,10 @@ def _excluded(name: str) -> bool:
 def _parse_size(text: str) -> int:
     """`hf` prints human sizes in powers of 1000: `390.0`, `2.9K`, `4.5G`."""
     value = text.strip().upper()
+    if value == "-":
+        # What `hf` prints for a file it already holds in ~/.cache/huggingface: it
+        # still ships in the repo, it just costs no download.
+        return 0
     unit = value[-1] if value and value[-1] in _UNITS else ""
     number = value[:-1] if unit else value
     return int(float(number) * _UNITS.get(unit, 1))

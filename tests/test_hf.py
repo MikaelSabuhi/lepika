@@ -25,10 +25,36 @@ LISTING = json.dumps(
 
 @pytest.mark.parametrize(
     ("text", "expected"),
-    [("390.0", 390), ("2.9K", 2_900), ("4.5G", 4_500_000_000), ("1.5T", 1_500_000_000_000)],
+    [
+        ("390.0", 390),
+        ("2.9K", 2_900),
+        ("4.5G", 4_500_000_000),
+        ("1.5T", 1_500_000_000_000),
+        ("-", 0),  # already in the hub cache
+    ],
 )
 def test_parse_size_reads_the_units_hf_prints(text: str, expected: int) -> None:
     assert hf._parse_size(text) == expected
+
+
+def test_preflight_reads_a_listing_with_cached_files() -> None:
+    """`hf` prints `-` for anything already in ~/.cache/huggingface — not a parse error.
+
+    The file still ships in the repo, so it must stay in `files`: a cached
+    safetensors that vanished here would send a full-weight repo to a pull.
+    """
+    cached = json.dumps(
+        [
+            {"file": "config.json", "size": "-"},
+            {"file": "model.safetensors", "size": "-"},
+            {"file": "tokenizer.json", "size": "2.9K"},
+        ]
+    )
+    pre = hf.preflight("Qwen/Qwen3.5-2B", run=Runner(stdout={"uv tool run": cached}), environ={})
+    assert pre.has_safetensors is True
+    assert "model.safetensors" in pre.files
+    assert pre.total_bytes == 2_900
+    assert pre.download_bytes == 2_900
 
 
 def test_preflight_lists_files_and_sums_sizes() -> None:

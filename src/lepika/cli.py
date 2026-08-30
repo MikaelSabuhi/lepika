@@ -5,19 +5,23 @@ from __future__ import annotations
 import dataclasses
 import importlib.metadata
 import io
+import shutil
 import sys
 import webbrowser
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from types import ModuleType
 from typing import TextIO
 
 import typer
 from rich.console import Console
 from rich.markup import escape
+from rich.prompt import Confirm
 from rich.table import Table
 
-from lepika import config, detect, engine, express, log, models, paths, server
+from lepika import config, detect, engine, express, hf, log, models, paths, server
+from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
+from lepika.models import ModelRef
 
 app = typer.Typer(
     help="One command → local AI chat in your browser.",
@@ -346,11 +350,115 @@ def _refuse_ollama_only(cfg: config.Config, detail: str) -> None:
         )
 
 
+def _ask_confirm(question: str) -> bool:
+    try:
+        return bool(Confirm.ask(question, default=False))
+    except EOFError as exc:
+        # Piped, redirected or in CI: rich sees EOF on stdin. A download this size is
+        # never started on a guess, so say what is missing instead of tracebacking.
+        raise FriendlyError(
+            "Importing a full-weight repo needs a yes/no answer, and there is no terminal to ask.",
+            "Run `lepika model add <repo>` from an interactive shell.",
+        ) from exc
+
+
+# Patched in tests; the one interactive question on the import path.
+_confirm: Callable[[str], bool] = _ask_confirm
+
+
+def _preflight_with_token(repo: str, cfg: config.Config) -> tuple[hf.Preflight, str]:
+    """List the repo; on a gated answer ask for a token once and try again."""
+    token = hf.token_for(cfg)
+    try:
+        return hf.preflight(repo, token), token
+    except hf.GatedRepo:
+        token = hf.ask_token(cfg)
+        if not token:
+            raise
+        return hf.preflight(repo, token), token
+
+
+def _import_repo(info: SystemInfo, cfg: config.Config, ref: ModelRef) -> str | None:
+    """Download a full-weight repo and import it into Ollama; the name it now serves."""
+    repo = ref.raw
+    installed = engine.list_models(cfg.engine_url, key=cfg.engine_key, managed=cfg.engine_managed)
+    if any(engine.same_model(name, repo) for name, _size in installed):
+        # Ollama already serves it: downloading the weights again to rebuild the same
+        # model is minutes and gigabytes for nothing.
+        console.print(f"{escape(repo)} is already imported.")
+        return repo
+    pre, token = _preflight_with_token(repo, cfg)
+    if pre.has_gguf and not pre.has_safetensors:
+        # A GGUF build typed without `hf.co/`: Ollama pulls those itself.
+        gguf = models.parse_model_ref(f"hf.co/{repo}")
+        engine.pull_model(cfg.engine_url, gguf, key=cfg.engine_key, managed=cfg.engine_managed)
+        return gguf.raw
+    if not pre.has_safetensors:
+        raise FriendlyError(
+            f"'{repo}' has no safetensors or GGUF weights.",
+            "Pick a repo that ships model weights.",
+        )
+    # Only what download fetches (download_bytes skips the GGUF/PyTorch twins), plus
+    # the quantized copy Ollama writes: both on the disk
+    # that holds ~/.lepika (Ollama's store defaults to ~/.ollama beside it).
+    need = int(pre.download_bytes * 1.3)
+    free = shutil.disk_usage(paths.lepika_home()).free
+    if free < need:
+        raise FriendlyError(
+            f"Not enough disk: {repo} needs ~{engine.human_size(need)} free "
+            f"({engine.human_size(free)} available).",
+            "Free some space or pick a smaller model.",
+        )
+    quantized = pre.download_bytes // 4
+    if quantized > info.ram_gb * 0.75 * 2**30:
+        console.print(
+            f"[yellow]{escape(repo)} is about {engine.human_size(quantized)} after "
+            f"quantization — it may not fit comfortably in {info.ram_gb:.0f} GB.[/yellow]"
+        )
+    if not _confirm(
+        f"Download {engine.human_size(pre.download_bytes)} and import as {engine.IMPORT_QUANT} "
+        f"(~{engine.human_size(quantized)})?"
+    ):
+        return None
+    dest = hf.download_dir(repo)
+    hf.download(repo, dest, token)
+    engine.import_model(cfg.engine_url, ref, dest, key=cfg.engine_key)
+    # Ollama holds its own copy now; a failed import above keeps `dest` for a resumed retry.
+    shutil.rmtree(dest, ignore_errors=True)
+    return repo
+
+
+def _acquire(info: SystemInfo, cfg: config.Config, ref: ModelRef) -> str | None:
+    """Get `ref` into Ollama — pulled or imported — and return the name it serves.
+
+    None means the user declined the download. Ollama decides the format of an
+    `hf.co/…` ref (NotGGUF falls through to an import); the file list decides a
+    bare `org/repo` (rule 10).
+    """
+    if ref.kind == "hf_repo":
+        return _import_repo(info, cfg, ref)
+    try:
+        engine.pull_model(cfg.engine_url, ref, key=cfg.engine_key, managed=cfg.engine_managed)
+    except engine.NotGGUF:
+        if ref.kind != "hf_gguf" or not express.import_allowed(cfg, info):
+            raise
+        # `hf.co/<org>/<repo>:tag` — the tag is Ollama's, not part of the repo id.
+        repo = ref.raw.removeprefix("hf.co/")
+        head, sep, tail = repo.rpartition("/")
+        repo = head + sep + tail.partition(":")[0]
+        console.print(f"{escape(ref.raw)} ships full weights — importing it into Ollama instead.")
+        return _import_repo(info, cfg, models.parse_model_ref(repo))
+    return ref.raw
+
+
 @model_app.command("add")
 def model_add(
     ref: str | None = typer.Argument(
         None,
-        help="qwen3:8b · hf.co/<org>/<repo>-GGUF · <org>/<repo> (vLLM) · leave empty to browse",
+        help=(
+            "qwen3:8b · hf.co/<org>/<repo>-GGUF · <org>/<repo> (full weights) · "
+            "leave empty to browse"
+        ),
     ),
 ) -> None:
     """Download a model and make it the default."""
@@ -364,7 +472,7 @@ def model_add(
     else:
         # Same rejection as the wizard's, by reusing it rather than restating it.
         model_ref = wizard._validate(models.parse_model_ref(ref), cfg, info)
-    if models.uses_vllm(model_ref.raw):
+    if models.uses_vllm(model_ref.raw) and server.vllm_allowed(cfg, info):
         # Nothing to pull: vLLM downloads the weights itself when it starts, and it
         # only starts once the config names the model compose interpolates.
         server.hf_token_prompt(paths.stack_dir() / server.ENV_FILE)
@@ -384,10 +492,13 @@ def model_add(
     else:
         # A remote engine is someone else's to run: check it, never install for it.
         express.check_remote_engine(cfg, api_up=detect.api_up)
-    engine.pull_model(cfg.engine_url, model_ref, key=cfg.engine_key, managed=cfg.engine_managed)
-    cfg.model = model_ref.raw
+    served = _acquire(info, cfg, model_ref)
+    if served is None:
+        console.print("Nothing added.")
+        return
+    cfg.model = served
     config.save(cfg)
-    console.print(f"[green]✓ Added:[/green] {escape(model_ref.raw)}")
+    console.print(f"[green]✓ Added:[/green] {escape(served)}")
 
 
 @model_app.command("list")

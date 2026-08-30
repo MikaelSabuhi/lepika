@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import dataclasses
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, engine, express
+from lepika import cli, config, detect, engine, express, hf
 from lepika.errors import FriendlyError
+from lepika.models import ModelRef
 
 runner = CliRunner()
 
@@ -39,10 +42,191 @@ def test_model_add_with_ref_pulls_and_saves(fake_engine: list[str], isolated_hom
     assert config.load().model == "qwen3:8b"
 
 
-def test_model_add_rejects_full_weight_repo(fake_engine: list[str], isolated_home: Path) -> None:
+CPU = detect.SystemInfo("linux", "x86_64", "none", 32.0, False, True, True)
+MAC = detect.SystemInfo("macos", "arm64", "apple", 32.0, False, True, True)
+SAFETENSORS = hf.Preflight(
+    files=("config.json", "model.safetensors"),
+    total_bytes=4_000_000_000,
+    download_bytes=4_000_000_000,
+)
+GGUF_ONLY = hf.Preflight(files=("model-Q4_K_M.gguf",), total_bytes=4_000_000_000, download_bytes=0)
+
+
+def test_model_add_rejects_full_weight_repo_where_nothing_can_serve_it(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    monkeypatch.setattr(detect, "detect", lambda **k: CPU)
     result = runner.invoke(cli.app, ["model", "add", "meta-llama/Llama-3.3-70B"])
     assert result.exit_code != 0
-    assert fake_engine == []
+    # `runner.invoke` bypasses `cli.run`, which is where a FriendlyError is printed,
+    # so the message is asserted on the exception itself (as the other CLI tests do).
+    assert isinstance(result.exception, FriendlyError)
+    assert "GGUF" in result.exception.fix
+
+
+@pytest.fixture()
+def fake_import(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> dict[str, Any]:
+    """Every effect of the import path, recorded: preflight, download, create, cleanup."""
+    seen: dict[str, Any] = {"pulled": [], "downloaded": [], "imported": [], "confirms": []}
+    monkeypatch.setattr(detect, "detect", lambda **k: MAC)
+    monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
+    monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: seen["pulled"].append(ref.raw))
+    monkeypatch.setattr(engine, "list_models", lambda url, **k: [])
+    monkeypatch.setattr(hf, "preflight", lambda repo, token="", **k: SAFETENSORS)
+
+    def download(repo: str, dest: Path, token: str = "", **k: Any) -> None:
+        seen["downloaded"].append((repo, dest))
+        dest.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(hf, "download", download)
+
+    def import_model(url: str, ref: ModelRef, source: Path, **k: Any) -> None:
+        seen["imported"].append((ref.raw, source))
+
+    monkeypatch.setattr(engine, "import_model", import_model)
+    monkeypatch.setattr(cli, "_confirm", lambda q: seen["confirms"].append(q) or True)
+    return seen
+
+
+def test_model_add_imports_a_safetensors_repo_and_cleans_up(
+    fake_import: dict[str, Any], isolated_home: Path
+) -> None:
+    result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
+    assert result.exit_code == 0, result.output
+    dest = isolated_home / "hf" / "Qwen" / "Qwen3.5-2B"
+    assert fake_import["downloaded"] == [("Qwen/Qwen3.5-2B", dest)]
+    assert fake_import["imported"] == [("Qwen/Qwen3.5-2B", dest)]
+    assert not dest.exists()  # Ollama holds its own copy; 4 GB is not kept twice
+    assert config.load().model == "Qwen/Qwen3.5-2B"
+    assert "4.0 GB" in fake_import["confirms"][0]
+    assert "nvfp4" in fake_import["confirms"][0]
+    assert fake_import["pulled"] == []
+
+
+def test_model_add_declined_import_adds_nothing(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_confirm", lambda q: False)
+    result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
+    assert result.exit_code == 0
+    assert fake_import["downloaded"] == []
+    assert config.load().model == ""
+
+
+def test_model_add_keeps_the_download_when_the_import_fails(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    def boom(url: str, ref: ModelRef, source: Path, **k: Any) -> None:
+        raise FriendlyError("Import of Qwen/Qwen3.5-2B failed.", "Run it again.")
+
+    monkeypatch.setattr(engine, "import_model", boom)
+    result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
+    assert result.exit_code != 0
+    assert (isolated_home / "hf" / "Qwen" / "Qwen3.5-2B").is_dir()
+    assert config.load().model == ""
+
+
+def test_model_add_routes_a_gguf_only_repo_to_a_pull(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hf, "preflight", lambda repo, token="", **k: GGUF_ONLY)
+    result = runner.invoke(cli.app, ["model", "add", "unsloth/x-GGUF"])
+    assert result.exit_code == 0, result.output
+    assert fake_import["pulled"] == ["hf.co/unsloth/x-GGUF"]
+    assert fake_import["downloaded"] == []
+    assert config.load().model == "hf.co/unsloth/x-GGUF"
+
+
+def test_model_add_falls_through_from_a_not_gguf_refusal_to_an_import(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(url: str, ref: ModelRef, **k: Any) -> None:
+        raise engine.NotGGUF("'hf.co/Qwen/Qwen3.5-2B' ships full weights.", "Use a GGUF build.")
+
+    monkeypatch.setattr(engine, "pull_model", refuse)
+    result = runner.invoke(cli.app, ["model", "add", "huggingface.co/Qwen/Qwen3.5-2B"])
+    assert result.exit_code == 0, result.output
+    assert fake_import["imported"][0][0] == "Qwen/Qwen3.5-2B"
+    assert config.load().model == "Qwen/Qwen3.5-2B"
+
+
+def test_model_add_not_gguf_refusal_stays_an_error_where_imports_cannot_run(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    monkeypatch.setattr(detect, "detect", lambda **k: CPU)
+    monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
+
+    def refuse(url: str, ref: ModelRef, **k: Any) -> None:
+        raise engine.NotGGUF("'hf.co/Qwen/Qwen3.5-2B' ships full weights.", "Use a GGUF build.")
+
+    monkeypatch.setattr(engine, "pull_model", refuse)
+    result = runner.invoke(cli.app, ["model", "add", "hf.co/Qwen/Qwen3.5-2B"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, engine.NotGGUF)
+    assert "full weights" in result.exception.problem
+
+
+def test_model_add_gated_repo_asks_for_a_token_once_then_retries(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    def preflight(repo: str, token: str = "", **k: Any) -> hf.Preflight:
+        calls.append(token)
+        if not token:
+            raise hf.GatedRepo("'x/y' is gated or private on Hugging Face.", "Accept its licence.")
+        return SAFETENSORS
+
+    monkeypatch.setattr(hf, "preflight", preflight)
+    monkeypatch.setattr(hf, "ask_token", lambda cfg, **k: "hf_new")
+    result = runner.invoke(cli.app, ["model", "add", "x/y"])
+    assert result.exit_code == 0, result.output
+    assert calls == ["", "hf_new"]
+
+
+def test_model_add_gated_repo_without_a_token_is_the_licence_hint(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def gated(repo: str, token: str = "", **k: Any) -> hf.Preflight:
+        raise hf.GatedRepo("'x/y' is gated or private on Hugging Face.", "Accept its licence.")
+
+    monkeypatch.setattr(hf, "preflight", gated)
+    monkeypatch.setattr(hf, "ask_token", lambda cfg, **k: "")
+    result = runner.invoke(cli.app, ["model", "add", "x/y"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, hf.GatedRepo)
+    assert "gated" in result.exception.problem
+
+
+def test_model_add_refuses_when_the_disk_is_too_small(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    # Only `.free` is read; a namespace keeps the fake off CPython's private
+    # `_ntuple_diskusage` name.
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=1_000_000))
+    result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, FriendlyError)
+    assert "Not enough disk" in result.exception.problem
+    assert fake_import["downloaded"] == []
+
+
+def test_model_add_repo_without_weights_is_refused(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        hf,
+        "preflight",
+        lambda repo, token="", **k: hf.Preflight(
+            files=("README.md",), total_bytes=1, download_bytes=1
+        ),
+    )
+    result = runner.invoke(cli.app, ["model", "add", "x/y"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, FriendlyError)
+    assert "no safetensors or GGUF" in result.exception.problem
 
 
 def test_model_add_never_installs_an_engine_someone_else_runs(
@@ -174,10 +358,12 @@ def test_model_add_help_lists_all_three_model_ref_shapes() -> None:
     # Typer forces colour under CI (GITHUB_ACTIONS/FORCE_COLOR), and rich's highlighter
     # then wraps `<org>` in escape codes that split the substring being looked for.
     plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    # The help is also wrapped into a box at 80 columns, which splits "(full weights)"
+    # across two lines: drop the borders and collapse the whitespace before looking.
+    plain = " ".join(re.sub(r"[│╭╮╰╯─]", " ", plain).split())
     assert "qwen3:8b" in plain
-    assert "<org>/<repo>" in plain
-    # The bare `<org>/<repo>` shape is the one that was missing; only it says vLLM.
-    assert "(vLLM)" in plain
+    # The bare `<org>/<repo>` shape is the one that was missing; only it says what it is.
+    assert "<org>/<repo> (full weights)" in plain
 
 
 def test_model_add_in_server_mode_brings_the_engine_container_up_first(
@@ -209,3 +395,62 @@ def test_model_add_in_server_mode_still_only_checks_a_remote_engine(
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: None)
     result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
     assert result.exit_code == 0, result.output
+
+
+def test_model_add_skips_a_repo_that_is_already_imported(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ollama already serves it: re-downloading 4 GB to rebuild the same model is waste."""
+    monkeypatch.setattr(engine, "list_models", lambda url, **k: [("Qwen/Qwen3.5-2B:latest", 1)])
+    monkeypatch.setattr(
+        hf, "preflight", lambda repo, token="", **k: pytest.fail("no pre-flight when installed")
+    )
+    result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
+    assert result.exit_code == 0, result.output
+    assert fake_import["downloaded"] == []
+    assert fake_import["imported"] == []
+    assert "already imported" in result.output
+    assert config.load().model == "Qwen/Qwen3.5-2B"
+
+
+def test_model_add_drops_an_ollama_tag_when_falling_through_to_an_import(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`:latest` is Ollama's tag, not part of the Hugging Face repo id."""
+
+    def refuse(url: str, ref: ModelRef, **k: Any) -> None:
+        raise engine.NotGGUF("'hf.co/Qwen/Qwen3.5-2B:latest' ships full weights.", "Use GGUF.")
+
+    monkeypatch.setattr(engine, "pull_model", refuse)
+    result = runner.invoke(cli.app, ["model", "add", "hf.co/Qwen/Qwen3.5-2B:latest"])
+    assert result.exit_code == 0, result.output
+    assert fake_import["imported"][0][0] == "Qwen/Qwen3.5-2B"
+    assert config.load().model == "Qwen/Qwen3.5-2B"
+
+
+def test_model_add_import_without_a_terminal_is_friendly(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Piped or in CI there is no one to answer the size question — say so, don't traceback."""
+
+    def no_terminal(question: str, default: bool = False) -> bool:
+        raise EOFError
+
+    monkeypatch.setattr(cli.Confirm, "ask", no_terminal)
+    monkeypatch.setattr(cli, "_confirm", cli._ask_confirm)  # the fixture's auto-yes, undone
+    result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, FriendlyError)
+    assert "terminal" in result.exception.problem
+    assert fake_import["downloaded"] == []
+
+
+def test_model_add_warns_when_the_import_may_not_fit_in_ram_but_proceeds(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The RAM figure is advice, not a refusal: the user asked for this model."""
+    monkeypatch.setattr(detect, "detect", lambda **k: dataclasses.replace(MAC, ram_gb=1.0))
+    result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
+    assert result.exit_code == 0, result.output
+    assert "may not fit" in " ".join(result.output.split())
+    assert fake_import["imported"][0][0] == "Qwen/Qwen3.5-2B"

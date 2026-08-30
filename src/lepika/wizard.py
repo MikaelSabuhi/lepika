@@ -22,13 +22,21 @@ _ask: AskFn = Prompt.ask
 
 
 def _validate(ref: ModelRef, cfg: config.Config, info: SystemInfo) -> ModelRef:
-    if ref.kind == "hf_repo" and not server.vllm_allowed(cfg, info):
+    if ref.kind != "hf_repo":
+        return ref
+    if server.vllm_allowed(cfg, info) or express.import_allowed(cfg, info):
+        return ref
+    if not cfg.engine_managed:
         raise FriendlyError(
-            "Full-weight Hugging Face repos need vLLM: Server mode on Linux with an NVIDIA GPU.",
-            "Use a GGUF build instead, e.g. hf.co/<org>/<model>-GGUF — or "
-            "`lepika --mode server` on a Linux NVIDIA box.",
+            "Full-weight repos are imported on the engine's machine, and this engine is "
+            "not LePika's.",
+            "Run `lepika model add` there, or `lepika connect --local` first.",
         )
-    return ref
+    raise FriendlyError(
+        "Full-weight Hugging Face repos need Ollama's MLX engine (Apple Silicon) in "
+        "Express mode — or vLLM in Server mode on Linux + NVIDIA.",
+        "Use a GGUF build instead, e.g. hf.co/<org>/<repo>-GGUF.",
+    )
 
 
 def choose_model(
@@ -175,14 +183,16 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
             console.print("would: run docker compose up -d")
         else:
             console.print("would: ensure Ollama is installed and running")
-        if models.uses_vllm(ref.raw):
+        if models.uses_vllm(ref.raw) and server.vllm_allowed(cfg, info):
             console.print(f"would: start vLLM with {escape(ref.raw)}")
+        elif ref.kind == "hf_repo":
+            console.print(f"would: import {escape(ref.raw)} into Ollama ({engine.IMPORT_QUANT})")
         else:
             console.print(f"would: pull model {escape(ref.raw)}")
         console.print(f"would: start OpenWebUI on port {cfg.webui_port}")
         console.print(f"would: open {express.webui_url(cfg.webui_port)}")
         return
-    if models.uses_vllm(ref.raw):
+    if models.uses_vllm(ref.raw) and server.vllm_allowed(cfg, info):
         server.hf_token_prompt(paths.stack_dir() / server.ENV_FILE)
         # compose interpolates VLLM_MODEL from the config, so this one has to be
         # saved before the stack starts rather than after. A start that then fails
@@ -191,17 +201,21 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         config.save(cfg)
 
     def pull_then_save() -> None:
-        if models.uses_vllm(ref.raw):
+        if models.uses_vllm(ref.raw) and server.vllm_allowed(cfg, info):
             return  # vLLM downloads its own weights while starting; nothing to pull
         # The mode is saved here, not before `start_stack`: this hook runs only once
         # the engine is up, so a pre-flight that refuses can no longer leave a config
         # claiming a mode that never started.
         config.save(cfg)
-        # The model is saved only once the pull succeeded: recording a model the
-        # machine failed to download leaves the config pointing at something that
-        # isn't there.
-        engine.pull_model(cfg.engine_url, ref, key=cfg.engine_key, managed=cfg.engine_managed)
-        cfg.model = ref.raw
+        # The model is saved only once it is actually there: recording a model the
+        # machine failed to download or import leaves the config pointing at
+        # something that isn't.
+        from lepika import cli
+
+        served = cli._acquire(info, cfg, ref)
+        if served is None:
+            return  # declined: the stack is up, the model is chosen next time
+        cfg.model = served
         config.save(cfg)
 
     from lepika import cli

@@ -5,12 +5,14 @@ import itertools
 import json
 import sys
 import urllib.error
+from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes import Streamer  # shared with tests/test_hf.py
 from rich.progress import Progress
 
-from lepika import engine
+from lepika import engine, paths
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
 
@@ -292,7 +294,7 @@ def test_pull_of_full_weight_hf_repo_says_use_a_gguf_build() -> None:
     # the URL is valid and the network is fine, so the generic hint would mislead.
     refusal = '{"error":"Repository is not GGUF or is not compatible with llama.cpp"}'
     body = json.dumps({"error": f"pull model manifest: 400: {refusal}"}).encode()
-    with pytest.raises(FriendlyError) as exc:
+    with pytest.raises(engine.NotGGUF) as exc:
         engine.pull_model(
             "http://x",
             ModelRef(raw="hf.co/Qwen/Qwen3.8-27B", kind="hf_gguf"),
@@ -301,3 +303,134 @@ def test_pull_of_full_weight_hf_repo_says_use_a_gguf_build() -> None:
     assert "full weights" in exc.value.problem
     assert "Qwen3.8-27B-GGUF" in exc.value.fix
     assert "internet" not in exc.value.fix
+    assert isinstance(exc.value, FriendlyError)
+
+
+def test_version_reads_api_version() -> None:
+    body = json.dumps({"version": "0.33.0"}).encode()
+    assert engine.version("http://x", urlopen=opener_returning(body)) == "0.33.0"
+
+
+def test_load_model_posts_generate_and_maps_a_runner_failure() -> None:
+    seen: list[Any] = []
+
+    def ok(req: Any, timeout: float = 0) -> Any:
+        seen.append(req)
+        return FakeResponse(json.dumps({"done": True}).encode())
+
+    engine.load_model("http://x", "Qwen/Qwen3.5-2B", urlopen=ok)
+    assert seen[0].full_url == "http://x/api/generate"
+    assert json.loads(seen[0].data)["model"] == "Qwen/Qwen3.5-2B"
+
+    def mlx_missing(req: Any, timeout: float = 0) -> Any:
+        detail = "mlx runner failed: Error: MLX not available: failed to load MLX dynamic library"
+        body = json.dumps({"error": detail}).encode()
+        raise urllib.error.HTTPError(
+            req.full_url,
+            500,
+            "Internal Server Error",
+            {},  # type: ignore[arg-type]
+            io.BytesIO(body),
+        )
+
+    with pytest.raises(FriendlyError) as exc:
+        engine.load_model("http://x", "Qwen/Qwen3.5-2B", urlopen=mlx_missing)
+    assert "MLX engine" in exc.value.problem
+
+
+def _versioned(text: str) -> Any:
+    """An opener answering /api/version with `text` and /api/generate with success."""
+
+    def opener(req: Any, timeout: float = 0) -> Any:
+        if req.full_url.endswith("/api/version"):
+            return FakeResponse(json.dumps({"version": text}).encode())
+        return FakeResponse(json.dumps({"done": True}).encode())
+
+    return opener
+
+
+def test_import_model_writes_a_modelfile_and_runs_ollama_create(tmp_path: Path) -> None:
+    stream = Streamer()
+    ref = ModelRef(raw="Qwen/Qwen3.5-2B", kind="hf_repo")
+    engine.import_model(
+        "http://x", ref, tmp_path, stream=stream, urlopen=_versioned("0.33.0"), environ={}
+    )
+    assert (tmp_path / "Modelfile").read_text() == "FROM .\n"
+    cmd, kwargs = stream.calls[0]
+    assert cmd == ["ollama", "create", "Qwen/Qwen3.5-2B", "--experimental", "-q", "nvfp4"]
+    assert kwargs["cwd"] == tmp_path
+    assert kwargs["env"]["OLLAMA_HOST"] == "http://x"
+    entry = json.loads((paths.logs_dir() / "lepika.log").read_text().splitlines()[-1])
+    assert entry["event"] == "engine.import"
+    assert entry["result"] == "success"
+
+
+def test_import_model_logs_and_raises_when_the_imported_model_will_not_load(
+    tmp_path: Path,
+) -> None:
+    """`ollama create` succeeded but the artifact will not run: still one import line."""
+
+    def opener(req: Any, timeout: float = 0) -> Any:
+        if req.full_url.endswith("/api/version"):
+            return FakeResponse(json.dumps({"version": "0.33.0"}).encode())
+        detail = "mlx runner failed: Error: MLX not available: failed to load MLX dynamic library"
+        raise urllib.error.HTTPError(
+            req.full_url,
+            500,
+            "Internal Server Error",
+            {},  # type: ignore[arg-type]
+            io.BytesIO(json.dumps({"error": detail}).encode()),
+        )
+
+    stream = Streamer()
+    with pytest.raises(FriendlyError) as exc:
+        engine.import_model(
+            "http://x",
+            ModelRef(raw="o/r", kind="hf_repo"),
+            tmp_path,
+            stream=stream,
+            urlopen=opener,
+            environ={},
+        )
+    assert "MLX engine" in exc.value.problem
+    assert len(stream.calls) == 1
+    entry = json.loads((paths.logs_dir() / "lepika.log").read_text().splitlines()[-1])
+    assert entry["event"] == "engine.import"
+    assert "MLX" in entry["result"]
+
+
+def test_import_model_refuses_an_old_ollama(tmp_path: Path) -> None:
+    stream = Streamer()
+    with pytest.raises(FriendlyError) as exc:
+        engine.import_model(
+            "http://x",
+            ModelRef(raw="o/r", kind="hf_repo"),
+            tmp_path,
+            stream=stream,
+            urlopen=_versioned("0.31.2"),
+            environ={},
+        )
+    assert "0.32" in exc.value.problem
+    assert "lepika update" in exc.value.fix
+    assert stream.calls == []
+
+
+@pytest.mark.parametrize(
+    ("tail", "needle"),
+    [
+        ('Error: unsupported architecture "FooForCausalLM"', "architecture"),
+        ("Error: /w is not a supported safetensors model directory", "architecture"),
+        ("Error: something else", "Import of o/r failed"),
+    ],
+)
+def test_import_model_maps_create_failures(tmp_path: Path, tail: str, needle: str) -> None:
+    with pytest.raises(FriendlyError) as exc:
+        engine.import_model(
+            "http://x",
+            ModelRef(raw="o/r", kind="hf_repo"),
+            tmp_path,
+            stream=Streamer(code=1, tail=tail),
+            urlopen=_versioned("0.33.0"),
+            environ={},
+        )
+    assert needle in exc.value.problem

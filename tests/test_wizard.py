@@ -43,10 +43,13 @@ def test_choose_model_free_form() -> None:
     assert ref.kind == "hf_gguf"
 
 
-def test_choose_model_rejects_hf_repo_with_gguf_hint() -> None:
+CPU_ONLY = detect.SystemInfo("linux", "x86_64", "none", 16.0, False, True, True)
+
+
+def test_choose_model_rejects_hf_repo_with_gguf_hint_where_nothing_can_serve_it() -> None:
     with pytest.raises(FriendlyError) as exc:
         wizard.choose_model(
-            INFO,
+            CPU_ONLY,
             config.Config(),
             ask=lambda *a, **k: "meta-llama/Llama-3.3-70B-Instruct",
             curated=CURATED,
@@ -193,3 +196,47 @@ def test_choose_model_prompt_lists_all_three_model_ref_shapes() -> None:
     assert "qwen3:8b" in prompts[0]
     assert "hf.co/<org>/<repo>-GGUF" in prompts[0]
     assert "· <org>/<repo>" in prompts[0]
+
+
+def test_dry_run_says_it_would_import_a_full_weight_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "Qwen/Qwen3.5-2B")
+    monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
+    result = runner.invoke(cli.app, ["--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "would: import Qwen/Qwen3.5-2B into Ollama (nvfp4)" in result.output
+    assert "would: pull" not in result.output
+
+
+def test_wizard_acquires_the_model_through_cli_acquire(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "Qwen/Qwen3.5-2B")
+    monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
+    monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
+    monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: None)
+    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    monkeypatch.setattr(cli, "_open_browser", lambda url: None)
+    monkeypatch.setattr(cli, "_acquire", lambda info, cfg, ref: "Qwen/Qwen3.5-2B")
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code == 0, result.output
+    assert config.load().model == "Qwen/Qwen3.5-2B"
+
+
+def test_wizard_declined_download_keeps_the_old_model(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """Saying no to the size leaves the stack up and the previous model still the default."""
+    config.save(config.Config(model="previous:model"))
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "Qwen/Qwen3.5-2B")
+    monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
+    monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
+    monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: None)
+    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    monkeypatch.setattr(cli, "_open_browser", lambda url: None)
+    monkeypatch.setattr(cli, "_acquire", lambda info, cfg, ref: None)
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code == 0, result.output
+    assert config.load().model == "previous:model"

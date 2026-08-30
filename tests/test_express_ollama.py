@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from fakes import Runner
 
-from lepika import express, paths
+from lepika import config, express, paths
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.paths import logs_dir
@@ -398,3 +398,33 @@ def test_ensure_ollama_probes_the_url_it_is_given() -> None:
 def test_wait_for_raises_after_timeout() -> None:
     with pytest.raises(FriendlyError):
         express.wait_for(lambda: False, seconds=3, what="Ollama API", sleep=lambda s: None)
+
+
+def _info(os_name: str, arch: str, gpu: str) -> SystemInfo:
+    return SystemInfo(os_name, arch, gpu, 32.0, False, True, True)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("os_name", "arch", "gpu", "expected"),
+    [
+        ("macos", "arm64", "apple", True),
+        # NVIDIA amd64 flips to True with the MLX bundle installer; until it exists an
+        # import would download the weights and then fail at load.
+        ("linux", "x86_64", "nvidia", False),
+        ("windows", "amd64", "nvidia", False),
+        ("linux", "aarch64", "nvidia", False),  # no MLX-CUDA bundle for arm64 (Jetson)
+        ("macos", "x86_64", "none", False),
+        ("linux", "x86_64", "none", False),
+        ("windows", "amd64", "none", False),
+    ],
+)
+def test_import_allowed_needs_an_mlx_capable_machine(
+    os_name: str, arch: str, gpu: str, expected: bool
+) -> None:
+    assert express.import_allowed(config.Config(), _info(os_name, arch, gpu)) is expected
+
+
+def test_import_allowed_is_express_only_and_needs_our_own_engine() -> None:
+    mac = _info("macos", "arm64", "apple")
+    assert express.import_allowed(config.Config(mode="server"), mac) is False
+    assert express.import_allowed(config.Config(engine_managed=False), mac) is False

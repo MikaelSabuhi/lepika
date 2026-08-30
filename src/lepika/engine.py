@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import re
 import sys
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
+from pathlib import Path
 from typing import Any
 
 from rich.progress import (
@@ -20,18 +23,27 @@ from rich.progress import (
 )
 from rich.text import Text
 
-from lepika import log
+from lepika import log, proc
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
 
 UrlOpenFn = Callable[..., Any]
 ProgressFn = Callable[[int, int], None]
+StreamFn = Callable[..., tuple[int, str]]
 
 _TAGS_TIMEOUT = 5.0
 _HEALTH_TIMEOUT = 1.0
 _DELETE_TIMEOUT = 30.0
 # A pull streams for as long as the download takes; only silence is a failure.
 _PULL_IDLE_TIMEOUT = 300.0
+_LOAD_TIMEOUT = 600  # a 27B read from disk into memory
+
+IMPORT_QUANT = "nvfp4"  # what Ollama's own MLX library builds use
+IMPORT_MIN_VERSION = (0, 32, 0)  # the x/create rewrite: the Qwen3.5 nvfp4 corruption fix
+MLX_HINT = (
+    "Apple Silicon has it built in; on Linux/Windows with an NVIDIA GPU (CUDA 13+), "
+    "extract Ollama's MLX bundle from https://ollama.com/download over your Ollama install."
+)
 
 
 def _request(
@@ -150,13 +162,21 @@ def delete_model(
     log.get_logger().info("engine.delete", model=name, url=url)
 
 
+class NotGGUF(FriendlyError):
+    """Ollama refused an `hf.co/…` pull because the repo ships full weights.
+
+    Its own class so the caller can fall through to an import instead of stopping:
+    Ollama is the oracle for the format, not the repo's name.
+    """
+
+
 def _pull_failed(ref: ModelRef, detail: str) -> FriendlyError:
     if "not gguf" in detail.lower():
         # Ollama's refusal for a safetensors repo (`hf.co/Qwen/Qwen3.8-27B`): the
         # URL is right and the network is fine, so the generic hint would send the
         # user checking both. What they need is the GGUF build of the same model.
         repo = ref.raw.rpartition("/")[2].partition(":")[0]
-        return FriendlyError(
+        return NotGGUF(
             f"'{ref.raw}' ships full weights (safetensors), which Ollama cannot run.",
             f"Use a GGUF build of it instead — look for {repo}-GGUF on Hugging Face "
             f"and pass that, e.g. hf.co/<org>/{repo}-GGUF.",
@@ -260,3 +280,107 @@ def _bar(ref: ModelRef, progress: ProgressFn | None) -> Iterator[ProgressFn]:
         yield report
     finally:
         bar.stop()
+
+
+def version(url: str, key: str = "", urlopen: UrlOpenFn | None = None) -> str:
+    """`GET /api/version` — a probe, so nothing is logged."""
+    try:
+        with _opener(urlopen)(_request(url, "/api/version", key), timeout=_TAGS_TIMEOUT) as r:
+            return str(json.loads(r.read().decode("utf-8"))["version"])
+    except Exception as exc:
+        raise _unreachable(url, True) from exc
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
+
+
+def _runner_failed(name: str, detail: str) -> FriendlyError:
+    if "mlx not available" in detail.lower():
+        return FriendlyError(
+            f"Ollama's MLX engine is missing, and '{name}' needs it to run.", MLX_HINT
+        )
+    return FriendlyError(
+        f"Ollama could not load '{name}': {detail}",
+        "Run `lepika logs` for the engine's reason, then `lepika doctor`.",
+    )
+
+
+def load_model(url: str, name: str, key: str = "", urlopen: UrlOpenFn | None = None) -> None:
+    """Load a model once so an import is only reported as ✓ when it actually runs.
+
+    An empty prompt makes Ollama load the weights and return; a missing MLX runner
+    or a broken artifact surfaces here, not in the user's first chat.
+    """
+    request = _request(url, "/api/generate", key, "POST", {"model": name, "prompt": ""})
+    try:
+        with _opener(urlopen)(request, timeout=_LOAD_TIMEOUT):
+            pass
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise _rejected(url) from exc
+        try:
+            detail = str(json.loads(exc.read().decode("utf-8")).get("error", exc.reason))
+        except Exception:
+            detail = str(exc.reason)
+        raise _runner_failed(name, detail) from exc
+    except Exception as exc:
+        raise _unreachable(url, True) from exc
+
+
+def _import_failed(ref: ModelRef, tail: str) -> FriendlyError:
+    low = tail.lower()
+    repo = ref.raw.rpartition("/")[2]
+    if "unsupported architecture" in low or "not a supported safetensors" in low:
+        return FriendlyError(
+            f"Ollama cannot import {ref.raw}'s architecture yet.",
+            f"Use a GGUF build instead, e.g. hf.co/<org>/{repo}-GGUF — or `lepika update` "
+            "for a newer Ollama.",
+        )
+    return FriendlyError(
+        f"Import of {ref.raw} failed.",
+        "Run the same command again (the download is kept); if it keeps failing, "
+        "run `lepika doctor` and file an issue with the log.",
+    )
+
+
+def import_model(
+    url: str,
+    ref: ModelRef,
+    source: Path,
+    key: str = "",
+    quant: str = IMPORT_QUANT,
+    stream: StreamFn = proc.stream,
+    urlopen: UrlOpenFn | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """`ollama create <org/repo> --experimental -q <quant>` from a staged safetensors dir.
+
+    The name is the ref itself: Ollama accepts `Qwen/Qwen3.8-27B` verbatim, so the
+    config, `model list` and `same_model` need no mapping table.
+    """
+    have = version(url, key, urlopen)
+    if _version_tuple(have) < IMPORT_MIN_VERSION:
+        raise FriendlyError(
+            f"Importing full-weight repos needs Ollama 0.32 or newer (you have {have}).",
+            "Run `lepika update`.",
+        )
+    # `FROM .` and nothing else: templates and parsers are Ollama's to detect.
+    (source / "Modelfile").write_text("FROM .\n", encoding="utf-8")
+    env = dict(environ if environ is not None else os.environ)
+    env["OLLAMA_HOST"] = url  # the CLI talks to the engine LePika manages, not a default
+    logger = log.get_logger()
+    code, tail = stream(
+        ["ollama", "create", ref.raw, "--experimental", "-q", quant], env=env, cwd=source
+    )
+    if code != 0:
+        logger.warning("engine.import", model=ref.raw, quant=quant, result=tail)
+        raise _import_failed(ref, tail)
+    try:
+        load_model(url, ref.raw, key, urlopen)
+    except FriendlyError as exc:
+        # The build worked and the weights are on disk, but nothing can run them —
+        # an attempt that leaves no line would look like it never happened.
+        logger.warning("engine.import", model=ref.raw, quant=quant, result=exc.problem)
+        raise
+    logger.info("engine.import", model=ref.raw, quant=quant, result="success")

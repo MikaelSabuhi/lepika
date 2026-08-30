@@ -509,6 +509,19 @@ def check_remote_engine(cfg: Config, api_up: Callable[..., bool] = detect.api_up
     )
 
 
+def import_allowed(cfg: Config, info: SystemInfo) -> bool:
+    """Can this machine import a full-weight repo into Ollama? (rule 10, Express)
+
+    Imports run on Ollama's MLX engine, which is built into the macOS arm64 build.
+    On Linux/Windows it is a separate amd64-only CUDA 13 bundle (so an NVIDIA Jetson
+    could never have it): that clause arrives with the bundle installer — until then
+    an NVIDIA box is refused here rather than after a 55 GB download that cannot load.
+    Express only, and only for an engine that is ours: the weights have to land on
+    the engine's machine.
+    """
+    return cfg.mode == "express" and cfg.engine_managed and info.gpu == "apple"
+
+
 def start_stack(
     info: SystemInfo,
     cfg: Config,

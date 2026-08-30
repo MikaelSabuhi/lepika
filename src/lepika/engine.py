@@ -151,6 +151,16 @@ def delete_model(
 
 
 def _pull_failed(ref: ModelRef, detail: str) -> FriendlyError:
+    if "not gguf" in detail.lower():
+        # Ollama's refusal for a safetensors repo (`hf.co/Qwen/Qwen3.8-27B`): the
+        # URL is right and the network is fine, so the generic hint would send the
+        # user checking both. What they need is the GGUF build of the same model.
+        repo = ref.raw.rpartition("/")[2].partition(":")[0]
+        return FriendlyError(
+            f"'{ref.raw}' ships full weights (safetensors), which Ollama cannot run.",
+            f"Use a GGUF build of it instead — look for {repo}-GGUF on Hugging Face "
+            f"and pass that, e.g. hf.co/<org>/{repo}-GGUF.",
+        )
     return FriendlyError(
         f"Failed to pull model '{ref.raw}': {detail}",
         "Check the model name/URL — e.g. qwen3:8b or hf.co/<org>/<repo>-GGUF — "

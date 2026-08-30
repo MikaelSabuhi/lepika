@@ -285,3 +285,19 @@ def test_speed_column_shows_a_rate_once_bytes_flow() -> None:
 def test_human_size() -> None:
     assert engine.human_size(512) == "512 B"
     assert engine.human_size(4_700_000_000) == "4.7 GB"
+
+
+def test_pull_of_full_weight_hf_repo_says_use_a_gguf_build() -> None:
+    # Ollama's exact refusal for a safetensors repo (e.g. hf.co/Qwen/Qwen3.8-27B):
+    # the URL is valid and the network is fine, so the generic hint would mislead.
+    refusal = '{"error":"Repository is not GGUF or is not compatible with llama.cpp"}'
+    body = json.dumps({"error": f"pull model manifest: 400: {refusal}"}).encode()
+    with pytest.raises(FriendlyError) as exc:
+        engine.pull_model(
+            "http://x",
+            ModelRef(raw="hf.co/Qwen/Qwen3.8-27B", kind="hf_gguf"),
+            urlopen=opener_returning(body),
+        )
+    assert "full weights" in exc.value.problem
+    assert "Qwen3.8-27B-GGUF" in exc.value.fix
+    assert "internet" not in exc.value.fix

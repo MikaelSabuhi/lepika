@@ -2,7 +2,7 @@
 # LePika installer — installs uv (if needed) and lepika, then starts setup.
 set -eu
 
-REPO_URL="git+https://github.com/MikaelSabuhi/lepika"
+PACKAGE="lepika"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv (Python package manager)…"
@@ -15,10 +15,7 @@ PATH="$HOME/.local/bin:$PATH"
 export PATH
 
 echo "Installing LePika…"
-# Installed from this repository by URL, never from a bare package name: LePika
-# is not published to PyPI, and resolving a bare name there would run someone
-# else's code on a machine that asked for ours.
-uv tool install --force "$REPO_URL"
+uv tool install --force "$PACKAGE"
 
 echo ""
 echo "✓ LePika installed."
@@ -26,8 +23,6 @@ echo 'Note: lepika lives in ~/.local/bin. If a NEW terminal says "lepika: comman
 echo 'not found", add that directory to your PATH, or just restart your shell.'
 echo ""
 
-# Run the installed executable directly rather than via `uv tool run`, which
-# would resolve the bare name `lepika` against PyPI if it were ever missing here.
 if ! command -v lepika >/dev/null 2>&1; then
   echo "lepika is installed but not on this shell's PATH."
   echo "Open a new terminal and run: lepika"

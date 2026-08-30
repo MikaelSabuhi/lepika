@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="LePika — a cat in a speech bubble with a terminal prompt" width="220">
+  <img src="https://raw.githubusercontent.com/MikaelSabuhi/lepika/main/docs/assets/logo.png" alt="LePika — a cat in a speech bubble with a terminal prompt" width="220">
 </p>
 
 <h1 align="center">LePika</h1>
@@ -8,11 +8,12 @@
 
 <p align="center">
   <a href="https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml"><img src="https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://pypi.org/project/lepika/"><img src="https://img.shields.io/pypi/v/lepika" alt="PyPI"></a>
+  <a href="https://github.com/MikaelSabuhi/lepika/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
 <p align="center">
-  <img src="docs/assets/demo.gif" alt="lepika: detect the machine, pick a model, chat UI ready" width="720">
+  <img src="https://raw.githubusercontent.com/MikaelSabuhi/lepika/main/docs/assets/demo.gif" alt="lepika: detect the machine, pick a model, chat UI ready" width="720">
 </p>
 
 Your gaming GPU is already an AI machine. LePika self-hosts LLMs on the hardware you
@@ -39,7 +40,7 @@ irm https://raw.githubusercontent.com/MikaelSabuhi/lepika/main/install.ps1 | iex
 **Already have [uv](https://docs.astral.sh/uv/)?**
 
 ```sh
-uv tool install git+https://github.com/MikaelSabuhi/lepika
+uv tool install lepika
 ```
 
 Then run `lepika`. It detects your OS, GPU, and RAM, offers the models that actually
@@ -47,8 +48,7 @@ fit your machine, installs [Ollama](https://ollama.com) +
 [OpenWebUI](https://openwebui.com), pulls your pick, and opens the chat UI at
 `http://localhost:3000`.
 
-> **v0.1:** the one-liners install straight from this repository; a published package
-> is planned. LePika installs into `~/.local/bin` — if a new terminal can't find the
+> LePika installs into `~/.local/bin` — if a new terminal can't find the
 > `lepika` command, add that directory to your `PATH` or restart your shell.
 
 Prefer to read the source first, or hack on it?
@@ -64,12 +64,12 @@ prerequisites; uv fetches its own Python.
 - **Models that fit** — a curated list filtered to your RAM, so there's no guessing
   whether a 27B fits in 16 GB.
 - **Any model, one field** — Ollama tags, Hugging Face GGUF builds, or full-weight
-  safetensors repos. [Model guide →](docs/models.md)
+  safetensors repos. [Model guide →](https://github.com/MikaelSabuhi/lepika/blob/main/docs/models.md)
 - **Private by default** — everything listens on `127.0.0.1` until you explicitly run
   `lepika expose`.
 - **Two modes** — ⚡ **Express** (default): everything native, no Docker.
   🐳 **Server**: the same thing as one readable `docker compose` stack, for the box
-  under the desk. [Server guide →](docs/server-mode.md)
+  under the desk. [Server guide →](https://github.com/MikaelSabuhi/lepika/blob/main/docs/server-mode.md)
 
 LePika reuses an Ollama you already have instead of installing a second copy.
 
@@ -111,7 +111,7 @@ You absolutely can. LePika drives [Ollama](https://ollama.com) and
 
 If you'd rather run the raw tools, their docs are excellent and LePika gets out of your
 way. Curious what it's doing on your behalf? It's a few files of plain Python in
-[`src/lepika/`](src/lepika): three dependencies, no magic.
+[`src/lepika/`](https://github.com/MikaelSabuhi/lepika/tree/main/src/lepika): three dependencies, no magic.
 
 ## Requirements
 
@@ -122,13 +122,13 @@ way. Curious what it's doing on your behalf? It's a few files of plain Python in
   up front.
 - **macOS:** [Homebrew](https://brew.sh) (without it, LePika points you at the
   Ollama.app download). **Windows:** winget, which ships with Windows 10/11.
-  Full-weight imports have their own fine print — see the [model guide](docs/models.md).
+  Full-weight imports have their own fine print — see the [model guide](https://github.com/MikaelSabuhi/lepika/blob/main/docs/models.md).
 
 ## Documentation
 
-- [Model guide](docs/models.md) — every model-ref shape, full-weight imports, gated repos
-- [Server mode](docs/server-mode.md) — the compose stack, using a GPU box remotely, security
-- [Architecture](docs/architecture.md) — design rules and how it's built
+- [Model guide](https://github.com/MikaelSabuhi/lepika/blob/main/docs/models.md) — every model-ref shape, full-weight imports, gated repos
+- [Server mode](https://github.com/MikaelSabuhi/lepika/blob/main/docs/server-mode.md) — the compose stack, using a GPU box remotely, security
+- [Architecture](https://github.com/MikaelSabuhi/lepika/blob/main/docs/architecture.md) — design rules and how it's built
 
 ## Roadmap
 
@@ -138,9 +138,9 @@ with what you'd want next.
 
 ## Contributing
 
-Issues and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) has the short
+Issues and pull requests are welcome; [CONTRIBUTING.md](https://github.com/MikaelSabuhi/lepika/blob/main/CONTRIBUTING.md) has the short
 version of how a change gets in. Found a security problem?
-[SECURITY.md](SECURITY.md) says how to report it privately.
+[SECURITY.md](https://github.com/MikaelSabuhi/lepika/blob/main/SECURITY.md) says how to report it privately.
 
 ```sh
 uv sync --dev && uv run pre-commit install && uv run pytest -q
@@ -148,4 +148,4 @@ uv sync --dev && uv run pre-commit install && uv run pytest -q
 
 ## License
 
-[MIT](LICENSE) © Mikael Sabuhi
+[MIT](https://github.com/MikaelSabuhi/lepika/blob/main/LICENSE) © Mikael Sabuhi

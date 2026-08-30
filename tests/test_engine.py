@@ -110,10 +110,16 @@ def test_an_unreachable_managed_engine_still_says_lepika_up() -> None:
         ("hf.co/org/repo-GGUF", "hf.co/org/repo-GGUF:latest", True),
         ("hf.co/org/repo-GGUF:Q4_K_M", "hf.co/org/repo-GGUF", False),
         ("qwen3", "qwen3.5", False),
+        ("Qwen/Qwen3.5-2B", "qwen/qwen3.5-2b:latest", True),
+        ("Qwen/Qwen3.5-2B", "qwen/qwen3.5-4b:latest", False),
     ],
 )
 def test_same_model_treats_a_missing_tag_as_latest(a: str, b: str, same: bool) -> None:
-    """Ollama stores an untagged ref as `name:latest` and lists it that way."""
+    """Ollama stores an untagged ref as `name:latest` and lists it that way.
+
+    It also lower-cases the name on create, so an imported `Qwen/Qwen3.5-2B` comes
+    back from `/api/tags` as `qwen/qwen3.5-2b:latest`.
+    """
     assert engine.same_model(a, b) is same
 
 

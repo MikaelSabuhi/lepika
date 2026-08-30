@@ -389,6 +389,22 @@ def start_openwebui(
     return pid
 
 
+def _is_webui_process(pid: int, os_name: str, run: RunFn) -> bool:
+    """Is this pid an OpenWebUI of ours that has merely stopped answering?
+
+    The port probe alone cannot tell a wedged UI from a recycled pid, and the two
+    want opposite things: one has to be signalled, the other must never be. The
+    command line separates them — `start_openwebui` launches `open-webui serve`, so
+    the name is in the argv whatever uv resolved it to. Windows has no equivalent
+    (`tasklist` lists images, not argv), so there the port stays the only evidence.
+    """
+    if os_name == "windows":
+        return False
+    # log=False: a pure read, and a pid that is simply gone is not a failure.
+    listed = run(["ps", "-o", "args=", "-p", str(pid)], check=False, log=False)
+    return "open-webui" in str(listed.stdout)
+
+
 def stop_openwebui(
     os_name: str,
     run: RunFn = proc.run_logged,
@@ -412,10 +428,11 @@ def stop_openwebui(
         return False
     if port is not None:
         up_fn = up if up is not None else webui_up
-        if not up_fn(port):
-            # Nothing is answering on our port, so the recorded pid is not our
-            # OpenWebUI — after a reboot the OS will have handed that number to an
-            # unrelated process. A stale pid file is never a licence to signal it.
+        if not up_fn(port) and not _is_webui_process(pid, os_name, run):
+            # Nothing answers on our port and no process by that pid names an
+            # open-webui, so the recorded pid is not our UI — after a reboot the OS
+            # will have handed that number to an unrelated process. A stale pid file
+            # is never a licence to signal it (rule 7).
             pf.unlink(missing_ok=True)
             return False
     try:
@@ -700,12 +717,14 @@ def start_stack(
     wizard pulls a model here), then the UI that talks to it. `lepika up` passes no
     hook; the wizard passes its pull.
     """
-    log.get_logger().info("stack.up", mode="express", engine_managed=cfg.engine_managed)
     if cfg.engine_managed:
         ensure_ollama(info, url=cfg.engine_url)
     else:
         # Someone else runs this engine: never install or start anything for it.
         check_remote_engine(cfg, api_up=detect.api_up)
+    # Logged once the engine is really up, like Server: a pre-flight that refused
+    # started no stack, and a `stack.up` above its own failure line reads as one that did.
+    log.get_logger().info("stack.up", mode="express", engine_managed=cfg.engine_managed)
     if after_engine is not None:
         after_engine()
     ensure_openwebui(cfg)

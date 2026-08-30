@@ -120,6 +120,16 @@ def choose_mode(info: SystemInfo, current: str, ask: AskFn | None = None) -> str
 _MODE_LABEL = {"express": "Express", "server": "Server"}
 
 
+def _report_stop_failure(exc: FriendlyError) -> None:
+    """Say a stop failed and carry on.
+
+    A stack too broken to stop is usually why the user is leaving it, so this is a
+    yellow line rather than a refusal that traps them in the mode that failed. Each
+    stop reports its own; the problem sentence names which one it was.
+    """
+    console.print(f"[yellow]Could not stop it cleanly: {escape(exc.problem)}[/yellow]")
+
+
 def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> SystemInfo:
     """Stop the stack we are switching away from, best effort.
 
@@ -137,26 +147,26 @@ def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> SystemInf
     # The config as it was loaded: `stop` reads the old mode's ports, not the new mode's.
     old_cfg = dataclasses.replace(cfg, mode=previous)
     backend = server if previous == "server" else express
+    # A try each, not one around both: a UI that will not die would otherwise take
+    # the engine stop down with it, and the port 11434 the next mode needs stays held.
     try:
         # The bool is "was anything running", which is not a reason to stop switching.
         backend.stop(info, old_cfg)
-        # `lepika down` leaves Ollama up on purpose, but Server's pre-flight refuses a
-        # port 11434 that a native engine holds. Only the one LePika started is stopped
-        # — anything else has no pid file — and rule 9 keeps a remote engine untouched,
-        # which is what `engine_managed` short-circuits before the call.
-        if (
-            previous == "express"
-            and old_cfg.engine_managed
-            and express.stop_ollama(info.os, old_cfg.engine_url, key=old_cfg.engine_key)
-        ):
-            console.print("Stopped the Ollama LePika had started.")
-            # True means the API went quiet, not just that a signal was sent: the
-            # snapshot is corrected from what was verified, never re-probed.
-            info = dataclasses.replace(info, ollama_running=False)
     except FriendlyError as exc:
-        # A backend too broken to stop is usually why the user is leaving it. Say so
-        # and carry on rather than trapping them in the mode that failed.
-        console.print(f"[yellow]Could not stop it cleanly: {escape(exc.problem)}[/yellow]")
+        _report_stop_failure(exc)
+    # `lepika down` leaves Ollama up on purpose, but Server's pre-flight refuses a
+    # port 11434 that a native engine holds. Only the one LePika started is stopped
+    # — anything else has no pid file — and rule 9 keeps a remote engine untouched,
+    # which is what `engine_managed` short-circuits before the call.
+    if previous == "express" and old_cfg.engine_managed:
+        try:
+            if express.stop_ollama(info.os, old_cfg.engine_url, key=old_cfg.engine_key):
+                console.print("Stopped the Ollama LePika had started.")
+                # True means the API went quiet, not just that a signal was sent: the
+                # snapshot is corrected from what was verified, never re-probed.
+                info = dataclasses.replace(info, ollama_running=False)
+        except FriendlyError as exc:
+            _report_stop_failure(exc)
     return info
 
 

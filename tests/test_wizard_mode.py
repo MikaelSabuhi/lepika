@@ -307,3 +307,42 @@ def test_a_backend_too_broken_to_stop_does_not_trap_the_user_in_it(
     assert result.exit_code == 0, result.output
     assert "not running" in result.output
     assert config.load().mode == "express"
+
+
+def test_a_ui_that_will_not_stop_still_lets_the_engine_stop(
+    switching: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two stops, two reports: one failure must not swallow the other's work.
+
+    Leaving Express with a wedged OpenWebUI would otherwise skip `stop_ollama`
+    entirely, and Server's pre-flight then refuses the port 11434 it still holds.
+    """
+
+    def boom(info: detect.SystemInfo, cfg: config.Config, **k: Any) -> bool:
+        raise FriendlyError("OpenWebUI on port 3000 is still answering.", "Stop it yourself.")
+
+    monkeypatch.setattr(express, "stop", boom)
+    monkeypatch.setattr(express, "stop_ollama", lambda os_name, url, **k: True)
+    answers = iter(["2", "1"])  # Server, then the model
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code == 0, result.output
+    assert "still answering" in result.output
+    assert "Stopped the Ollama LePika had started" in result.output
+
+
+def test_an_engine_that_will_not_stop_still_reports_the_ui_stop(
+    switching: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mirror image: an Ollama that will not die is its own yellow line."""
+
+    def boom(os_name: str, url: str, **k: Any) -> bool:
+        raise FriendlyError(f"Ollama at {url} is still answering.", "Stop it yourself.")
+
+    monkeypatch.setattr(express, "stop_ollama", boom)
+    answers = iter(["2", "1"])  # Server, then the model
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code == 0, result.output
+    assert switching == ["express"]
+    assert "still answering" in result.output

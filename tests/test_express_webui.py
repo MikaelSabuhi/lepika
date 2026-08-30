@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes import Runner
 
 from lepika import express, log, paths
 from lepika.config import Config
@@ -173,7 +174,9 @@ def test_stop_is_the_backend_stop_for_express(monkeypatch: pytest.MonkeyPatch) -
 
 
 def _log_events() -> list[str]:
-    text = (paths.logs_dir() / log.LOG_FILE).read_text(encoding="utf-8")
+    log_file = paths.logs_dir() / log.LOG_FILE
+    # A run that logged nothing never creates the file, which is itself an answer.
+    text = log_file.read_text(encoding="utf-8") if log_file.exists() else ""
     return [json.loads(line)["event"] for line in text.splitlines() if line.strip()]
 
 
@@ -184,6 +187,22 @@ def test_start_stack_writes_one_stack_up_line(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: None)
     express.start_stack(info, Config())
     assert _log_events().count("stack.up") == 1
+
+
+def test_start_stack_logs_nothing_when_the_engine_pre_flight_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that never started leaves the failure line only, exactly as Server does."""
+    info = SystemInfo("linux", "x86_64", "none", 16.0, False, True, True)
+
+    def refuse(info: SystemInfo, url: str | None = None, **k: Any) -> None:
+        raise FriendlyError("Ollama is already running natively.", "Stop it.")
+
+    monkeypatch.setattr(express, "ensure_ollama", refuse)
+    monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: None)
+    with pytest.raises(FriendlyError):
+        express.start_stack(info, Config())
+    assert "stack.up" not in _log_events()
 
 
 def test_stop_writes_a_stack_down_line(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,15 +282,91 @@ def test_stop_openwebui_permission_error_is_not_fatal(isolated_home: Path) -> No
 
 
 def test_stop_openwebui_stale_pidfile_is_never_signalled(isolated_home: Path) -> None:
-    """After a reboot the recorded pid can belong to a stranger — the port decides."""
+    """After a reboot the recorded pid can belong to a stranger — nothing vouches for it."""
     pf = paths.pid_file("openwebui")
     pf.write_text("4242")
 
     def never(pid: int, sig: int) -> None:
         raise AssertionError("must not signal a process we cannot confirm is ours")
 
-    stopped = express.stop_openwebui("linux", kill=never, port=3000, up=lambda port, **k: False)
+    stopped = express.stop_openwebui(
+        "linux", run=Runner(), kill=never, port=3000, up=lambda port, **k: False
+    )
     assert stopped is False
+    assert not pf.exists()
+
+
+def test_stop_openwebui_stops_a_hung_but_alive_webui(isolated_home: Path) -> None:
+    """A UI wedged mid-request fails /health while still holding the port.
+
+    Walking away from it leaves the port taken, so the next `lepika up` cannot start
+    a replacement — and `lepika down` reported success.
+    """
+    pf = paths.pid_file("openwebui")
+    pf.write_text("4242")
+    killed: list[tuple[int, int]] = []
+    run = Runner(stdout={"ps": "uv tool run --from open-webui open-webui serve --port 3000\n"})
+    stopped = express.stop_openwebui(
+        "linux",
+        run=run,
+        kill=lambda pid, sig: killed.append((pid, sig)),
+        port=3000,
+        up=lambda port, **k: False,
+    )
+    assert stopped is True
+    assert killed == [(4242, signal.SIGTERM)]
+    assert run.calls == [["ps", "-o", "args=", "-p", "4242"]]
+    assert not pf.exists()
+
+
+def test_stop_openwebui_leaves_a_recycled_pid_alone(isolated_home: Path) -> None:
+    """The command line is what separates our hung UI from a stranger's process."""
+    pf = paths.pid_file("openwebui")
+    pf.write_text("4242")
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("must not signal a process we cannot confirm is ours")
+
+    stopped = express.stop_openwebui(
+        "linux",
+        run=Runner(stdout={"ps": "/usr/lib/systemd/systemd --user\n"}),
+        kill=never,
+        port=3000,
+        up=lambda port, **k: False,
+    )
+    assert stopped is False
+    assert not pf.exists()
+
+
+def test_stop_openwebui_reads_the_command_line_without_logging_it(isolated_home: Path) -> None:
+    """A pure read, and a pid that is simply gone is not a failure (rule 12)."""
+    paths.pid_file("openwebui").write_text("4242")
+    seen: list[dict[str, Any]] = []
+
+    def run(cmd: list[str], **kwargs: Any) -> Any:
+        seen.append(dict(kwargs))
+        return Runner()(cmd, **kwargs)
+
+    express.stop_openwebui(
+        "linux", run=run, kill=lambda pid, sig: None, port=3000, up=lambda port, **k: False
+    )
+    assert seen == [{"check": False, "log": False}]
+
+
+def test_stop_openwebui_on_windows_still_trusts_the_port_alone(isolated_home: Path) -> None:
+    """`tasklist` lists images, not argv: nothing there can tell our UI from a stranger."""
+    pf = paths.pid_file("openwebui")
+    pf.write_text("4242")
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("must not signal a process we cannot confirm is ours")
+
+    run = Runner(stdout={"tasklist": '"python.exe","4242","Console","1","94,208 K"\n'})
+    stopped = express.stop_openwebui(
+        "windows", run=run, kill=never, port=3000, up=lambda port, **k: False
+    )
+    assert stopped is False
+    assert run.calls == []
     assert not pf.exists()
 
 
@@ -279,14 +374,19 @@ def test_stop_openwebui_signals_when_the_port_answers(isolated_home: Path) -> No
     """The healthy path is unchanged: a live OpenWebUI on our port still gets SIGTERM."""
     paths.pid_file("openwebui").write_text("4242")
     killed: list[tuple[int, int]] = []
+    run = Runner()
     stopped = express.stop_openwebui(
         "linux",
+        run=run,
         kill=lambda pid, sig: killed.append((pid, sig)),
         port=3000,
         up=lambda port, **k: True,
     )
     assert stopped is True
     assert killed == [(4242, signal.SIGTERM)]
+    # An answering port settles it on its own: the `and` must short-circuit before
+    # `ps` runs, or the common path pays a subprocess it never needed.
+    assert run.calls == []
     assert not paths.pid_file("openwebui").exists()
 
 

@@ -102,11 +102,14 @@ def human_size(n_bytes: int) -> str:
 
 
 def _canonical(name: str) -> str:
-    """`qwen3` → `qwen3:latest`: the tag Ollama fills in when the ref has none.
+    """`Qwen3` → `qwen3:latest`: the name Ollama actually stores for a ref.
 
     The tag is the `:` after the last `/`, so `hf.co/org/repo-GGUF` gets one and a
-    port in a hostname never counts as one.
+    port in a hostname never counts as one. Case goes too: `create` and `pull`
+    lower-case the name, so an imported `Qwen/Qwen3.5-2B` is listed as
+    `qwen/qwen3.5-2b` while the config still holds the repo as it was typed.
     """
+    name = name.lower()
     _, _, tail = name.rpartition("/")
     if ":" in tail:
         return name
@@ -387,8 +390,9 @@ def import_model(
     """`ollama create <name> --experimental -q <quant>` from a safetensors directory.
 
     The name is the ref itself: Ollama accepts `Qwen/Qwen3.8-27B` verbatim, so the
-    config, `model list` and `same_model` need no mapping table. `owned` says whose
-    directory `source` is — LePika's staged download, or a folder the user pointed at.
+    config, `model list` and `same_model` need no mapping table — it only lower-cases
+    what it stores, which is why `same_model` compares case-insensitively. `owned` says
+    whose directory `source` is — LePika's staged download, or a folder the user pointed at.
     """
     have = version(url, key, urlopen)
     if _version_tuple(have) < IMPORT_MIN_VERSION:

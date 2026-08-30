@@ -452,6 +452,28 @@ def test_model_list_marks_the_default_under_its_latest_tag(
     assert "(default)" in result.output
 
 
+def test_model_list_marks_the_default_an_import_lower_cased(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """The config keeps the repo as typed; Ollama lists what `create` lower-cased."""
+    config.save(config.Config(model="Qwen/Qwen3.5-2B"))
+    monkeypatch.setattr(engine, "list_models", lambda url, **k: [("qwen/qwen3.5-2b:latest", 1_000)])
+    result = runner.invoke(cli.app, ["model", "list"])
+    assert result.exit_code == 0, result.output
+    assert "(default)" in result.output
+
+
+def test_model_rm_of_the_default_an_import_lower_cased_clears_it(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """`model rm` is typed from `model list`, so it names the lower-cased form."""
+    config.save(config.Config(model="Qwen/Qwen3.5-2B"))
+    monkeypatch.setattr(engine, "delete_model", lambda url, name, **k: None)
+    result = runner.invoke(cli.app, ["model", "rm", "qwen/qwen3.5-2b:latest"])
+    assert result.exit_code == 0, result.output
+    assert config.load().model == ""
+
+
 def test_model_add_help_lists_all_three_model_ref_shapes() -> None:
     """Listing two of three reads as "a full-weight repo is not accepted here"."""
     result = runner.invoke(cli.app, ["model", "add", "--help"])

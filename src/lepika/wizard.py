@@ -33,8 +33,9 @@ def _validate(ref: ModelRef, cfg: config.Config, info: SystemInfo) -> ModelRef:
             "Run `lepika model add` there, or `lepika connect --local` first.",
         )
     raise FriendlyError(
-        "Full-weight Hugging Face repos need Ollama's MLX engine (Apple Silicon) in "
-        "Express mode — or vLLM in Server mode on Linux + NVIDIA.",
+        "Full-weight Hugging Face repos need Ollama's MLX engine (Apple Silicon, or an "
+        "NVIDIA GPU on Linux/Windows) in Express mode — or vLLM in Server mode on "
+        "Linux + NVIDIA.",
         "Use a GGUF build instead, e.g. hf.co/<org>/<repo>-GGUF.",
     )
 

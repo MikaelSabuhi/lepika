@@ -54,16 +54,15 @@ CPU_LINUX = detect.SystemInfo("linux", "x86_64", "none", 64.0, True, False, Fals
 def test_validate_accepts_hf_repo_where_vllm_or_an_import_runs_and_rejects_elsewhere() -> None:
     ref = models.parse_model_ref(REPO)
     assert wizard._validate(ref, config.Config(mode="server"), LINUX_NVIDIA) == ref
-    # Express on Apple Silicon: Ollama imports the weights (rule 10).
+    # Express on Apple Silicon — and on NVIDIA, where `ensure_mlx` installs Ollama's
+    # MLX bundle: Ollama imports the weights either way (rule 10).
     assert wizard._validate(ref, config.Config(mode="express"), MAC) == ref
-    # Express on NVIDIA joins it with the MLX bundle installer, not before.
-    for refused in (LINUX_NVIDIA, CPU_LINUX):
-        with pytest.raises(FriendlyError) as exc:
-            wizard._validate(ref, config.Config(mode="express"), refused)
-        assert "GGUF" in exc.value.fix
-        assert "Apple Silicon" in exc.value.problem
-        # The MLX bundle PR restores this; promising it now would be a dead end.
-        assert "NVIDIA GPU on Linux/Windows" not in exc.value.problem
+    assert wizard._validate(ref, config.Config(mode="express"), LINUX_NVIDIA) == ref
+    with pytest.raises(FriendlyError) as exc:
+        wizard._validate(ref, config.Config(mode="express"), CPU_LINUX)
+    assert "GGUF" in exc.value.fix
+    assert "Apple Silicon" in exc.value.problem
+    assert "NVIDIA GPU on Linux/Windows" in exc.value.problem
     with pytest.raises(FriendlyError):
         wizard._validate(ref, config.Config(mode="server"), MAC)
     with pytest.raises(FriendlyError) as remote:

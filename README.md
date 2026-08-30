@@ -86,6 +86,10 @@ Everything runs natively on your machine. No containers, no VMs, no cloud.
 | Windows + NVIDIA | CUDA | `winget install Ollama.Ollama`, OpenWebUI via `uv tool` |
 | Windows (no GPU) | CPU | Same; LePika warns you it will be slow |
 
+Full-weight (safetensors) repos: Apple Silicon out of the box; Linux/Windows need a 64-bit x86
+(amd64) NVIDIA GPU with a CUDA 13+ driver — LePika installs Ollama's ~1 GB MLX bundle the
+first time you import one.
+
 Ollama already installed? LePika reuses it instead of installing a second copy.
 
 ### 🐳 Server mode (`lepika --mode server`)
@@ -162,13 +166,16 @@ lepika model add hf.co/unsloth/gemma-3-4b-it-GGUF  # any GGUF build on Hugging F
 lepika model add Qwen/Qwen3.8-27B                  # full-weight repo — imported into Ollama, or vLLM in Server mode
 ```
 
-The third shape is the original safetensors release. In Express mode on Apple Silicon LePika
-downloads it and imports it into Ollama with 4-bit quantization — say yes to the size it
-shows first: a 27B is ~55 GB to download and ~15 GB once imported, and the download is
-deleted after a successful import. In Server mode on Linux + NVIDIA the same ref runs on
-vLLM instead. Anywhere else LePika refuses it and points you at the GGUF build. Paste a
-`huggingface.co/…` link of either kind and LePika works out which it is. Gated repos need a
-Hugging Face token: export `HF_TOKEN` or answer the one-time prompt (stored in
+The third shape is the original safetensors release. In Express mode on Apple Silicon, and on
+Linux/Windows with a 64-bit x86 (amd64) NVIDIA GPU, LePika downloads it and imports it into
+Ollama with 4-bit quantization — say yes to the size it shows first: a 27B is ~55 GB to
+download and ~15 GB once imported, and the download is deleted after a successful import. On
+NVIDIA, the first import also installs Ollama's MLX engine bundle (~1 GB, once, and a `sudo`
+prompt on Linux if Ollama lives somewhere you don't own); it needs a CUDA 13+ driver, which
+`nvidia-smi` prints top right. In Server mode on Linux + NVIDIA the same ref runs on vLLM
+instead. Anywhere else LePika refuses it and points you at the GGUF build. Paste a
+`huggingface.co/…` link of either kind and LePika works out which it is. Gated
+repos need a Hugging Face token: export `HF_TOKEN` or answer the one-time prompt (stored in
 `~/.lepika/config.toml`, 0600; Server mode keeps it in `stack/.env`).
 
 Run `lepika model add` with no argument and you get the curated list filtered to your
@@ -206,6 +213,8 @@ already running, `lepika connect` restarts it so the switch takes effect right a
 - **8 GB RAM** recommended. Less works: LePika just steers you to smaller models.
 - **A GPU is optional.** CPU-only machines run everything; they run it slowly, and
   LePika tells you so up front.
+- **NVIDIA driver with CUDA 13 or newer** on Linux/Windows if you import full-weight
+  repos (`nvidia-smi` prints it top right).
 - **macOS:** [Homebrew](https://brew.sh) for the Ollama install (without it, LePika
   points you at the Ollama.app download). **Windows:** winget, which ships with
   Windows 10/11.

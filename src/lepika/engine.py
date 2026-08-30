@@ -41,8 +41,10 @@ _LOAD_TIMEOUT = 600  # a 27B read from disk into memory
 IMPORT_QUANT = "nvfp4"  # what Ollama's own MLX library builds use
 IMPORT_MIN_VERSION = (0, 32, 0)  # the x/create rewrite: the Qwen3.5 nvfp4 corruption fix
 MLX_HINT = (
-    "Apple Silicon has it built in; on Linux/Windows with an NVIDIA GPU (CUDA 13+), "
-    "extract Ollama's MLX bundle from https://ollama.com/download over your Ollama install."
+    "Apple Silicon has it built in; on Linux/Windows LePika installs Ollama's MLX bundle "
+    "before an import — if it is already installed, restart Ollama (`lepika down` then "
+    "`lepika up`, or `sudo systemctl restart ollama`) and check that `nvidia-smi` reports "
+    "CUDA 13 or newer."
 )
 
 

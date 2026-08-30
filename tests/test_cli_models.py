@@ -70,6 +70,9 @@ def fake_import(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> dict[st
     seen: dict[str, Any] = {"pulled": [], "downloaded": [], "imported": [], "confirms": []}
     monkeypatch.setattr(detect, "detect", lambda **k: MAC)
     monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
+    monkeypatch.setattr(
+        express, "ensure_mlx", lambda info, **k: seen.setdefault("mlx", []).append(info.os)
+    )
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: seen["pulled"].append(ref.raw))
     monkeypatch.setattr(engine, "list_models", lambda url, **k: [])
     monkeypatch.setattr(hf, "preflight", lambda repo, token="", **k: SAFETENSORS)
@@ -101,6 +104,27 @@ def test_model_add_imports_a_safetensors_repo_and_cleans_up(
     assert "4.0 GB" in fake_import["confirms"][0]
     assert "nvfp4" in fake_import["confirms"][0]
     assert fake_import["pulled"] == []
+    # The MLX engine is checked on the machine the import runs on, whatever it is.
+    assert fake_import["mlx"] == ["macos"]
+
+
+def test_model_add_ensures_the_mlx_engine_before_downloading(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    # Linux + NVIDIA: the one platform where the bundle is really installed, and the
+    # engine has to be ready before a 55 GB download, never after it.
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(express, "ensure_mlx", lambda info, **k: order.append("mlx"))
+    monkeypatch.setattr(
+        hf,
+        "download",
+        lambda repo, dest, token="", **k: (
+            order.append("download") or dest.mkdir(parents=True, exist_ok=True)
+        ),
+    )
+    assert runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"]).exit_code == 0
+    assert order == ["mlx", "download"]
 
 
 def test_model_add_declined_import_adds_nothing(
@@ -209,6 +233,28 @@ def test_model_add_refuses_when_the_disk_is_too_small(
     result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
     assert result.exit_code != 0
     assert isinstance(result.exception, FriendlyError)
+    assert "Not enough disk" in result.exception.problem
+    assert fake_import["downloaded"] == []
+
+
+def test_model_add_measures_ollamas_store_not_just_lepika_home(
+    fake_import: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_home: Path,
+    tmp_path: Path,
+) -> None:
+    """A stock Linux service keeps models on /usr/share — often a different, smaller disk."""
+    import shutil
+
+    store = tmp_path / "usr" / "share" / "ollama" / ".ollama"
+    store.mkdir(parents=True)
+    monkeypatch.setattr(express, "ollama_store", lambda **k: store)
+    free = {isolated_home: 500 * 2**30, store: 1_000_000}
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=free[Path(path)]))
+    result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, FriendlyError)
+    # ~/.lepika has room to spare; the engine's own disk is the one that decides.
     assert "Not enough disk" in result.exception.problem
     assert fake_import["downloaded"] == []
 

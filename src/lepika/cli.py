@@ -399,10 +399,16 @@ def _import_repo(info: SystemInfo, cfg: config.Config, ref: ModelRef) -> str | N
             "Pick a repo that ships model weights.",
         )
     # Only what download fetches (download_bytes skips the GGUF/PyTorch twins), plus
-    # the quantized copy Ollama writes: both on the disk
-    # that holds ~/.lepika (Ollama's store defaults to ~/.ollama beside it).
+    # the quantized copy Ollama writes. Two filesystems can be involved: the download
+    # lands under ~/.lepika, while Ollama writes into its own store — on a stock Linux
+    # service install that is /usr/share/ollama/.ollama, often not the disk $HOME is on.
+    # The smaller of the two decides, because either one filling up fails the import.
     need = int(pre.download_bytes * 1.3)
-    free = shutil.disk_usage(paths.lepika_home()).free
+    disks = {paths.lepika_home()}  # created on access, so it is always there
+    store = express.ollama_store()
+    if store.exists():
+        disks.add(store)
+    free = min(shutil.disk_usage(disk).free for disk in disks)
     if free < need:
         raise FriendlyError(
             f"Not enough disk: {repo} needs ~{engine.human_size(need)} free "
@@ -420,6 +426,9 @@ def _import_repo(info: SystemInfo, cfg: config.Config, ref: ModelRef) -> str | N
         f"(~{engine.human_size(quantized)})?"
     ):
         return None
+    if info.os != "macos":
+        console.print("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
+    express.ensure_mlx(info)
     dest = hf.download_dir(repo)
     hf.download(repo, dest, token)
     engine.import_model(cfg.engine_url, ref, dest, key=cfg.engine_key)

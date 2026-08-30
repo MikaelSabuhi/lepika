@@ -2,33 +2,27 @@
   <img src="docs/assets/logo.png" alt="LePika — a cat in a speech bubble with a terminal prompt" width="220">
 </p>
 
-# LePika
+<h1 align="center">LePika</h1>
 
-**One command → local AI chat in your browser.**
+<p align="center"><b>One command → local AI chat in your browser.</b><br><i>(luh-PEE-ka)</i></p>
 
-*(luh-PEE-ka)*
-
-Your gaming GPU is already an AI machine. LePika self-hosts LLMs on the hardware you
-already own, with zero configuration: Mac (Metal), Linux and Windows (NVIDIA).
-No Docker, no API keys, no monthly bill, and nothing you type ever leaves the box.
-Got Docker and a homelab? Server mode runs the same thing as one `docker compose` stack.
-
-> LePika is named after Pika, the cat who supervises this project. Like any cat,
-> Pika has everything worth having at home and no use for the cloud. Same idea,
-> for your AI.
-
-[![CI](https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml/badge.svg)](https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml"><img src="https://github.com/MikaelSabuhi/lepika/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+</p>
 
 <p align="center">
   <img src="docs/assets/demo.gif" alt="lepika: detect the machine, pick a model, chat UI ready" width="720">
 </p>
 
-## Install
+Your gaming GPU is already an AI machine. LePika self-hosts LLMs on the hardware you
+already own — Mac (Metal), Linux and Windows (NVIDIA) — with zero configuration. No
+Docker, no API keys, no monthly bill, and nothing you type ever leaves the box.
 
-> **v0.1 is landing.** The one-liners below work today — they install straight
-> from this repository. A published package is planned; until then, installing by
-> name could fetch someone else's project, so LePika never does.
+> Named after Pika, the cat who supervises this project. Like any cat, Pika has
+> everything worth having at home and no use for the cloud. Same idea, for your AI.
+
+## Install
 
 **Mac / Linux**
 
@@ -48,184 +42,59 @@ irm https://raw.githubusercontent.com/MikaelSabuhi/lepika/main/install.ps1 | iex
 uv tool install git+https://github.com/MikaelSabuhi/lepika
 ```
 
-A published package will shorten this to a plain name once one exists.
+Then run `lepika`. It detects your OS, GPU, and RAM, offers the models that actually
+fit your machine, installs [Ollama](https://ollama.com) +
+[OpenWebUI](https://openwebui.com), pulls your pick, and opens the chat UI at
+`http://localhost:3000`.
 
-LePika installs into `~/.local/bin`. If a new terminal can't find the `lepika` command,
-add that directory to your `PATH` or restart your shell.
+> **v0.1:** the one-liners install straight from this repository; a published package
+> is planned. LePika installs into `~/.local/bin` — if a new terminal can't find the
+> `lepika` command, add that directory to your `PATH` or restart your shell.
 
-That's it. LePika detects your OS, GPU, and RAM, offers the models that actually fit
-your machine, installs [Ollama](https://ollama.com) + [OpenWebUI](https://openwebui.com),
-pulls your pick, and opens the chat UI at `http://localhost:3000`.
+Prefer to read the source first, or hack on it?
+`git clone https://github.com/MikaelSabuhi/lepika && cd lepika && uv run lepika` —
+git and [uv](https://docs.astral.sh/uv/getting-started/installation/) are the only
+prerequisites; uv fetches its own Python.
 
-### From a clone
+## What it does
 
-Prefer to read the source first, or hack on it:
+- **Native GPU, no containers** — Apple Metal on macOS, CUDA on Linux/Windows.
+  Ollama arrives via Homebrew, the official install script, or winget; OpenWebUI via
+  `uv tool`. CPU-only machines work too (LePika warns you they'll be slow).
+- **Models that fit** — a curated list filtered to your RAM, so there's no guessing
+  whether a 27B fits in 16 GB.
+- **Any model, one field** — Ollama tags, Hugging Face GGUF builds, or full-weight
+  safetensors repos. [Model guide →](docs/models.md)
+- **Private by default** — everything listens on `127.0.0.1` until you explicitly run
+  `lepika expose`.
+- **Two modes** — ⚡ **Express** (default): everything native, no Docker.
+  🐳 **Server**: the same thing as one readable `docker compose` stack, for the box
+  under the desk. [Server guide →](docs/server-mode.md)
 
-```sh
-git clone https://github.com/MikaelSabuhi/lepika
-cd lepika
-uv run lepika
-```
-
-Only prerequisites are git and
-[uv](https://docs.astral.sh/uv/getting-started/installation/). uv fetches its own
-Python, so there is nothing else to set up.
-
-## What you get
-
-### ⚡ Express mode (default)
-
-Everything runs natively on your machine. No containers, no VMs, no cloud.
-
-| Platform | GPU used | How LePika sets it up |
-| --- | --- | --- |
-| macOS (Apple Silicon) | Apple Metal | Ollama via Homebrew, OpenWebUI via `uv tool` |
-| macOS (Intel) | CPU | Same, minus the GPU |
-| Linux + NVIDIA | CUDA | Official Ollama install script, OpenWebUI via `uv tool` |
-| Linux (no GPU) | CPU | Same; LePika warns you it will be slow |
-| Windows + NVIDIA | CUDA | `winget install Ollama.Ollama`, OpenWebUI via `uv tool` |
-| Windows (no GPU) | CPU | Same; LePika warns you it will be slow |
-
-Full-weight (safetensors) repos: Apple Silicon out of the box; Linux/Windows need a 64-bit x86
-(amd64) NVIDIA GPU with a CUDA 13+ driver — LePika installs Ollama's ~1 GB MLX bundle the
-first time you import one.
-
-Ollama already installed? LePika reuses it instead of installing a second copy.
-
-### 🐳 Server mode (`lepika --mode server`)
-
-| Platform | GPU used | Stack |
-| --- | --- | --- |
-| Linux + NVIDIA | CUDA (needs NVIDIA Container Toolkit) | OpenWebUI + Ollama containers, + vLLM for full-weight repos |
-| Linux (no GPU) | CPU | Same; LePika warns you it will be slow |
-| Windows + NVIDIA (Docker Desktop) | CUDA via WSL2 | Same |
-| macOS (Docker Desktop) | CPU only — containers can't use Metal; use Express for the GPU | Same |
-
-Server mode is asked about only when Docker is already installed; LePika never asks you
-to install Docker.
+LePika reuses an Ollama you already have instead of installing a second copy.
 
 ## Everyday commands
 
 | Command | What it does |
 | --- | --- |
-| `lepika` | The setup wizard: detect → (Express or Server) → pick a model → install → open the browser |
-| `lepika up` | Start the local AI stack and open the browser |
-| `lepika down` | Stop the stack (Express: OpenWebUI only; Server: all containers, models kept) |
-| `lepika status` | Show the mode, the engine and where it is, OpenWebUI, whether it's exposed (Server mode), and the default model |
-| `lepika logs` | Print the tail of LePika's logs (Server mode: container logs too; `--lines`, default 50) |
-| `lepika doctor` | Diagnose the local setup; every ✗ comes with a one-line fix |
-| `lepika update` | Upgrade the engine and OpenWebUI (Server mode: pull newer images, then restart) |
-| `lepika connect <url> [--key K]` | Use an engine on another machine (`--local` to go back) |
-| `lepika expose [--off\|--show\|--rotate]` | Share the engine + UI on your network behind a generated API key (Server mode) |
+| `lepika` | The setup wizard: detect → pick a model → install → chat |
+| `lepika up` / `lepika down` | Start / stop the local AI stack |
+| `lepika status` | Mode, engine, UI, and default model at a glance |
+| `lepika doctor` | Diagnose the setup; every ✗ has a one-line fix |
+| `lepika logs` | Tail LePika's logs (`--lines`, default 50) |
+| `lepika update` | Upgrade the engine and OpenWebUI — chats kept |
 | `lepika model add [ref]` | Download a model and make it the default (no ref → browse) |
-| `lepika model import <dir>` | Import safetensors weights already on disk into Ollama and make it the default (`--name`, `--quant`) |
-| `lepika model list` | List downloaded models (size, default marked) |
-| `lepika model rm <name>` | Remove a downloaded model |
+| `lepika model import <dir>` | Import safetensors weights already on disk |
+| `lepika model list` / `lepika model rm` | List / remove downloaded models |
+| `lepika expose` | Share engine + UI on your network behind a generated key |
+| `lepika connect <url>` | Use an engine on another machine (`--local` to go back) |
 
 Global flags: `--version`, `--mode express|server` (the wizard's, not a per-command
-switch), `--dry-run` (show what the wizard would do without doing it), and `--help` on
-every command.
+switch), `--dry-run`, and `--help` on every command.
 
-All state lives in one place: `~/.lepika` — config, logs, pid files, in Express mode
-OpenWebUI's own data (`~/.lepika/openwebui/` — chats, users, uploads), and in Server mode
-the compose stack. That is what makes `lepika update` keep your chats. Point `LEPIKA_HOME`
-somewhere else if you prefer.
-
-## Server mode
-
-Everything in one readable `docker compose` file, for the box under the desk:
-
-```sh
-lepika --mode server            # or pick 🐳 in the wizard when Docker is present
-```
-
-The stack lives in `~/.lepika/stack/`. LePika owns `compose.yml`; you own `.env`
-(created private, `0600`). Pin a version by editing it — `OLLAMA_IMAGE='ollama/ollama:0.11.4'` —
-and LePika keeps your pins on every `lepika up` / `lepika update`. Models and chats live in named
-Docker volumes and survive `lepika down`.
-
-Both modes serve the UI on the same port, so switching between them stops the stack
-you're leaving before it starts the one you're moving to — including the native Ollama
-LePika started for Express, since the Server stack wants that port. An Ollama you
-installed and run yourself is never stopped.
-
-**Security.** Nothing LePika starts listens beyond localhost in either mode — Express
-starts OpenWebUI on `127.0.0.1`, and the Server stack publishes every port there too —
-until you run `lepika expose`. Then the
-chat UI needs a sign-in (first sign-up is the admin) and the engine API needs the
-generated key. The key lives only in `~/.lepika/stack/.env` (mode `0600`) on the box and
-in `~/.lepika/config.toml` (`0600`) on machines you connected from; it is never written
-to logs. Found a security problem? [SECURITY.md](SECURITY.md) says how to report it privately.
-
-## Pick any model
-
-One field, three shapes. The wizard and `lepika model add` both take all of them:
-
-```sh
-lepika model add qwen3:8b                          # any tag from the Ollama library
-lepika model add hf.co/unsloth/gemma-3-4b-it-GGUF  # any GGUF build on Hugging Face
-lepika model add Qwen/Qwen3.8-27B                  # full-weight repo — imported into Ollama, or vLLM in Server mode
-```
-
-The third shape is the original safetensors release. In Express mode on Apple Silicon, and on
-Linux/Windows with a 64-bit x86 (amd64) NVIDIA GPU, LePika downloads it and imports it into
-Ollama with 4-bit quantization — `nvfp4`, or `--quant int4` if you'd rather have that one.
-Say yes to the size it shows first: a 27B is ~55 GB to download and ~15 GB once imported, and
-the download is deleted after a successful import. On NVIDIA, the first import also installs
-Ollama's MLX engine bundle (~1 GB, once, and a `sudo` prompt on Linux if Ollama lives
-somewhere you don't own); it needs a CUDA 13+ driver, which `nvidia-smi` prints top right. In
-Server mode on Linux + NVIDIA the same ref runs on vLLM instead. Anywhere else LePika refuses
-it and points you at the GGUF build. Paste a `huggingface.co/…` link of either kind and
-LePika works out which it is. Gated repos need a Hugging Face token: export `HF_TOKEN` or
-answer the one-time prompt (stored in `~/.lepika/config.toml`, 0600; Server mode keeps it in
-`stack/.env`).
-
-Already downloaded the repo yourself? `lepika model import ~/models/Qwen3.5-2B` imports
-weights that are already on disk — the folder is only read, never modified or deleted.
-
-Run `lepika model add` with no argument and you get the curated list filtered to your
-RAM, so there is no guessing whether a 27B fits in 16 GB.
-
-## Use a GPU box from your laptop
-
-The chat UI runs where you are; the models run where the GPU is.
-
-```sh
-lepika expose                                     # on the box: prints the key and the exact connect line
-lepika connect http://gpu-box:11435 --key <key>   # on your laptop: paste that line
-lepika up                                         # UI here, models there
-lepika connect --local                            # back to this machine
-```
-
-`lepika expose` (Server mode) puts a small Caddy proxy in front of the engine on port
-`11435`: only requests carrying the generated key get through. It shares the engine this
-machine runs — or an unkeyed remote one — and refuses an engine that needs its own key,
-since the proxy would forward LePika's key to it and be told no every time (`lepika connect
---key` refuses on an exposed machine for the same reason). It prints the address this box
-would dial out on, plus every other address it answers on when there is more than one — the
-one your laptop can reach is not always the first. `--show` reprints the line, `--rotate`
-issues a new key (machines that already connected have to run `lepika connect` again with
-it), `--off` goes back to localhost only. If the box runs a full-weight repo on vLLM,
-`lepika expose` prints an OpenAI-compatible URL to add in OpenWebUI instead of a
-`connect` line.
-
-LePika never installs or starts anything on an engine it didn't set up — it only
-checks that it answers, and says so plainly when it doesn't. If the chat UI is
-already running, `lepika connect` restarts it so the switch takes effect right away.
-
-## Requirements
-
-- **Disk** for the models: ~0.5 GB for a tiny one, ~5 GB for a good all-rounder,
-  40 GB+ for the flagships. A full-weight import needs about 1.3× the download free
-  while it runs — a 27B is ~55 GB down, ~72 GB free, ~15 GB kept.
-- **8 GB RAM** recommended. Less works: LePika just steers you to smaller models.
-- **A GPU is optional.** CPU-only machines run everything; they run it slowly, and
-  LePika tells you so up front.
-- **NVIDIA driver with CUDA 13 or newer** on Linux/Windows if you import full-weight
-  repos (`nvidia-smi` prints it top right).
-- **macOS:** [Homebrew](https://brew.sh) for the Ollama install (without it, LePika
-  points you at the Ollama.app download). **Windows:** winget, which ships with
-  Windows 10/11.
+All state lives in one place: `~/.lepika` — config, logs, and (in Express mode)
+OpenWebUI's own chats and uploads. That is what makes `lepika update` keep your chats.
+Point `LEPIKA_HOME` somewhere else if you prefer.
 
 ## Why not just use Ollama directly?
 
@@ -241,35 +110,40 @@ You absolutely can. LePika drives [Ollama](https://ollama.com) and
 | Staying current | Update each piece separately, per platform | `lepika update` |
 
 If you'd rather run the raw tools, their docs are excellent and LePika gets out of your
-way. And if you're curious what it's doing on your behalf, it's a few files of plain
-Python in [`src/lepika/`](src/lepika): three dependencies, no magic.
+way. Curious what it's doing on your behalf? It's a few files of plain Python in
+[`src/lepika/`](src/lepika): three dependencies, no magic.
+
+## Requirements
+
+- **Disk** for the models: ~0.5 GB for a tiny one, ~5 GB for a good all-rounder,
+  40 GB+ for the flagships.
+- **8 GB RAM** recommended. Less works: LePika steers you to smaller models.
+- **A GPU is optional.** CPU-only machines run everything, slowly, and LePika says so
+  up front.
+- **macOS:** [Homebrew](https://brew.sh) (without it, LePika points you at the
+  Ollama.app download). **Windows:** winget, which ships with Windows 10/11.
+  Full-weight imports have their own fine print — see the [model guide](docs/models.md).
+
+## Documentation
+
+- [Model guide](docs/models.md) — every model-ref shape, full-weight imports, gated repos
+- [Server mode](docs/server-mode.md) — the compose stack, using a GPU box remotely, security
+- [Architecture](docs/architecture.md) — design rules and how it's built
 
 ## Roadmap
 
-Both modes above are v0.1 and work today. Still to come:
-
-- **A published package** — so installing is a plain name instead of a repo URL.
-  The install one-liners already work today either way.
-
-Star the repo to follow along, or open an issue with what you'd want next.
+Both modes are v0.1 and work today. Next up: **a published package**, so installing is
+a plain name instead of a repo URL. Star the repo to follow along, or open an issue
+with what you'd want next.
 
 ## Contributing
 
 Issues and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) has the short
-version of how a change gets in. Work happens on a feature branch and lands via PR;
-`main` is never committed to directly. Conventional commits (`feat:`, `fix:`, `docs:`…),
-squash-merged.
+version of how a change gets in. Found a security problem?
+[SECURITY.md](SECURITY.md) says how to report it privately.
 
 ```sh
-uv sync --dev
-uv run pre-commit install
-uv run pytest -q
-```
-
-Every PR runs the same gate; run it locally in one line before you push:
-
-```sh
-uv run ruff check . && uv run ruff format --check . && uv run mypy src && uv run pytest -q && uv run bandit -c pyproject.toml -r src -q && uv run pip-audit
+uv sync --dev && uv run pre-commit install && uv run pytest -q
 ```
 
 ## License

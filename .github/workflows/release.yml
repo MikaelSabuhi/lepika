@@ -24,6 +24,29 @@ jobs:
             echo "pyproject.toml says ${version} but the tag says ${GITHUB_REF_NAME}"
             exit 1
           }
+      # The release body comes from CHANGELOG.md, so a version without an entry is a
+      # release nobody can read. Fail here, before anything reaches PyPI.
+      - name: Changelog has an entry for this version
+        if: github.ref_type == 'tag'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="${version}" \
+            '$0 == "## [" v "]" || index($0, "## [" v "] ") == 1 { f = 1; next }
+             f && /^## \[/ { exit }
+             f { print }' CHANGELOG.md > release-notes.md
+          test -s release-notes.md || {
+            echo "CHANGELOG.md has no '## [${version}]' section"
+            exit 1
+          }
+          # The section body uses reference-style links ([#10]); carry their
+          # definitions across or they render as dead text in the release body.
+          grep '^\[' CHANGELOG.md >> release-notes.md
+          cat release-notes.md
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: github.ref_type == 'tag'
+        with:
+          name: release-notes
+          path: release-notes.md
       - name: Build sdist and wheel
         run: uv build
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -47,3 +70,25 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  github-release:
+    needs: publish
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-notes
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+              --notes-file release-notes.md
+          else
+            gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+              --title "LePika ${GITHUB_REF_NAME}" --notes-file release-notes.md
+          fi

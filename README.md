@@ -129,6 +129,7 @@ way. Curious what it's doing on your behalf? It's a few files of plain Python in
 - [Model guide](https://github.com/MikaelSabuhi/lepika/blob/main/docs/models.md) — every model-ref shape, full-weight imports, gated repos
 - [Server mode](https://github.com/MikaelSabuhi/lepika/blob/main/docs/server-mode.md) — the compose stack, using a GPU box remotely, security
 - [Architecture](https://github.com/MikaelSabuhi/lepika/blob/main/docs/architecture.md) — design rules and how it's built
+- [Changelog](https://github.com/MikaelSabuhi/lepika/blob/main/CHANGELOG.md) — what changed in each release
 
 ## Roadmap
 

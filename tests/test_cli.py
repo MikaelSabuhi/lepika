@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import io
 import sys
 from typing import Any
@@ -16,7 +17,9 @@ runner = CliRunner()
 def test_version_flag_prints_name_and_version() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert result.output.strip() == "lepika 0.1.0"
+    # pyproject.toml is the only place the version lives, so read it back from the
+    # installed metadata rather than pinning a literal that every release must edit.
+    assert result.output.strip() == f"lepika {importlib.metadata.version('lepika')}"
 
 
 def _cp1252_stream() -> io.TextIOWrapper:

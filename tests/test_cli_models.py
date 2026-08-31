@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.resources
 import re
 import shutil
 from pathlib import Path
@@ -73,6 +74,35 @@ def test_model_add_repairs_a_toolless_chatml_gguf(
     assert rebuilt and rebuilt[0][0] == "hf.co/o/r-GGUF:Q4_K_M"
     assert ".Tools" in rebuilt[0][1]
     assert "tool" in result.output.lower()
+
+
+def test_model_add_survives_a_bundled_template_missing_from_the_install(
+    fake_engine: list[str], isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The repair is best effort — the pull already succeeded. A template the install
+    lost degrades to the same one-line note as any other repair failure, never a
+    traceback."""
+    real_files = importlib.resources.files
+
+    class _Missing:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def joinpath(self, name: str) -> Any:
+            return self if name == "chatml_tools.gotmpl" else self._inner.joinpath(name)
+
+        def read_text(self, encoding: str = "utf-8") -> str:
+            raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(importlib.resources, "files", lambda pkg: _Missing(real_files(pkg)))
+    monkeypatch.setattr(engine, "show", lambda url, name, **k: CHATML_NO_TOOLS)
+    monkeypatch.setattr(
+        engine, "retemplate", lambda *a, **k: pytest.fail("there is no template to rebuild with")
+    )
+    result = runner.invoke(cli.app, ["model", "add", "hf.co/o/r-GGUF:Q4_K_M"])
+    assert result.exit_code == 0, result.output
+    assert result.exception is None
+    assert "tool" in _plain(result.output).lower()
 
 
 def test_model_add_leaves_a_tool_capable_model_alone(

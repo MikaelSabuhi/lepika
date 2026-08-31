@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.resources
 import io
 import itertools
 import json
@@ -375,6 +376,25 @@ def test_chatml_tools_template_ships_in_the_package() -> None:
     text = engine.chatml_tools_template()
     assert ".Tools" in text and ".ToolCalls" in text
     assert "<|im_start|>" in text
+
+
+def test_chatml_tools_template_missing_from_the_install_is_friendly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken install must not surface as a raw traceback: `_ensure_tools` runs
+    after a pull already succeeded and only knows how to swallow a FriendlyError."""
+
+    class _Missing:
+        def joinpath(self, _name: str) -> _Missing:
+            return self
+
+        def read_text(self, encoding: str = "utf-8") -> str:
+            raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(importlib.resources, "files", lambda _pkg: _Missing())
+    with pytest.raises(FriendlyError) as excinfo:
+        engine.chatml_tools_template()
+    assert excinfo.value.fix
 
 
 def test_retemplate_rebuilds_the_model_with_the_given_template() -> None:

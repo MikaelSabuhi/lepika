@@ -381,13 +381,16 @@ def import_model(
     name: str,
     source: Path,
     key: str = "",
-    quant: str = IMPORT_QUANT,
+    quant: str | None = IMPORT_QUANT,
     owned: bool = True,
     stream: StreamFn = proc.stream,
     urlopen: UrlOpenFn | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> None:
     """`ollama create <name> --experimental -q <quant>` from a safetensors directory.
+
+    `quant=None` imports the source as-is — the shape for weights that are already
+    quantized, which `-q` would make Ollama refuse ("cannot requantize").
 
     The name is the ref itself: Ollama accepts `Qwen/Qwen3.8-27B` verbatim, so the
     config, `model list` and `same_model` need no mapping table — it only lower-cases
@@ -403,7 +406,9 @@ def import_model(
     env = dict(environ if environ is not None else os.environ)
     env["OLLAMA_HOST"] = url  # the CLI talks to the engine LePika manages, not a default
     logger = log.get_logger()
-    argv = ["ollama", "create", name, "--experimental", "-q", quant]
+    argv = ["ollama", "create", name, "--experimental"]
+    if quant is not None:
+        argv += ["-q", quant]
     with _staged(source, owned) as cwd:
         code, tail = stream(argv, env=env, cwd=cwd)
     if code != 0:

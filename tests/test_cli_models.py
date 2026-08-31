@@ -106,6 +106,8 @@ def fake_import(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> dict[st
 
     monkeypatch.setattr(engine, "import_model", import_model)
     monkeypatch.setattr(acquire, "confirm", lambda q: seen["confirms"].append(q) or True)
+    # A raw bf16 repo by default; a test overrides this to stage a pre-quantized one.
+    monkeypatch.setattr(hf, "fetch_config", lambda repo, dest, token="", **k: {})
     return seen
 
 
@@ -165,6 +167,25 @@ def test_model_add_quant_chooses_the_quantization(fake_import: dict[str, Any]) -
     assert result.exit_code == 0, result.output
     assert fake_import["quants"] == ["int4"]
     assert "int4" in fake_import["confirms"][0]
+
+
+def test_model_add_imports_a_prequantized_repo_as_is(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ollama refuses `-q` on an already-quantized source — import it bare instead,
+    and stop promising a download/4 store copy that a 4-bit source will never shrink to."""
+    monkeypatch.setattr(
+        hf,
+        "fetch_config",
+        lambda repo, dest, token="", **k: {"quantization_config": {"quant_method": "modelopt"}},
+    )
+    result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
+    assert result.exit_code == 0, result.output
+    assert fake_import["quants"] == [None]
+    question = fake_import["confirms"][0]
+    assert "as-is" in question and "modelopt" in question
+    # The store copy is the download, not a quarter of it.
+    assert "Fetch 4.0 GB" in question and "~4.0 GB" in question
 
 
 def test_model_add_rejects_a_quant_ollama_does_not_take(fake_import: dict[str, Any]) -> None:
@@ -620,6 +641,16 @@ def test_model_import_imports_a_local_folder_and_makes_it_the_default(
     assert "✓ Imported:" in result.output
     assert fake_local["ensured"] == ["ollama", "mlx"]
     assert not (weights / "Modelfile").exists()
+
+
+def test_model_import_detects_a_prequantized_folder_and_imports_as_is(
+    fake_local: dict[str, Any], weights: Path
+) -> None:
+    (weights / "config.json").write_text('{"quantization_config": {"quant_method": "modelopt"}}')
+    result = runner.invoke(cli.app, ["model", "import", str(weights)])
+    assert result.exit_code == 0, result.output
+    assert fake_local["imported"] == [("Qwen3.5-2B", weights, False, None)]
+    assert "as-is" in result.output and "modelopt" in result.output
 
 
 def test_model_import_name_wins_over_the_folder_name(

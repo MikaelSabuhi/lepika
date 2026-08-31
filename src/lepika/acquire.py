@@ -86,12 +86,20 @@ def import_repo(
             f"'{repo}' has no safetensors or GGUF weights.",
             "Pick a repo that ships model weights.",
         )
+    # Already-quantized weights (NVFP4 and friends) import as-is: `-q` would make
+    # Ollama refuse the whole build with "cannot requantize" — after the download.
+    # The one small file that says so is fetched into the staging dir up front, so
+    # the confirm question, the disk math and the RAM advisory all tell the truth.
+    dest = hf.download_dir(repo)
+    method = hf.quant_method(hf.fetch_config(repo, dest, token))
     # Only what download fetches (download_bytes skips the GGUF/PyTorch twins), plus
-    # the quantized copy Ollama writes. Two filesystems can be involved: the download
-    # lands under ~/.lepika, while Ollama writes into its own store — on a stock Linux
-    # service install that is /usr/share/ollama/.ollama, often not the disk $HOME is on.
-    # The smaller of the two decides, because either one filling up fails the import.
-    need = int(pre.download_bytes * 1.3)
+    # the copy Ollama writes — a quarter of a raw source, all of a quantized one.
+    # Two filesystems can be involved: the download lands under ~/.lepika, while
+    # Ollama writes into its own store — on a stock Linux service install that is
+    # /usr/share/ollama/.ollama, often not the disk $HOME is on. The smaller of the
+    # two decides, because either one filling up fails the import.
+    store_bytes = pre.download_bytes if method is not None else pre.download_bytes // 4
+    need = int((pre.download_bytes + store_bytes) * 1.1)
     disks = {paths.lepika_home()}  # created on access, so it is always there
     store = express.ollama_store()
     if store.exists():
@@ -103,19 +111,25 @@ def import_repo(
             f"({engine.human_size(free)} available).",
             "Free some space or pick a smaller model.",
         )
-    quantized = pre.download_bytes // 4
-    _ram_advisory(repo, quantized, info)
-    if not confirm(
-        f"Fetch {engine.human_size(pre.download_bytes)} onto disk and import as {quant} "
-        f"(~{engine.human_size(quantized)})?"
-    ):
+    _ram_advisory(repo, store_bytes, info)
+    how = (
+        f"import it as-is (already {method}-quantized, ~{engine.human_size(store_bytes)})"
+        if method is not None
+        else f"import as {quant} (~{engine.human_size(store_bytes)})"
+    )
+    if not confirm(f"Fetch {engine.human_size(pre.download_bytes)} onto disk and {how}?"):
         return None
     if info.os != "macos":
         console.print("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
     express.ensure_mlx(info)
-    dest = hf.download_dir(repo)
     hf.download(repo, dest, token)
-    engine.import_model(cfg.engine_url, ref.raw, dest, key=cfg.engine_key, quant=quant)
+    engine.import_model(
+        cfg.engine_url,
+        ref.raw,
+        dest,
+        key=cfg.engine_key,
+        quant=None if method is not None else quant,
+    )
     # Ollama holds its own copy now; a failed import above keeps `dest` for a resumed retry.
     shutil.rmtree(dest, ignore_errors=True)
     with contextlib.suppress(OSError):
@@ -171,7 +185,10 @@ def import_local(info: SystemInfo, cfg: config.Config, source: Path, name: str, 
         # minutes of quantization for a model that is already there.
         console.print(f"{escape(name)} is already imported.")
         return name
-    quantized = sum(f.stat().st_size for f in weights) // 4
+    # Already-quantized weights import as-is; `-q` would make Ollama refuse them.
+    method = hf.quant_method(hf.load_config(source))
+    raw_bytes = sum(f.stat().st_size for f in weights)
+    quantized = raw_bytes if method is not None else raw_bytes // 4
     # Only Ollama's store is at stake: the weights are already on disk and stay there,
     # so the copy Ollama writes is the one thing that needs room.
     store = express.ollama_store()
@@ -183,15 +200,24 @@ def import_local(info: SystemInfo, cfg: config.Config, source: Path, name: str, 
             "Free some space or pick a smaller model.",
         )
     _ram_advisory(name, quantized, info)
-    # No confirm: nothing is downloaded, so there is no size to agree to first.
-    console.print(
-        f"Importing {escape(name)} from {escape(str(source))} as {quant} "
-        f"(~{engine.human_size(quantized)})…"
+    how = (
+        f"as-is (already {method}-quantized, ~{engine.human_size(quantized)})"
+        if method is not None
+        else f"as {quant} (~{engine.human_size(quantized)})"
     )
+    # No confirm: nothing is downloaded, so there is no size to agree to first.
+    console.print(f"Importing {escape(name)} from {escape(str(source))} {how}…")
     if info.os != "macos":
         console.print("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
     express.ensure_mlx(info)
-    engine.import_model(cfg.engine_url, name, source, key=cfg.engine_key, quant=quant, owned=False)
+    engine.import_model(
+        cfg.engine_url,
+        name,
+        source,
+        key=cfg.engine_key,
+        quant=None if method is not None else quant,
+        owned=False,
+    )
     return name
 
 

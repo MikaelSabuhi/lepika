@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.resources
 import json
 import os
 import re
@@ -296,6 +297,68 @@ def version(url: str, key: str = "", urlopen: UrlOpenFn | None = None) -> str:
             return str(json.loads(r.read().decode("utf-8"))["version"])
     except Exception as exc:
         raise _unreachable(url, True) from exc
+
+
+def show(
+    url: str, name: str, key: str = "", urlopen: UrlOpenFn | None = None
+) -> tuple[list[str], str] | None:
+    """The model's capabilities and chat template, or None when the engine won't say.
+
+    A diagnostic read after a successful pull: its failure must never fail the pull,
+    so every error collapses to None rather than a FriendlyError.
+    """
+    request = _request(url, "/api/show", key, "POST", {"model": name})
+    try:
+        with _opener(urlopen)(request, timeout=_TAGS_TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        caps = payload.get("capabilities") or []
+        return [str(c) for c in caps], str(payload.get("template") or "")
+    except Exception:
+        return None
+
+
+def chatml_tools_template() -> str:
+    """The curated ChatML template with tool handling (Ollama's own qwen3 shape).
+
+    Ships in-repo like models.toml: community GGUFs sometimes carry a stripped
+    ChatML template with the tool blocks removed, and this is the replacement
+    `retemplate` rebuilds them with.
+    """
+    return (
+        importlib.resources.files("lepika")
+        .joinpath("chatml_tools.gotmpl")
+        .read_text(encoding="utf-8")
+    )
+
+
+def retemplate(
+    url: str,
+    name: str,
+    template: str,
+    key: str = "",  # nosec B107 — empty means "no key", not a credential
+    stream: StreamFn = proc.stream,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Rebuild `name` in place with a different chat template; the weights are shared.
+
+    `ollama create` from the model itself reuses every blob, so this is seconds and
+    bytes, not a re-download. CLI-based like `import_model`, and for the same reason
+    it never runs against a remote engine: the CLI cannot send that engine's key.
+    """
+    env = dict(environ if environ is not None else os.environ)
+    env["OLLAMA_HOST"] = url
+    with tempfile.TemporaryDirectory(prefix="lepika-retemplate-") as tmp:
+        modelfile = Path(tmp) / "Modelfile"
+        modelfile.write_text(f'FROM {name}\nTEMPLATE """{template}"""\n', encoding="utf-8")
+        code, tail = stream(["ollama", "create", name], env=env, cwd=Path(tmp))
+    logger = log.get_logger()
+    if code != 0:
+        logger.warning("engine.retemplate", model=name, result=tail)
+        raise FriendlyError(
+            f"Rebuilding the chat template of '{name}' failed.",
+            "The model still works without tool calling; `lepika logs` has the details.",
+        )
+    logger.info("engine.retemplate", model=name, result="success")
 
 
 def _version_tuple(text: str) -> tuple[int, ...]:

@@ -344,6 +344,65 @@ def test_load_model_posts_generate_and_maps_a_runner_failure() -> None:
     assert "MLX engine" in exc.value.problem
 
 
+def test_show_returns_capabilities_and_template() -> None:
+    def opener(req: Any, timeout: float = 0) -> Any:
+        assert req.full_url.endswith("/api/show")
+        assert json.loads(req.data)["model"] == "o/r"
+        body = {"capabilities": ["completion", "thinking"], "template": "<|im_start|>{{ x }}"}
+        return FakeResponse(json.dumps(body).encode())
+
+    assert engine.show("http://x", "o/r", urlopen=opener) == (
+        ["completion", "thinking"],
+        "<|im_start|>{{ x }}",
+    )
+
+
+def test_show_missing_fields_read_as_empty() -> None:
+    opener = lambda req, timeout=0: FakeResponse(b"{}")  # noqa: E731
+    assert engine.show("http://x", "o/r", urlopen=opener) == ([], "")
+
+
+def test_show_failure_reads_as_none() -> None:
+    """Diagnostics must never break the pull that just succeeded."""
+
+    def opener(req: Any, timeout: float = 0) -> Any:
+        raise urllib.error.URLError("down")
+
+    assert engine.show("http://x", "o/r", urlopen=opener) is None
+
+
+def test_chatml_tools_template_ships_in_the_package() -> None:
+    text = engine.chatml_tools_template()
+    assert ".Tools" in text and ".ToolCalls" in text
+    assert "<|im_start|>" in text
+
+
+def test_retemplate_rebuilds_the_model_with_the_given_template() -> None:
+    seen: dict[str, Any] = {}
+
+    def stream(cmd: list[str], **kwargs: Any) -> tuple[int, str]:
+        # Read while the staging TemporaryDirectory is alive — gone once it returns.
+        seen["cmd"] = list(cmd)
+        seen["env"] = kwargs["env"]
+        seen["modelfile"] = (Path(kwargs["cwd"]) / "Modelfile").read_text()
+        return 0, ""
+
+    engine.retemplate(
+        "http://x", "hf.co/o/r-GGUF:Q4", "TPL {{ .Tools }}", stream=stream, environ={}
+    )
+    assert seen["cmd"] == ["ollama", "create", "hf.co/o/r-GGUF:Q4"]
+    assert seen["env"]["OLLAMA_HOST"] == "http://x"
+    assert seen["modelfile"].startswith("FROM hf.co/o/r-GGUF:Q4\n")
+    assert 'TEMPLATE """TPL {{ .Tools }}"""' in seen["modelfile"]
+
+
+def test_retemplate_failure_is_friendly() -> None:
+    with pytest.raises(FriendlyError):
+        engine.retemplate(
+            "http://x", "o/r", "TPL", stream=Streamer(code=1, tail="boom"), environ={}
+        )
+
+
 def _versioned(text: str) -> Any:
     """An opener answering /api/version with `text` and /api/generate with success."""
 

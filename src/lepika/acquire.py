@@ -244,4 +244,41 @@ def acquire(
         repo = head + sep + tail.partition(":")[0]
         console.print(f"{escape(ref.raw)} ships full weights — importing it into Ollama instead.")
         return import_repo(info, cfg, models.parse_model_ref(repo), quant=quant)
+    if ref.kind == "hf_gguf" and cfg.engine_managed:
+        # Registry models are Ollama-curated; only hf.co pulls carry community
+        # templates — sometimes stripped of their tool handling, which turns every
+        # request that carries tools into a 400. A managed engine only: `ollama
+        # create` cannot send a remote engine's key (rule 9: not ours to fix).
+        _ensure_tools(cfg, ref.raw)
     return ref.raw
+
+
+def _ensure_tools(cfg: config.Config, name: str) -> None:
+    """Rebuild a pulled ChatML model whose template lost its tool handling.
+
+    Best effort at every step: the pull already succeeded, so nothing here is
+    allowed to fail it — an engine that won't answer skips the repair, a template
+    in a format LePika does not curate gets one line naming the limitation.
+    """
+    shown = engine.show(cfg.engine_url, name, key=cfg.engine_key)
+    if shown is None:
+        return
+    capabilities, template = shown
+    if not capabilities or "tools" in capabilities:
+        return
+    if "<|im_start|>" not in template:
+        # Not ChatML: the curated template would change the wire format, not fix it.
+        console.print(
+            f"[yellow]{escape(name)} has no tool support — chat works, but features "
+            "that send tools (web search, code interpreter) will fail with it.[/yellow]"
+        )
+        return
+    try:
+        engine.retemplate(cfg.engine_url, name, engine.chatml_tools_template(), key=cfg.engine_key)
+    except FriendlyError as exc:
+        console.print(f"[yellow]{escape(exc.problem)} {escape(exc.fix)}[/yellow]")
+        return
+    console.print(
+        f"✓ {escape(name)} shipped without tool support — rebuilt its chat template "
+        "(ChatML + tools)."
+    )

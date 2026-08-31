@@ -13,6 +13,12 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `FriendlyError` instead of a bare `FileNotFoundError`. The template repair runs
   after a pull has already succeeded, so the traceback would have been the only
   thing the user saw go wrong. ([#15])
+- `lepika down` now stops an OpenWebUI that `lepika up` adopted rather than
+  started. `up` returns early when the port already answers, recording no pid, and
+  `down` had only that pid file to go on — so it reported "Nothing was running"
+  while the UI kept serving and `lepika status` kept showing it up. It now falls
+  back to the process list, the same command-line evidence a hung pid is already
+  judged by. ([#17])
 
 ## [0.1.1] - 2026-08-31
 
@@ -54,3 +60,4 @@ Initial public release — one command → local AI chat in your browser.
 [#12]: https://github.com/MikaelSabuhi/lepika/pull/12
 [#13]: https://github.com/MikaelSabuhi/lepika/pull/13
 [#15]: https://github.com/MikaelSabuhi/lepika/pull/15
+[#17]: https://github.com/MikaelSabuhi/lepika/pull/17

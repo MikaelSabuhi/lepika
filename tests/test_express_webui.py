@@ -350,7 +350,9 @@ def test_stop_openwebui_reads_the_command_line_without_logging_it(isolated_home:
     express.stop_openwebui(
         "linux", run=run, kill=lambda pid, sig: None, port=3000, up=lambda port, **k: False
     )
-    assert seen == [{"check": False, "log": False}]
+    # A stale pid file reads twice: its own command line, then the process list the
+    # fallback searches once that pid has vouched for nothing. Both are pure reads.
+    assert seen == [{"check": False, "log": False}, {"check": False, "log": False}]
 
 
 def test_stop_openwebui_on_windows_still_trusts_the_port_alone(isolated_home: Path) -> None:
@@ -388,6 +390,155 @@ def test_stop_openwebui_signals_when_the_port_answers(isolated_home: Path) -> No
     # `ps` runs, or the common path pays a subprocess it never needed.
     assert run.calls == []
     assert not paths.pid_file("openwebui").exists()
+
+
+def _ps_line(pid: int, port: int) -> str:
+    """One `ps -eo pid=,args=` row for an OpenWebUI started the way LePika starts it."""
+    return (
+        f" {pid} uv tool run --python 3.11 --from open-webui open-webui serve"
+        f" --host 127.0.0.1 --port {port}\n"
+    )
+
+
+def test_stop_openwebui_adopts_a_webui_no_pidfile_names(isolated_home: Path) -> None:
+    """`lepika up` records no pid when it finds the UI already answering.
+
+    `ensure_openwebui` returns early on a healthy port, so the pid file can be
+    absent while the UI keeps serving — and `down` reported "Nothing was running"
+    every time while `status` went on showing it up.
+    """
+    killed: list[tuple[int, int]] = []
+    run = Runner(stdout={"ps": _ps_line(900, 3000)})
+    stopped = express.stop_openwebui(
+        "linux",
+        run=run,
+        kill=lambda pid, sig: killed.append((pid, sig)),
+        port=3000,
+        up=lambda port, **k: True,
+    )
+    assert stopped is True
+    assert killed == [(900, signal.SIGTERM)]
+    assert run.calls == [["ps", "-eo", "pid=,args="]]
+
+
+def test_stop_openwebui_adopts_every_process_serving_our_port(isolated_home: Path) -> None:
+    """`uv tool run` and the server it wraps both carry the argv; neither may be left."""
+    killed: list[int] = []
+    run = Runner(
+        stdout={
+            "ps": _ps_line(900, 3000)
+            + " 901 /opt/uv/tools/open-webui/bin/python"
+            + " /opt/uv/tools/open-webui/bin/open-webui serve --host 127.0.0.1 --port 3000\n"
+        }
+    )
+    stopped = express.stop_openwebui(
+        "linux", run=run, kill=lambda pid, sig: killed.append(pid), port=3000
+    )
+    assert stopped is True
+    assert killed == [900, 901]
+
+
+def test_stop_openwebui_adopts_nothing_when_no_process_is_ours(isolated_home: Path) -> None:
+    """Without a pid file the argv is the only evidence — a stranger provides none."""
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("must not signal a process we cannot confirm is ours")
+
+    run = Runner(stdout={"ps": " 900 /usr/lib/systemd/systemd --user\n"})
+    assert express.stop_openwebui("linux", run=run, kill=never, port=3000) is False
+
+
+def test_stop_openwebui_adopts_only_the_webui_on_our_own_port(isolated_home: Path) -> None:
+    """A second LEPIKA_HOME runs its own UI on its own port; ours is the one we stop."""
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("another port's UI belongs to another LePika")
+
+    run = Runner(stdout={"ps": _ps_line(900, 3001)})
+    assert express.stop_openwebui("linux", run=run, kill=never, port=3000) is False
+
+
+def test_stop_openwebui_matches_the_port_whole(isolated_home: Path) -> None:
+    """`--port 30000` starts with `--port 3000`: a substring match would kill it."""
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("port 30000 is not port 3000")
+
+    run = Runner(stdout={"ps": _ps_line(900, 30000)})
+    assert express.stop_openwebui("linux", run=run, kill=never, port=3000) is False
+
+
+def test_stop_openwebui_adopts_nothing_on_windows(isolated_home: Path) -> None:
+    """`tasklist` lists images, not argv: there is no command line to search there."""
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("must not signal a process we cannot confirm is ours")
+
+    run = Runner(stdout={"ps": _ps_line(900, 3000)})
+    assert express.stop_openwebui("windows", run=run, kill=never, port=3000) is False
+    assert run.calls == []
+
+
+def test_stop_openwebui_never_searches_without_a_port(isolated_home: Path) -> None:
+    """The port is what the search matches on — with none given there is nothing to ask."""
+    run = Runner(stdout={"ps": _ps_line(900, 3000)})
+    assert express.stop_openwebui("linux", run=run, kill=lambda pid, sig: None) is False
+    assert run.calls == []
+
+
+def test_stop_openwebui_adoption_reads_the_process_list_without_logging_it(
+    isolated_home: Path,
+) -> None:
+    """A pure read of every command line on the machine is never written to the log."""
+    seen: list[dict[str, Any]] = []
+
+    def run(cmd: list[str], **kwargs: Any) -> Any:
+        seen.append(dict(kwargs))
+        return Runner(stdout={"ps": _ps_line(900, 3000)})(cmd, **kwargs)
+
+    express.stop_openwebui("linux", run=run, kill=lambda pid, sig: None, port=3000)
+    assert seen == [{"check": False, "log": False}]
+
+
+def test_stop_openwebui_adoption_survives_a_process_that_just_exited(
+    isolated_home: Path,
+) -> None:
+    """`ps` and the signal are two moments: what it listed may already be gone."""
+
+    def vanished(pid: int, sig: int) -> None:
+        raise ProcessLookupError(3, "No such process")
+
+    run = Runner(stdout={"ps": _ps_line(900, 3000)})
+    assert express.stop_openwebui("linux", run=run, kill=vanished, port=3000) is False
+
+
+def test_stop_openwebui_adoption_ignores_rows_with_no_readable_pid(
+    isolated_home: Path,
+) -> None:
+    """`ps` output is parsed, not trusted: a header or a wrapped row is not a pid."""
+
+    def never(pid: int, sig: int) -> None:
+        raise AssertionError("must not signal something that is not a pid")
+
+    run = Runner(stdout={"ps": "  PID COMMAND\n" + " open-webui serve --port 3000\n"})
+    assert express.stop_openwebui("linux", run=run, kill=never, port=3000) is False
+
+
+def test_stop_openwebui_prefers_the_pidfile_over_the_search(isolated_home: Path) -> None:
+    """The recorded pid is still the first answer; the search is only the fallback."""
+    paths.pid_file("openwebui").write_text("4242")
+    killed: list[int] = []
+    run = Runner(stdout={"ps": _ps_line(900, 3000)})
+    stopped = express.stop_openwebui(
+        "linux",
+        run=run,
+        kill=lambda pid, sig: killed.append(pid),
+        port=3000,
+        up=lambda port, **k: True,
+    )
+    assert stopped is True
+    assert killed == [4242]
+    assert run.calls == []
 
 
 def test_restart_openwebui_waits_for_the_old_server_to_die_before_starting(

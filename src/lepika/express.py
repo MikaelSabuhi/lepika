@@ -14,6 +14,7 @@ import subprocess
 import time
 import urllib.request
 from collections.abc import Callable, Mapping
+from itertools import pairwise
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -419,13 +420,50 @@ def _is_webui_process(pid: int, os_name: str, run: RunFn) -> bool:
     return "open-webui" in str(listed.stdout)
 
 
-def stop_openwebui(
+def _find_openwebui(port: int, os_name: str, run: RunFn) -> list[int]:
+    """Every pid whose command line says it is an OpenWebUI of ours serving `port`.
+
+    The counterpart to `_is_webui_process`, for when there is no recorded pid to
+    check at all. `ensure_openwebui` returns early on a port that already answers,
+    so a `lepika up` which adopted a UI that was already running writes no pid file
+    — and `lepika down`, with only that file to go on, reported "Nothing was
+    running" while `lepika status` went on showing the UI up. `start_openwebui`'s
+    argv names `open-webui serve` and the port, so a process carrying both is a UI
+    of ours whichever run started it: the same evidence rule 7 already trusts for a
+    hung pid, read the other way round. Windows has no argv to read (`tasklist`
+    lists images), so there the pid file stays the only handle.
+    """
+    if os_name == "windows":
+        return []
+    # log=False: a pure read, and a machine that runs no OpenWebUI is not a failure.
+    listed = run(["ps", "-eo", "pid=,args="], check=False, log=False)
+    found: list[int] = []
+    for line in str(listed.stdout).splitlines():
+        pid_text, _, args = line.strip().partition(" ")
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            # A header line, or a row `ps` wrapped: neither names a pid to signal.
+            continue
+        words = args.split()
+        if "serve" not in words or not any("open-webui" in word for word in words):
+            continue
+        # `--port` and its value are separate words, so the port is matched whole:
+        # a substring test would read `--port 30000` as our `--port 3000`.
+        if ("--port", str(port)) not in pairwise(words):
+            continue
+        found.append(pid)
+    return found
+
+
+def _stop_recorded_openwebui(
     os_name: str,
-    run: RunFn = proc.run_logged,
-    kill: Callable[[int, int], None] = os.kill,
-    port: int | None = None,
-    up: Callable[..., bool] | None = None,
+    run: RunFn,
+    kill: Callable[[int, int], None],
+    port: int | None,
+    up: Callable[..., bool] | None,
 ) -> bool:
+    """Stop the OpenWebUI named by the pid file, if that pid is vouched for."""
     pf = pid_file("openwebui")
     if not pf.exists():
         return False
@@ -460,6 +498,40 @@ def stop_openwebui(
         pass
     pf.unlink(missing_ok=True)
     return True
+
+
+def stop_openwebui(
+    os_name: str,
+    run: RunFn = proc.run_logged,
+    kill: Callable[[int, int], None] = os.kill,
+    port: int | None = None,
+    up: Callable[..., bool] | None = None,
+) -> bool:
+    """Stop our OpenWebUI, by pid file first and by command line second.
+
+    The pid file is the cheap answer and stays the preferred one — it costs no
+    subprocess, and a healthy port confirms it outright. But it is written only by
+    the run that actually started the server, so it is missing exactly when a
+    `lepika up` found the UI already answering and left it alone. Falling back to
+    the process list is what keeps `lepika down` honest across those runs: without
+    it, a UI nothing recorded can never be stopped again, and every `down` says
+    "Nothing was running" while the port keeps serving.
+    """
+    if _stop_recorded_openwebui(os_name, run, kill, port, up):
+        return True
+    if port is None:
+        # No port, no command line to match: the pid file was the only handle there is.
+        return False
+    stopped = False
+    for pid in _find_openwebui(port, os_name, run):
+        try:
+            kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            # Listed a moment ago, but gone — or another user's — by the time we
+            # signalled it. Neither is a process this run managed to stop.
+            continue
+        stopped = True
+    return stopped
 
 
 def ensure_openwebui(

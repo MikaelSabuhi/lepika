@@ -130,6 +130,46 @@ def test_preflight_reads_the_cached_size_through_the_snapshot_symlink(tmp_path: 
     assert pre.download_bytes == 2048
 
 
+def test_load_config_reads_the_repo_config(tmp_path: Path) -> None:
+    assert hf.load_config(tmp_path) == {}  # absent
+    (tmp_path / "config.json").write_text("not json")
+    assert hf.load_config(tmp_path) == {}  # unreadable is not an error, just unknown
+    (tmp_path / "config.json").write_text('{"architectures": ["X"]}')
+    assert hf.load_config(tmp_path) == {"architectures": ["X"]}
+
+
+def test_quant_method_reads_the_quantization_config() -> None:
+    assert hf.quant_method({}) is None
+    assert hf.quant_method({"quantization_config": {}}) is None
+    method = hf.quant_method({"quantization_config": {"quant_method": "modelopt"}})
+    assert method == "modelopt"
+    # A quantization_config without a method name is still a quantized checkpoint.
+    assert hf.quant_method({"quantization_config": {"bits": 4}}) == "unknown"
+
+
+def test_fetch_config_downloads_only_the_config_into_the_staging_dir(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def run(cmd: list[str], **k: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(list(cmd))
+        (tmp_path / "config.json").write_text('{"quantization_config": {"quant_method": "awq"}}')
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    cfg = hf.fetch_config("org/repo", tmp_path, run=run, environ={})
+    assert hf.quant_method(cfg) == "awq"
+    assert "config.json" in calls[0]
+    assert "--dry-run" not in calls[0]  # a real (single-file) download, not a listing
+
+
+def test_fetch_config_failure_reads_as_no_config(tmp_path: Path) -> None:
+    """The Hub not answering must degrade to today's behavior, never block an import."""
+
+    def run(cmd: list[str], **k: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+
+    assert hf.fetch_config("org/repo", tmp_path, run=run, environ={}) == {}
+
+
 def test_preflight_lists_files_and_sums_sizes() -> None:
     run = Runner(stdout={"uv tool run": "Warning: unauthenticated\n" + LISTING})
     pre = hf.preflight("Qwen/Qwen3.5-2B", run=run, environ={})

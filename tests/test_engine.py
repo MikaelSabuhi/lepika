@@ -479,6 +479,21 @@ def test_import_model_quantizes_with_the_quant_it_is_given(tmp_path: Path) -> No
     assert stream.calls[0][0][-2:] == ["-q", "int4"]
 
 
+def test_import_model_without_a_quant_imports_the_source_as_is(tmp_path: Path) -> None:
+    """A pre-quantized checkpoint: Ollama refuses `-q` on it but imports it bare."""
+    stream = Streamer()
+    engine.import_model(
+        "http://x",
+        "o/r",
+        tmp_path,
+        quant=None,
+        stream=stream,
+        urlopen=_versioned("0.33.0"),
+        environ={},
+    )
+    assert stream.calls[0][0] == ["ollama", "create", "o/r", "--experimental"]
+
+
 def test_import_model_refuses_an_old_ollama(tmp_path: Path) -> None:
     stream = Streamer()
     with pytest.raises(FriendlyError) as exc:

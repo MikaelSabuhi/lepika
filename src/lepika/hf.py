@@ -221,6 +221,54 @@ def download_dir(repo: str) -> Path:
     return paths.hf_dir().joinpath(*repo.split("/"))
 
 
+def load_config(source: Path) -> dict[str, Any]:
+    """The repo's config.json as a dict; {} when absent or unreadable."""
+    try:
+        data = json.loads((source / "config.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def quant_method(config_json: Mapping[str, Any]) -> str | None:
+    """How already-quantized weights were quantized, or None for a raw checkpoint.
+
+    Quantized safetensors declare themselves in config.json's `quantization_config`
+    (e.g. `quant_method: "modelopt"` for NVFP4) — the one signal that decides whether
+    `ollama create` gets a `-q` (it refuses to requantize) or imports the source bare.
+    """
+    qc = config_json.get("quantization_config")
+    if not isinstance(qc, Mapping) or not qc:
+        return None
+    return str(qc.get("quant_method") or "unknown")
+
+
+def fetch_config(
+    repo: str,
+    dest: Path,
+    # B107: an empty default means "no token", not a credential — a real one
+    # arrives from the caller and travels only in the child's environment.
+    token: str = "",  # nosec B107
+    run: RunFn = proc.run_logged,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """config.json alone, into the staging dir the full download will reuse.
+
+    {} on any failure: the Hub not answering one small request must degrade to
+    "unknown, treat as raw", never block an import that used to work.
+    """
+    check_repo(repo)
+    dest.mkdir(parents=True, exist_ok=True)
+    run(
+        [*HF_CMD, "download", repo, "config.json", "--local-dir", str(dest)],
+        check=False,
+        log=False,
+        env=_env(token, environ),
+        timeout=_PREFLIGHT_TIMEOUT,
+    )
+    return load_config(dest)
+
+
 def download(
     repo: str,
     dest: Path,

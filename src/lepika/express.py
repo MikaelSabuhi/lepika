@@ -68,6 +68,20 @@ def install_ollama(
                 "Ollama installation failed.",
                 "See https://ollama.com/download/linux for manual install steps.",
             )
+        # The script enables + starts a systemd ollama.service. LePika manages its
+        # own `ollama serve` on every OS, so left enabled the unit crash-loops
+        # against ours on port 11434 and, after a reboot, wins the port with an
+        # empty model store (/usr/share/ollama/.ollama vs ~/.ollama). Streamed for
+        # the same reason as the script; the exit code is deliberately ignored —
+        # a distro without systemd has nothing to disable.
+        call(
+            [
+                "sh",
+                "-c",
+                "command -v systemctl >/dev/null 2>&1"
+                " && sudo systemctl disable --now ollama.service",
+            ]
+        )
     else:  # windows
         run(
             [

@@ -232,7 +232,22 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     # The stack is started for the model about to be pulled, not the one still saved:
     # in Server mode the profile follows the ref, so an old full-weight repo would
     # bring up vLLM and leave nothing to pull into. Only the pull saves it (above).
-    url = cli._backend(cfg).start_stack(
-        info, dataclasses.replace(cfg, model=ref.raw), after_engine=pull_then_save
-    )
+    try:
+        url = cli._backend(cfg).start_stack(
+            info, dataclasses.replace(cfg, model=ref.raw), after_engine=pull_then_save
+        )
+    except FriendlyError:
+        # A switch into Server that fails before the engine came up never saved the
+        # config, so the containers `compose up` created are invisible: `lepika down`
+        # (still the old mode) says "Nothing was running" while they hold the ports
+        # and answer readiness checks for the next start. Sweep them before leaving.
+        # Once the on-disk mode says server they are visible, and a re-run failure
+        # must not tear down what was already running — hence the reload.
+        if cfg.mode == "server" and previous != "server" and config.load().mode != "server":
+            try:
+                if server.stop(info, cfg):
+                    console.print("Removed the containers the failed switch had created.")
+            except FriendlyError as exc:
+                _report_stop_failure(exc)
+        raise
     cli._ready(cfg, url)

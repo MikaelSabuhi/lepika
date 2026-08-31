@@ -190,6 +190,68 @@ def test_dry_run_switches_nothing_off(
     assert switching == []
 
 
+def test_failed_switch_to_server_removes_the_containers_it_created(
+    switching: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The config still says express after a failed switch, so `lepika down` cannot
+    see what `compose up` created — the error path has to remove it itself."""
+
+    def failing_start(*a: Any, **k: Any) -> str:
+        raise FriendlyError("`docker compose up` failed.", "Run `lepika logs`.")
+
+    monkeypatch.setattr(server, "start_stack", failing_start)
+    answers = iter(["2", "1"])  # Server, then the model
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code != 0
+    # leave_mode stopped Express, then the error path swept the half-created stack.
+    assert switching == ["express", "server"]
+    assert config.load().mode == "express"
+
+
+def test_failed_start_while_already_in_server_mode_leaves_the_stack_alone(
+    switching: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No switch, no invisibility: `lepika down` sees these containers, and a wizard
+    re-run that fails must not tear down what was running before it."""
+    config.save(config.Config(mode="server"))
+
+    def failing_start(*a: Any, **k: Any) -> str:
+        raise FriendlyError("`docker compose up` failed.", "Run `lepika logs`.")
+
+    monkeypatch.setattr(server, "start_stack", failing_start)
+    answers = iter(["2", "1"])
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code != 0
+    assert switching == []
+
+
+def test_failure_after_the_mode_was_saved_keeps_the_visible_stack(
+    switching: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the engine came up the hook saved mode=server, so the containers are
+    visible to `lepika down` — a later failure (OpenWebUI timeout) sweeps nothing."""
+
+    def engine_up_then_webui_times_out(
+        info: detect.SystemInfo,
+        cfg: config.Config,
+        after_engine: Callable[[], None] | None = None,
+        **k: Any,
+    ) -> str:
+        if after_engine is not None:
+            after_engine()
+        raise FriendlyError("OpenWebUI did not become ready within 180s.", "Run `lepika logs`.")
+
+    monkeypatch.setattr(server, "start_stack", engine_up_then_webui_times_out)
+    answers = iter(["2", "1"])
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code != 0
+    assert switching == ["express"]
+    assert config.load().mode == "server"
+
+
 def test_leaving_express_mode_stops_the_ollama_lepika_started(
     switching: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

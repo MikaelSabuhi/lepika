@@ -324,11 +324,17 @@ def chatml_tools_template() -> str:
     ChatML template with the tool blocks removed, and this is the replacement
     `retemplate` rebuilds them with.
     """
-    return (
-        importlib.resources.files("lepika")
-        .joinpath("chatml_tools.gotmpl")
-        .read_text(encoding="utf-8")
-    )
+    resource = importlib.resources.files("lepika").joinpath("chatml_tools.gotmpl")
+    try:
+        return resource.read_text(encoding="utf-8")
+    except OSError as exc:
+        # Ships inside the package, so a miss means a damaged install — and the one
+        # caller repairs a model after its pull already succeeded, where a raw
+        # traceback would be the only thing the user sees go wrong.
+        raise FriendlyError(
+            "LePika's bundled ChatML template is missing from the install.",
+            "Reinstall LePika (`uv tool install --force lepika`) to restore it.",
+        ) from exc
 
 
 def retemplate(

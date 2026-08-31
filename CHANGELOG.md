@@ -5,6 +5,15 @@ All notable changes to LePika are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A bundled ChatML template missing from a damaged install now raises a
+  `FriendlyError` instead of a bare `FileNotFoundError`. The template repair runs
+  after a pull has already succeeded, so the traceback would have been the only
+  thing the user saw go wrong. ([#15])
+
 ## [0.1.1] - 2026-08-31
 
 ### Fixed
@@ -36,6 +45,7 @@ Initial public release — one command → local AI chat in your browser.
 - A curated in-repo model catalogue, plus importing safetensors weights from
   Hugging Face or a local folder.
 
+[Unreleased]: https://github.com/MikaelSabuhi/lepika/compare/v0.1.1...HEAD
 [0.1.1]: https://github.com/MikaelSabuhi/lepika/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/MikaelSabuhi/lepika/releases/tag/v0.1.0
 [#7]: https://github.com/MikaelSabuhi/lepika/pull/7
@@ -43,3 +53,4 @@ Initial public release — one command → local AI chat in your browser.
 [#10]: https://github.com/MikaelSabuhi/lepika/pull/10
 [#12]: https://github.com/MikaelSabuhi/lepika/pull/12
 [#13]: https://github.com/MikaelSabuhi/lepika/pull/13
+[#15]: https://github.com/MikaelSabuhi/lepika/pull/15

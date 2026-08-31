@@ -64,11 +64,19 @@ def install_ollama(
         # Streamed, not captured: the official script may prompt for sudo, and a
         # password prompt hidden behind captured output looks like a hang.
         code = call(["sh", "-c", "curl -fsSL https://ollama.com/install.sh | sh"])
+        # The binary on PATH, not the exit code, is what says the install worked.
+        # The script runs under `set -e`, and everything past the point where the
+        # engine lands — its own comment calls it optional — is the systemd setup
+        # LePika undoes on the next line anyway. On a box whose systemd is wedged
+        # ("Reload daemon failed: Connection reset by peer") `systemctl enable`
+        # aborts the script with a perfectly good engine already installed.
         if code != 0:
-            raise FriendlyError(
-                "Ollama installation failed.",
-                "See https://ollama.com/download/linux for manual install steps.",
-            )
+            if which("ollama") is None:
+                raise FriendlyError(
+                    "Ollama installation failed.",
+                    "See https://ollama.com/download/linux for manual install steps.",
+                )
+            log.get_logger().warning("ollama.install.optional_step_failed", code=code)
         # The script enables + starts a systemd ollama.service. LePika manages its
         # own `ollama serve` on every OS, so left enabled the unit crash-loops
         # against ours on port 11434 and, after a reboot, wins the port with an

@@ -19,6 +19,12 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   while the UI kept serving and `lepika status` kept showing it up. It now falls
   back to the process list, the same command-line evidence a hung pid is already
   judged by. ([#17])
+- `lepika update` no longer reports "Ollama installation failed" after the engine
+  upgraded fine. The official install script runs under `set -e`, so a machine
+  whose systemd is wedged aborts it in the optional service setup — the very setup
+  LePika undoes on the next line — long after the binary landed. The engine on
+  PATH now decides, and the unit the aborted script left enabled is disabled as
+  usual. ([#18])
 
 ## [0.1.1] - 2026-08-31
 
@@ -61,3 +67,4 @@ Initial public release — one command → local AI chat in your browser.
 [#13]: https://github.com/MikaelSabuhi/lepika/pull/13
 [#15]: https://github.com/MikaelSabuhi/lepika/pull/15
 [#17]: https://github.com/MikaelSabuhi/lepika/pull/17
+[#18]: https://github.com/MikaelSabuhi/lepika/pull/18

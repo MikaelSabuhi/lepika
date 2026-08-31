@@ -86,6 +86,20 @@ def test_install_ollama_linux_streams_official_script() -> None:
     assert run.calls == []
 
 
+def test_install_ollama_linux_survives_a_failed_optional_step() -> None:
+    """The script aborts on a wedged systemd long after the engine is in place."""
+    call = CallRecorder(1)
+    express.install_ollama(
+        info_for("linux"),
+        run=RunRecorder(),
+        which=lambda n: "/usr/local/bin/ollama" if n == "ollama" else None,
+        call=call,
+    )
+    # And the service the aborted script left enabled still gets disabled.
+    assert len(call.calls) == 2
+    assert "systemctl disable --now ollama" in " ".join(call.calls[1])
+
+
 def test_install_ollama_linux_failure_is_friendly() -> None:
     call = CallRecorder(1)
     with pytest.raises(FriendlyError) as exc:

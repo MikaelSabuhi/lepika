@@ -1,6 +1,6 @@
 [project]
 name = "lepika"
-version = "0.1.1"
+version = "0.1.2"
 description = "LePika — your own AI, at home, in one command"
 readme = "README.md"
 license = "MIT"

@@ -258,6 +258,21 @@ def test_model_add_imports_a_prequantized_repo_as_is(
     assert "Fetch 4.0 GB" in question and "~4.0 GB" in question
 
 
+def test_model_add_escapes_markup_in_the_quant_method(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """quant_method comes from the repo's config.json, so it is remote text — it must not
+    be read as Rich markup in the question the user is asked to agree to."""
+    monkeypatch.setattr(
+        hf,
+        "fetch_config",
+        lambda repo, dest, token="", **k: {"quantization_config": {"quant_method": "[bold]awq"}},
+    )
+    result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
+    assert result.exit_code == 0, result.output
+    assert "\\[bold]awq" in fake_import["confirms"][0]
+
+
 def test_model_add_rejects_a_quant_ollama_does_not_take(fake_import: dict[str, Any]) -> None:
     result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B", "--quant", "q8"])
     assert result.exit_code == 2  # Typer's usage error, before anything is downloaded
@@ -721,6 +736,16 @@ def test_model_import_detects_a_prequantized_folder_and_imports_as_is(
     assert result.exit_code == 0, result.output
     assert fake_local["imported"] == [("Qwen3.5-2B", weights, False, None)]
     assert "as-is" in result.output and "modelopt" in result.output
+
+
+def test_model_import_escapes_markup_in_the_quant_method(
+    fake_local: dict[str, Any], weights: Path
+) -> None:
+    """Same for the local folder: config.json is not necessarily the user's own text."""
+    (weights / "config.json").write_text('{"quantization_config": {"quant_method": "[bold]awq"}}')
+    result = runner.invoke(cli.app, ["model", "import", str(weights)])
+    assert result.exit_code == 0, result.output
+    assert "[bold]awq" in result.output
 
 
 def test_model_import_name_wins_over_the_folder_name(

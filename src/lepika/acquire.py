@@ -113,7 +113,7 @@ def import_repo(
         )
     _ram_advisory(repo, store_bytes, info)
     how = (
-        f"import it as-is (already {method}-quantized, ~{engine.human_size(store_bytes)})"
+        f"import it as-is (already {escape(method)}-quantized, ~{engine.human_size(store_bytes)})"
         if method is not None
         else f"import as {quant} (~{engine.human_size(store_bytes)})"
     )
@@ -201,7 +201,7 @@ def import_local(info: SystemInfo, cfg: config.Config, source: Path, name: str, 
         )
     _ram_advisory(name, quantized, info)
     how = (
-        f"as-is (already {method}-quantized, ~{engine.human_size(quantized)})"
+        f"as-is (already {escape(method)}-quantized, ~{engine.human_size(quantized)})"
         if method is not None
         else f"as {quant} (~{engine.human_size(quantized)})"
     )

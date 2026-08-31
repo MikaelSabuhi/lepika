@@ -87,11 +87,38 @@ def test_install_ollama_linux_streams_official_script() -> None:
 
 
 def test_install_ollama_linux_failure_is_friendly() -> None:
+    call = CallRecorder(1)
     with pytest.raises(FriendlyError) as exc:
         express.install_ollama(
-            info_for("linux"), run=RunRecorder(), which=lambda n: None, call=CallRecorder(1)
+            info_for("linux"), run=RunRecorder(), which=lambda n: None, call=call
         )
     assert "ollama.com/download/linux" in exc.value.fix
+    # A failed install has no service to disable.
+    assert len(call.calls) == 1
+
+
+def test_install_ollama_linux_disables_the_systemd_service_the_script_enables() -> None:
+    call = CallRecorder()
+    express.install_ollama(info_for("linux"), run=RunRecorder(), which=lambda n: None, call=call)
+    assert len(call.calls) == 2
+    disable = " ".join(call.calls[1])
+    assert "systemctl disable --now ollama" in disable
+    # Missing systemctl (non-systemd distro) must short-circuit before sudo runs.
+    assert "command -v systemctl" in disable
+
+
+def test_install_ollama_linux_survives_a_failed_service_disable() -> None:
+    class SecondCallFails:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def __call__(self, cmd: list[str]) -> int:
+            self.calls.append(list(cmd))
+            return 0 if len(self.calls) == 1 else 1
+
+    call = SecondCallFails()
+    express.install_ollama(info_for("linux"), run=RunRecorder(), which=lambda n: None, call=call)
+    assert len(call.calls) == 2
 
 
 def test_install_ollama_windows_uses_winget() -> None:

@@ -65,8 +65,8 @@ prerequisites; uv fetches its own Python.
   whether a 27B fits in 16 GB.
 - **Any model, one field** — Ollama tags, Hugging Face GGUF builds, or full-weight
   safetensors repos. [Model guide →](https://github.com/MikaelSabuhi/lepika/blob/main/docs/models.md)
-- **Private by default** — everything listens on `127.0.0.1` until you explicitly run
-  `lepika expose`.
+- **Private by default** — Express listens on `127.0.0.1`, full stop. Sharing the
+  stack with your network is a Server-mode feature (`lepika expose`).
 - **Two modes** — ⚡ **Express** (default): everything native, no Docker.
   🐳 **Server**: the same thing as one readable `docker compose` stack, for the box
   under the desk. [Server guide →](https://github.com/MikaelSabuhi/lepika/blob/main/docs/server-mode.md)
@@ -84,9 +84,9 @@ LePika reuses an Ollama you already have instead of installing a second copy.
 | `lepika logs` | Tail LePika's logs (`--lines`, default 50) |
 | `lepika update` | Upgrade the engine and OpenWebUI — chats kept |
 | `lepika model add [ref]` | Download a model and make it the default (no ref → browse) |
-| `lepika model import <dir>` | Import safetensors weights already on disk |
+| `lepika model import <dir>` | Import safetensors weights already on disk (`--quant` picks the format) |
 | `lepika model list` / `lepika model rm` | List / remove downloaded models |
-| `lepika expose` | Share engine + UI on your network behind a generated key |
+| `lepika expose` | Share engine + UI on your network behind a generated key (Server mode) |
 | `lepika connect <url>` | Use an engine on another machine (`--local` to go back) |
 
 Global flags: `--version`, `--mode express|server` (the wizard's, not a per-command
@@ -131,16 +131,11 @@ way. Curious what it's doing on your behalf? It's a few files of plain Python in
 - [Architecture](https://github.com/MikaelSabuhi/lepika/blob/main/docs/architecture.md) — design rules and how it's built
 - [Changelog](https://github.com/MikaelSabuhi/lepika/blob/main/CHANGELOG.md) — what changed in each release
 
-## Roadmap
-
-Both modes are v0.1 and work today. Next up: **a published package**, so installing is
-a plain name instead of a repo URL. Star the repo to follow along, or open an issue
-with what you'd want next.
-
 ## Contributing
 
-Issues and pull requests are welcome; [CONTRIBUTING.md](https://github.com/MikaelSabuhi/lepika/blob/main/CONTRIBUTING.md) has the short
-version of how a change gets in. Found a security problem?
+Issues and pull requests are welcome — including an issue for what you'd want next.
+[CONTRIBUTING.md](https://github.com/MikaelSabuhi/lepika/blob/main/CONTRIBUTING.md) has the short version of how a change gets in.
+Found a security problem?
 [SECURITY.md](https://github.com/MikaelSabuhi/lepika/blob/main/SECURITY.md) says how to report it privately.
 
 ```sh

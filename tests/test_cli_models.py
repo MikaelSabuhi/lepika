@@ -43,6 +43,7 @@ def fake_engine(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: pulled.append(ref.raw))
+    monkeypatch.setattr(engine, "show", lambda url, name, **k: None)
     return pulled
 
 
@@ -51,6 +52,74 @@ def test_model_add_with_ref_pulls_and_saves(fake_engine: list[str], isolated_hom
     assert result.exit_code == 0
     assert fake_engine == ["qwen3:8b"]
     assert config.load().model == "qwen3:8b"
+
+
+CHATML_NO_TOOLS = (["completion", "thinking"], "<|im_start|>{{ .Prompt }}<|im_end|>")
+
+
+def test_model_add_repairs_a_toolless_chatml_gguf(
+    fake_engine: list[str], isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Community GGUFs sometimes ship a stripped ChatML template with the tool
+    handling removed — every request that carries tools then 400s. The pull is the
+    moment to repair it, with the tool-capable ChatML template LePika curates."""
+    monkeypatch.setattr(engine, "show", lambda url, name, **k: CHATML_NO_TOOLS)
+    rebuilt: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        engine, "retemplate", lambda url, name, template, **k: rebuilt.append((name, template))
+    )
+    result = runner.invoke(cli.app, ["model", "add", "hf.co/o/r-GGUF:Q4_K_M"])
+    assert result.exit_code == 0, result.output
+    assert rebuilt and rebuilt[0][0] == "hf.co/o/r-GGUF:Q4_K_M"
+    assert ".Tools" in rebuilt[0][1]
+    assert "tool" in result.output.lower()
+
+
+def test_model_add_leaves_a_tool_capable_model_alone(
+    fake_engine: list[str], isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        engine, "show", lambda url, name, **k: (["completion", "tools"], "<|im_start|>")
+    )
+    monkeypatch.setattr(
+        engine, "retemplate", lambda *a, **k: pytest.fail("a tool-capable model is not rebuilt")
+    )
+    assert runner.invoke(cli.app, ["model", "add", "hf.co/o/r-GGUF:Q4_K_M"]).exit_code == 0
+
+
+def test_model_add_only_notes_a_toolless_model_it_cannot_repair(
+    fake_engine: list[str], isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-ChatML template is not ours to rewrite — say what will not work instead."""
+    monkeypatch.setattr(engine, "show", lambda url, name, **k: (["completion"], "[INST]{{ x }}"))
+    monkeypatch.setattr(
+        engine, "retemplate", lambda *a, **k: pytest.fail("unknown formats are not rebuilt")
+    )
+    result = runner.invoke(cli.app, ["model", "add", "hf.co/o/r-GGUF:Q4_K_M"])
+    assert result.exit_code == 0
+    assert "tool" in result.output.lower()
+
+
+def test_model_add_registry_pulls_skip_the_template_check(
+    fake_engine: list[str], isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Registry models are Ollama-curated; only hf.co pulls carry stranger templates."""
+    monkeypatch.setattr(
+        engine, "show", lambda url, name, **k: pytest.fail("registry pulls are not probed")
+    )
+    assert runner.invoke(cli.app, ["model", "add", "qwen3:8b"]).exit_code == 0
+
+
+def test_model_add_never_rebuilds_on_a_remote_engine(
+    fake_engine: list[str], isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ollama create` cannot send the remote engine's key — rule 9: not ours to fix."""
+    config.save(config.Config(engine_managed=False, engine_url="http://gpu-box:11435"))
+    monkeypatch.setattr(
+        engine, "show", lambda url, name, **k: pytest.fail("a remote engine is not probed")
+    )
+    monkeypatch.setattr(express, "check_remote_engine", lambda cfg, **k: None)
+    assert runner.invoke(cli.app, ["model", "add", "hf.co/o/r-GGUF:Q4_K_M"]).exit_code == 0
 
 
 CPU = detect.SystemInfo("linux", "x86_64", "none", 32.0, False, True, True)
@@ -108,6 +177,7 @@ def fake_import(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> dict[st
     monkeypatch.setattr(acquire, "confirm", lambda q: seen["confirms"].append(q) or True)
     # A raw bf16 repo by default; a test overrides this to stage a pre-quantized one.
     monkeypatch.setattr(hf, "fetch_config", lambda repo, dest, token="", **k: {})
+    monkeypatch.setattr(engine, "show", lambda url, name, **k: None)
     return seen
 
 

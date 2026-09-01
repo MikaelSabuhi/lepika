@@ -15,6 +15,12 @@ SCHEMA_VERSION = 1
 
 DEFAULT_ENGINE_URL = "http://127.0.0.1:11434"
 
+# Ollama's own default is 4096 tokens: one pasted document, or a chat an hour old,
+# fails with "exceeds the available context size" on any model. 16k fits long
+# chats and still fits beside a Q4 27B model on a 16 GB card; the KV cache for a
+# model that size costs roughly 0.25 MB per token, so 32k would spill to CPU there.
+DEFAULT_CONTEXT_LENGTH = 16384
+
 
 @dataclass
 class Config:
@@ -33,6 +39,10 @@ class Config:
     webui_port: int = 3000
     api_port: int = 11435
     exposed: bool = False
+    # Tokens of context the engine LePika starts gives every model (Express: the
+    # `ollama serve` environment; Server: the container's). An engine LePika only
+    # adopted keeps its own — `context_note` says so.
+    context_length: int = DEFAULT_CONTEXT_LENGTH
 
 
 def config_path() -> Path:

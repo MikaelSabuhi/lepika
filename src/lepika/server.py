@@ -231,6 +231,8 @@ def env_values(cfg: Config, info: SystemInfo, existing: dict[str, str]) -> dict[
         "WEBUI_BIND": "0.0.0.0" if cfg.exposed else "127.0.0.1",  # nosec B104
         "OLLAMA_BASE_URL": engine_url,
         "OLLAMA_API_CONFIGS": api_configs,
+        # The engine container's default context; compose recreates it on a change.
+        "OLLAMA_CONTEXT_LENGTH": str(cfg.context_length),
         "ENABLE_OPENAI_API": "false",
         "OPENAI_API_BASE_URL": "",
         "OPENAI_API_KEY": "",

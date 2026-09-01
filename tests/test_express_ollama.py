@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import shlex
 import signal
@@ -751,3 +752,76 @@ def test_ollama_store_prefers_the_env_then_the_service_dir_then_home() -> None:
     assert express.ollama_store({"OLLAMA_MODELS": ""}, exists=lambda p: False) == (
         Path.home() / ".ollama"
     )
+
+
+def test_ollama_env_sets_the_context_length_from_config() -> None:
+    env = express.ollama_env(16384, environ={"PATH": "/usr/bin"})
+    assert env["OLLAMA_CONTEXT_LENGTH"] == "16384"
+    assert env["PATH"] == "/usr/bin"
+
+
+def test_ollama_env_lets_the_shell_win() -> None:
+    """Like HF_TOKEN: a value the user just exported is fresher than the file."""
+    env = express.ollama_env(16384, environ={"OLLAMA_CONTEXT_LENGTH": "65536"})
+    assert env["OLLAMA_CONTEXT_LENGTH"] == "65536"
+
+
+def test_start_ollama_passes_the_context_length_to_serve() -> None:
+    popen = PopenRecorder()
+    express.start_ollama("linux", popen=popen, context_length=8192, environ={"HOME": "/h"})
+    cmd, kwargs = popen.calls[0]
+    assert cmd == ["ollama", "serve"]
+    assert kwargs["env"]["OLLAMA_CONTEXT_LENGTH"] == "8192"
+    assert kwargs["env"]["HOME"] == "/h"
+    kwargs["stdout"].close()
+
+
+def test_ensure_ollama_starts_the_engine_with_the_configured_context_length(
+    isolated_home: Path,
+) -> None:
+    popen = PopenRecorder()
+    express.ensure_ollama(
+        info_for("linux", has_ollama=True),
+        popen=popen,
+        api_up=lambda url, **k: bool(popen.calls),
+        sleep=lambda s: None,
+        context_length=8192,
+    )
+    _, kwargs = popen.calls[0]
+    assert kwargs["env"]["OLLAMA_CONTEXT_LENGTH"] == "8192"
+    kwargs["stdout"].close()
+
+
+def test_context_note_when_someone_elses_engine_was_already_up(isolated_home: Path) -> None:
+    """The tray app or brew started it: our env never reached it, so say how to set it."""
+    info = dataclasses.replace(info_for("windows", has_ollama=True), ollama_running=True)
+    note = express.context_note(info, config.Config(context_length=16384), run=Runner())
+    assert note is not None
+    assert "16384" in note
+    assert "Settings" in note  # the Windows app has a Context length setting
+
+
+def test_context_note_on_posix_says_to_restart(isolated_home: Path) -> None:
+    info = dataclasses.replace(info_for("linux", has_ollama=True), ollama_running=True)
+    note = express.context_note(info, config.Config(), run=Runner())
+    assert note is not None
+    assert "lepika up" in note
+
+
+def test_context_note_is_silent_when_nothing_was_running(isolated_home: Path) -> None:
+    info = info_for("linux", has_ollama=True)
+    assert express.context_note(info, config.Config(), run=Runner()) is None
+
+
+def test_context_note_is_silent_for_our_own_engine(isolated_home: Path) -> None:
+    """An Ollama LePika started got the env at launch; the note would be noise."""
+    paths.pid_file("ollama").write_text("4242")
+    run = Runner(stdout={"ps -p 4242": "/usr/local/bin/ollama\n"})
+    info = dataclasses.replace(info_for("linux", has_ollama=True), ollama_running=True)
+    assert express.context_note(info, config.Config(), run=run) is None
+
+
+def test_context_note_is_silent_for_a_remote_engine(isolated_home: Path) -> None:
+    info = dataclasses.replace(info_for("linux", has_ollama=True), ollama_running=True)
+    cfg = config.Config(engine_managed=False, engine_url="http://gpu-box:11435")
+    assert express.context_note(info, cfg, run=Runner()) is None

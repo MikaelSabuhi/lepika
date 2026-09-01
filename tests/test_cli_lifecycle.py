@@ -197,3 +197,21 @@ def test_status_has_no_exposure_row_in_express_mode(
     monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
     config.save(config.Config(mode="express"))
     assert "Exposed" not in runner.invoke(cli.app, ["status"]).output
+
+
+def test_up_says_how_to_set_the_context_length_on_an_adopted_engine(
+    quiet_stack: dict[str, int], isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(express, "context_note", lambda info, cfg, **k: "set it in Settings")
+    result = runner.invoke(cli.app, ["up"])
+    assert result.exit_code == 0
+    assert "set it in Settings" in result.output
+
+
+def test_up_stays_quiet_about_context_length_when_there_is_nothing_to_say(
+    quiet_stack: dict[str, int], isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(express, "context_note", lambda info, cfg, **k: None)
+    result = runner.invoke(cli.app, ["up"])
+    assert result.exit_code == 0
+    assert "context" not in result.output.lower()

@@ -267,3 +267,14 @@ def test_lan_ips_drops_the_placeholder_when_there_is_no_route() -> None:
         hostname=lambda: "box",
     )
     assert ips == ["192.168.1.20"]
+
+
+def test_env_values_carry_the_context_length_to_the_engine_container() -> None:
+    cfg = config.Config(mode="server", context_length=8192)
+    assert server.env_values(cfg, INFO, existing={})["OLLAMA_CONTEXT_LENGTH"] == "8192"
+
+
+def test_compose_hands_the_context_length_to_the_ollama_service() -> None:
+    text = (Path(server.__file__).parent / "stack" / "compose.yml").read_text()
+    ollama_block = text.split("\n  ollama:")[1].split("\n  vllm:")[0]
+    assert "OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH}" in ollama_block

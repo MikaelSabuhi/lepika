@@ -126,3 +126,17 @@ def test_hf_token_round_trips_and_defaults_empty(isolated_home: Path) -> None:
     assert config.load().hf_token == ""
     config.save(config.Config(hf_token="hf_abc"))
     assert config.load().hf_token == "hf_abc"
+
+
+def test_context_length_defaults_and_round_trips(isolated_home: Path) -> None:
+    """Ollama's own default is 4096, which a pasted document overruns in one turn."""
+    assert config.Config().context_length == config.DEFAULT_CONTEXT_LENGTH == 16384
+    config.save(config.Config(context_length=32768))
+    assert config.load().context_length == 32768
+
+
+def test_load_fills_context_length_for_a_config_written_before_it_existed(
+    isolated_home: Path,
+) -> None:
+    config.config_path().write_text('schema_version = 1\nmodel = "qwen3:8b"\n')
+    assert config.load().context_length == 16384

@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from lepika import detect, log, proc
-from lepika.config import Config, config_path
+from lepika.config import DEFAULT_CONTEXT_LENGTH, Config, config_path
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.paths import logs_dir, openwebui_data_dir, pid_file
@@ -105,11 +105,33 @@ def install_ollama(
         )
 
 
-def start_ollama(os_name: str, popen: PopenFn = subprocess.Popen) -> None:
+def ollama_env(context_length: int, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The environment `ollama serve` starts with: the shell's, plus the context length.
+
+    Ollama has no config file; `OLLAMA_CONTEXT_LENGTH` is how its default context is
+    set, and it defaults to 4096 — one pasted document over the limit on any model.
+    A value already in the shell wins over config.toml, as `HF_TOKEN` does in Server
+    mode: what the user just exported is the freshest intent they have.
+    """
+    env = dict(os.environ if environ is None else environ)
+    env.setdefault("OLLAMA_CONTEXT_LENGTH", str(context_length))
+    return env
+
+
+def start_ollama(
+    os_name: str,
+    popen: PopenFn = subprocess.Popen,
+    context_length: int = DEFAULT_CONTEXT_LENGTH,
+    environ: Mapping[str, str] | None = None,
+) -> None:
     log_file = (logs_dir() / "ollama.log").open("ab")
     try:
         proc_handle = popen(
-            ["ollama", "serve"], stdout=log_file, stderr=log_file, **_detach_kwargs(os_name)
+            ["ollama", "serve"],
+            stdout=log_file,
+            stderr=log_file,
+            env=ollama_env(context_length, environ),
+            **_detach_kwargs(os_name),
         )
     except FileNotFoundError as exc:
         log_file.close()
@@ -232,12 +254,53 @@ def ensure_ollama(
     sleep: SleepFn = time.sleep,
     call: CallFn = subprocess.call,
     url: str = detect.OLLAMA_URL,
+    context_length: int = DEFAULT_CONTEXT_LENGTH,
 ) -> None:
     if not info.has_ollama:
         install_ollama(info, run=run, which=which, call=call)
     if not api_up(url):
-        start_ollama(info.os, popen=popen)
+        start_ollama(info.os, popen=popen, context_length=context_length)
         wait_for(lambda: api_up(url), 30, "Ollama API", sleep=sleep)
+
+
+def _ours(os_name: str, run: RunFn) -> bool:
+    """Did LePika start the Ollama that is running? A pid we wrote, still an Ollama."""
+    pf = pid_file("ollama")
+    if not pf.exists():
+        return False
+    try:
+        pid = int(pf.read_text().strip())
+    except ValueError:
+        return False
+    return pid > 0 and _is_ollama_process(pid, os_name, run)
+
+
+def context_note(info: SystemInfo, cfg: Config, run: RunFn = proc.run_logged) -> str | None:
+    """One line for `lepika up` when the context length in config.toml cannot apply.
+
+    `ensure_ollama` adopts an engine that already answers instead of starting one,
+    so `OLLAMA_CONTEXT_LENGTH` never reaches it: the tray app on Windows, brew
+    services, a `systemd` unit, or a user's own `ollama serve`. Ollama exposes no
+    way to read an idle engine's context length, so this cannot check — it says
+    where the setting lives on that engine. Quiet for the engine LePika itself
+    started, which got the value at launch, and for a remote engine, which was
+    never ours to configure.
+    """
+    if not (cfg.mode == "express" and cfg.engine_managed and info.ollama_running):
+        return None
+    if _ours(info.os, run):
+        return None
+    if info.os == "windows":
+        how = (
+            "Ollama's tray icon → Settings → Context length, or a user environment "
+            f"variable OLLAMA_CONTEXT_LENGTH={cfg.context_length} and restart Ollama"
+        )
+    else:
+        how = f"quit Ollama and run `lepika up` again to start it with {cfg.context_length}"
+    return (
+        "Ollama was already running, so it keeps its own context length "
+        f"(Ollama's default is 4096 tokens). To use {cfg.context_length}: {how}."
+    )
 
 
 def webui_url(port: int) -> str:
@@ -812,7 +875,7 @@ def start_stack(
     hook; the wizard passes its pull.
     """
     if cfg.engine_managed:
-        ensure_ollama(info, url=cfg.engine_url)
+        ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length)
     else:
         # Someone else runs this engine: never install or start anything for it.
         check_remote_engine(cfg, api_up=detect.api_up)

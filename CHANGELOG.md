@@ -5,6 +5,18 @@ All notable changes to LePika are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Every model now gets a 16k-token context window. Ollama's own default is 4096,
+  so one pasted document or a chat an hour old failed with "request exceeds the
+  available context size" on any model. LePika sets `OLLAMA_CONTEXT_LENGTH` on the
+  `ollama serve` it starts in Express mode and on the engine container in Server
+  mode; a new `context_length` key in `config.toml` changes it, and a value already
+  in the shell wins over the file. When Ollama was already running — the tray app
+  on Windows, brew, systemd — `lepika up` says where that engine's own setting is.
+
 ## [0.1.2] - 2026-08-31
 
 ### Fixed

@@ -26,6 +26,8 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:11434:11434"
+    environment:
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH}
     volumes:
       - ollama:/root/.ollama
 

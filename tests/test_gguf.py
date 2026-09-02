@@ -186,3 +186,62 @@ def test_list_builds_returns_nothing_for_a_repo_without_gguf_files() -> None:
 )
 def test_split_tag(raw: str, expected: tuple[str, str]) -> None:
     assert gguf.split_tag(raw) == expected
+
+
+def gb(n: float) -> gguf.Build:
+    return gguf.Build("Q", int(n * 1e9))
+
+
+def test_tier_fits_the_gpu_with_headroom_for_the_context_window() -> None:
+    assert gguf.tier(gb(12.8), gpu_gb=16.0, ram_gb=32.0) == "gpu"
+    assert gguf.tier(gb(12.9), gpu_gb=16.0, ram_gb=32.0) == "mixed"
+
+
+def test_tier_mixed_up_to_one_and_a_half_times_the_gpu_then_cpu() -> None:
+    assert gguf.tier(gb(24.0), gpu_gb=16.0, ram_gb=64.0) == "mixed"
+    assert gguf.tier(gb(24.1), gpu_gb=16.0, ram_gb=64.0) == "cpu"
+
+
+def test_tier_none_beyond_ram_with_headroom_unless_the_gpu_holds_it_outright() -> None:
+    assert gguf.tier(gb(25.7), gpu_gb=16.0, ram_gb=32.0) == "none"
+    assert gguf.tier(gb(25.6), gpu_gb=16.0, ram_gb=32.0) == "cpu"  # the boundary is runnable
+    # Weights go into VRAM; RAM need not hold the whole file when the GPU takes it alone.
+    assert gguf.tier(gb(20.0), gpu_gb=80.0, ram_gb=16.0) == "gpu"
+
+
+def test_tier_without_a_gpu_is_cpu_or_none() -> None:
+    assert gguf.tier(gb(10.0), gpu_gb=0.0, ram_gb=16.0) == "cpu"
+    assert gguf.tier(gb(13.0), gpu_gb=0.0, ram_gb=16.0) == "none"
+
+
+def test_label_names_the_cpu_tier_by_whether_there_is_a_gpu() -> None:
+    assert gguf.label("gpu", 16.0) == "fits your GPU"
+    assert gguf.label("mixed", 16.0) == "GPU + some CPU"
+    assert gguf.label("cpu", 16.0) == "mostly CPU — slow"
+    assert gguf.label("cpu", 0.0) == "CPU only — slow"
+    assert gguf.label("none", 16.0) == "too big for your RAM"
+
+
+def test_recommend_picks_the_largest_quantized_build_that_fits_the_gpu() -> None:
+    builds = [
+        gguf.Build("IQ2_M", int(9.8e9)),
+        gguf.Build("IQ4_XS", int(12.0e9)),
+        gguf.Build("Q4_K_M", int(16.5e9)),
+        gguf.Build("BF16", int(12.5e9)),  # fits too, but unquantized is never the pick
+    ]
+    best = gguf.recommend(builds, gpu_gb=16.0, ram_gb=32.0)
+    assert best is not None and best.quant == "IQ4_XS"
+
+
+def test_recommend_falls_back_to_mixed_then_cpu() -> None:
+    builds = [gguf.Build("Q4_K_M", int(20e9)), gguf.Build("Q8_0", int(30e9))]
+    best = gguf.recommend(builds, gpu_gb=16.0, ram_gb=64.0)
+    assert best is not None and best.quant == "Q4_K_M"  # mixed beats cpu
+    cpu_only = gguf.recommend(builds, gpu_gb=0.0, ram_gb=64.0)
+    assert cpu_only is not None and cpu_only.quant == "Q8_0"
+
+
+def test_recommend_nothing_when_nothing_runs() -> None:
+    assert gguf.recommend([gguf.Build("Q8_0", int(30e9))], gpu_gb=8.0, ram_gb=16.0) is None
+    assert gguf.recommend([gguf.Build("F16", int(4e9))], gpu_gb=8.0, ram_gb=16.0) is None
+    assert gguf.recommend([], gpu_gb=8.0, ram_gb=16.0) is None

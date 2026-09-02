@@ -7,7 +7,7 @@ import re
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 # The quantization is the tail of the file stem, read the way the Hub reads it when it
 # resolves `hf.co/<org>/<repo>:<TAG>` for Ollama — so the tag shown is the tag pulled.
@@ -107,3 +107,50 @@ def list_builds(
     except Exception as exc:
         raise Unavailable(str(exc)) from exc
     return parse_builds(payload)
+
+
+Tier = Literal["gpu", "mixed", "cpu", "none"]
+
+# A build is judged by its file size alone; the KV cache for the 16k context window
+# is what the 20 % headroom is for. Up to 1.5x the GPU's memory most layers are still
+# on the GPU — beyond that the CPU does most of the work.
+GPU_HEADROOM = 0.8
+MIXED_LIMIT = 1.5
+
+_LABELS: dict[Tier, str] = {
+    "gpu": "fits your GPU",
+    "mixed": "GPU + some CPU",
+    "cpu": "mostly CPU — slow",
+    "none": "too big for your RAM",
+}
+
+
+def tier(build: Build, gpu_gb: float, ram_gb: float) -> Tier:
+    size = build.size_gb
+    if gpu_gb and size <= GPU_HEADROOM * gpu_gb:
+        return "gpu"
+    if size > GPU_HEADROOM * ram_gb:
+        return "none"
+    if gpu_gb and size <= MIXED_LIMIT * gpu_gb:
+        return "mixed"
+    return "cpu"
+
+
+def label(t: Tier, gpu_gb: float) -> str:
+    if t == "cpu" and not gpu_gb:
+        return "CPU only — slow"
+    return _LABELS[t]
+
+
+def recommend(builds: list[Build], gpu_gb: float, ram_gb: float) -> Build | None:
+    """The largest quantized build in the best tier that has one; None when nothing runs.
+
+    F16/BF16/F32 are never recommended: on a consumer GPU they cost twice the memory
+    of Q8_0 for no visible difference in a chat.
+    """
+    wanted: tuple[Tier, ...] = ("gpu", "mixed", "cpu")
+    for t in wanted:
+        fitting = [b for b in builds if b.quantized and tier(b, gpu_gb, ram_gb) == t]
+        if fitting:
+            return max(fitting, key=lambda b: b.size_bytes)
+    return None

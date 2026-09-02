@@ -12,6 +12,34 @@ Run `lepika model add` with no argument and you get the curated list filtered to
 RAM, so there is no guessing whether a 27B fits in 16 GB. Paste a `huggingface.co/…`
 link of either kind and LePika works out which it is.
 
+## Choosing the quantization
+
+A GGUF repo usually ships a dozen builds of the same weights at different sizes.
+Leave the `:TAG` off and LePika lists them, sized against your machine, with the one
+it recommends marked ★ — Enter takes it, a number picks another:
+
+```
+      Quantizations of unsloth/Qwen3.8-27B-GGUF
+┏━━━┳━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ # ┃ Quant       ┃    Size ┃ Fit (17 GB GPU)      ┃
+┡━━━╇━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ 1 │ UD-IQ2_M    │  9.8 GB │ fits your GPU        │
+│ 2 │ UD-Q3_K_XL ★│ 13.1 GB │ fits your GPU        │
+│ 3 │ UD-IQ4_XS   │ 14.3 GB │ GPU + some CPU       │
+│ 4 │ UD-Q4_K_M   │ 16.5 GB │ GPU + some CPU       │
+│ 5 │ UD-Q6_K     │ 22.0 GB │ mostly CPU — slow    │
+└───┴─────────────┴─────────┴──────────────────────┘
+3 larger builds hidden — too big for your 32 GB RAM.
+Pick a number [2]:
+```
+
+"Fits your GPU" leaves a fifth of the GPU's memory for the 16k context window.
+The ★ is the largest quantized build that fits there (F16/BF16 are listed, never
+recommended). Builds too big for your RAM are hidden. If the Hub cannot be reached
+— offline, or a gated repo without a token — Ollama picks its own default, as before.
+Know the tag you want? `hf.co/<org>/<repo>:Q4_K_M` skips the question entirely.
+Running without a terminal, say in a script? The ★ is taken for you.
+
 ## Full-weight (safetensors) repos
 
 The third shape is the original safetensors release. Where it runs:

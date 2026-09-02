@@ -69,7 +69,8 @@ def gpu_memory_gb(info: SystemInfo, run: RunFn = proc.run_logged) -> float:
     timeout, which comes back as a FriendlyError and reads here as "unknown".
     Apple Silicon shares RAM with the GPU, and Metal caps a process's working set
     at two thirds of it below 36 GB and three quarters above — the number Ollama
-    itself budgets with.
+    itself budgets with. RAM is measured in GiB and the GPU in decimal GB; the
+    mismatch is under 7 % and errs on the safe side, so both are shown as "GB".
     """
     if info.gpu == "apple":
         return info.ram_gb * (0.75 if info.ram_gb >= 36 else 2 / 3)

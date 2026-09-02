@@ -75,7 +75,11 @@ def choose_quant(
         return ref
     if not builds:
         return ref  # nothing GGUF here: Ollama's refusal falls through to an import
-    gpu_gb = detect.gpu_memory_gb(info, run)
+    if cfg.mode == "server" and info.gpu == "apple":
+        # A container never sees Metal: Server mode on a Mac is a CPU engine.
+        gpu_gb = 0.0
+    else:
+        gpu_gb = detect.gpu_memory_gb(info, run)
     shown = [b for b in builds if gguf.tier(b, gpu_gb, info.ram_gb) != "none"]
     if not shown:
         console.print(
@@ -100,8 +104,13 @@ def choose_quant(
     if hidden:
         plural = "s" if hidden != 1 else ""
         console.print(
-            f"[dim]{hidden} larger build{plural} hidden — they exceed your "
+            f"[dim]{hidden} larger build{plural} hidden — too big for your "
             f"{info.ram_gb:.0f} GB RAM.[/dim]"
+        )
+    if not cfg.engine_managed:
+        console.print(
+            f"[dim]Sized against this machine — the engine at {escape(cfg.engine_url)} "
+            "is what runs it.[/dim]"
         )
 
     ask_fn: AskFn = ask if ask is not None else _ask
@@ -124,6 +133,9 @@ def choose_quant(
             console.print("[dim]No terminal to ask — letting Ollama pick.[/dim]")
             return ref
         answer = raw.strip() or default
+        if best is None and not answer:
+            console.print("[dim]Letting Ollama pick.[/dim]")
+            return ref
         # isdecimal, not isdigit: "²".isdigit() is True but int("²") raises.
         if answer.isdecimal() and 1 <= int(answer) <= len(shown):
             return chosen(shown[int(answer) - 1].quant)
@@ -289,6 +301,8 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     if cfg.mode != previous and not dry_run:
         info = leave_mode(info, previous, cfg)
     console.print(detect.plan_sentence(info, cfg.mode, engine=server.engine_label(cfg)))
+    # The quant picker may read the Hub and ask nvidia-smi here, dry run or not: both are
+    # reads, and the dry-run report then names the tag it would pull.
     ref = choose_model(info, cfg)
     if dry_run:
         # Nothing is written: a dry run that saved the config would leave the machine

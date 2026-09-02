@@ -29,13 +29,13 @@ it recommends marked ★ — Enter takes it, a number picks another:
 │ 4 │ UD-Q4_K_M   │ 16.5 GB │ GPU + some CPU       │
 │ 5 │ UD-Q6_K     │ 22.0 GB │ mostly CPU — slow    │
 └───┴─────────────┴─────────┴──────────────────────┘
-3 larger builds hidden — they exceed your 32 GB RAM.
+3 larger builds hidden — too big for your 32 GB RAM.
 Pick a number [2]:
 ```
 
 "Fits your GPU" leaves a fifth of the GPU's memory for the 16k context window.
 The ★ is the largest quantized build that fits there (F16/BF16 are listed, never
-recommended). Builds bigger than your RAM are hidden. If the Hub cannot be reached
+recommended). Builds too big for your RAM are hidden. If the Hub cannot be reached
 — offline, or a gated repo without a token — Ollama picks its own default, as before.
 Know the tag you want? `hf.co/<org>/<repo>:Q4_K_M` skips the question entirely.
 Running without a terminal, say in a script? The ★ is taken for you.

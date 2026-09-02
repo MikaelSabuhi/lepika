@@ -289,7 +289,7 @@ def test_choose_quant_enter_takes_the_recommended_build(
     out = capsys.readouterr().out
     assert "UD-IQ4_XS ★" in out
     assert "fits your GPU" in out
-    assert "1 larger build hidden" in out and "16 GB RAM" in out
+    assert "1 larger build hidden — too big for your" in out and "16 GB RAM" in out
     assert "GPU + some CPU" in out  # UD-Q4_K_M, row 3
     assert "Q8_0" not in out
 
@@ -399,6 +399,65 @@ def test_choose_quant_probes_nvidia_memory_only_when_it_lists(
 
     wizard.choose_quant(GGUF_REF, config.Config(), nvidia, ask=lambda *a, **k: "", run=run)
     assert "Fit (17 GB GPU)" in capsys.readouterr().out
+
+
+def test_choose_quant_budgets_no_gpu_for_a_container_on_apple_silicon(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q4_K_M", int(4e9))]))
+    cfg = config.Config()
+    cfg.mode = "server"
+
+    def run(cmd: list[str], **kwargs: Any) -> Any:
+        raise AssertionError("no probe")
+
+    wizard.choose_quant(GGUF_REF, cfg, INFO, ask=lambda *a, **k: "", run=run)
+    out = capsys.readouterr().out
+    assert "Fit (16 GB RAM)" in out and "CPU only — slow" in out
+
+
+def test_choose_quant_says_a_remote_engine_is_sized_against_this_machine(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
+    cfg = config.Config()
+    cfg.engine_managed = False
+    cfg.engine_url = "http://box:11434"
+    ref = wizard.choose_quant(GGUF_REF, cfg, INFO, ask=lambda *a, **k: "")
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Sized against this machine — the engine at http://box:11434 is what runs it." in out
+    assert ref.raw.endswith(":UD-IQ4_XS")
+
+
+def test_choose_quant_never_probes_the_gpu_when_the_listing_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(repo: str, token: str = "", urlopen: Any = None) -> list[gguf.Build]:
+        raise gguf.Unavailable("offline")
+
+    monkeypatch.setattr(gguf, "list_builds", unavailable)
+    nvidia = detect.SystemInfo("linux", "x86_64", "nvidia", 32.0, False, True, True)
+
+    def run(cmd: list[str], **kwargs: Any) -> Any:
+        raise AssertionError("no probe")
+
+    assert wizard.choose_quant(GGUF_REF, config.Config(), nvidia, run=run) == GGUF_REF
+
+
+def test_choose_quant_enter_lets_ollama_pick_when_nothing_is_recommended(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("BF16", int(4e9))]))
+    asked = []
+
+    def ask(*a: Any, **k: Any) -> str:
+        asked.append(a)
+        if len(asked) > 1:
+            raise AssertionError("asked twice")
+        return ""
+
+    assert wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=ask) == GGUF_REF
+    assert "Letting Ollama pick." in capsys.readouterr().out
 
 
 def _no_terminal(*a: Any, **k: Any) -> str:

@@ -61,9 +61,9 @@ prerequisites; uv fetches its own Python.
 - **Native GPU, no containers** — Apple Metal on macOS, CUDA on Linux/Windows.
   Ollama arrives via Homebrew, the official install script, or winget; OpenWebUI via
   `uv tool`. CPU-only machines work too (LePika warns you they'll be slow).
-- **Models that fit** — a curated list filtered to your RAM, and for any GGUF repo a
-  picker that sizes every quantization against your GPU and recommends one. No
-  guessing whether a 27B fits in 16 GB.
+- **Models that fit** — a curated list filtered to your RAM, and for any `hf.co/…`
+  GGUF repo a picker that sizes every quantization against your GPU and recommends
+  one. No guessing whether a 27B fits in 16 GB.
 - **Any model, one field** — Ollama tags, Hugging Face GGUF builds, or full-weight
   safetensors repos. [Model guide →](https://github.com/MikaelSabuhi/lepika/blob/main/docs/models.md)
 - **Private by default** — Express listens on `127.0.0.1`, full stop. Sharing the
@@ -84,7 +84,7 @@ LePika reuses an Ollama you already have instead of installing a second copy.
 | `lepika doctor` | Diagnose the setup; every ✗ has a one-line fix |
 | `lepika logs` | Tail LePika's logs (`--lines`, default 50) |
 | `lepika update` | Upgrade the engine and OpenWebUI — chats kept |
-| `lepika model add [ref]` | Download a model and make it the default (no ref → browse; a GGUF repo without `:TAG` → pick the quantization that fits) |
+| `lepika model add [ref]` | Download a model and make it the default (no ref → browse; an `hf.co/…` GGUF repo without `:TAG` → pick the quantization that fits) |
 | `lepika model import <dir>` | Import safetensors weights already on disk (`--quant` picks the format) |
 | `lepika model list` / `lepika model rm` | List / remove downloaded models |
 | `lepika expose` | Share engine + UI on your network behind a generated key (Server mode) |

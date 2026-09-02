@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import urllib.request
 from typing import Any
 
 import pytest
@@ -114,3 +116,73 @@ def test_build_size_and_quantized() -> None:
     assert gguf.Build("Q4_K_M", 1).quantized is True
     assert gguf.Build("bf16", 1).quantized is False
     assert gguf.Build("F32", 1).quantized is False
+
+
+class _Response:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def _serving(payload: Any) -> Any:
+    seen: list[urllib.request.Request] = []
+
+    def opener(request: urllib.request.Request, timeout: float = 0) -> _Response:
+        seen.append(request)
+        return _Response(json.dumps(payload).encode())
+
+    opener.seen = seen  # type: ignore[attr-defined]
+    return opener
+
+
+def test_list_builds_asks_the_hub_for_blob_sizes_without_a_token() -> None:
+    opener = _serving(UNSLOTH)
+    builds = gguf.list_builds("unsloth/Qwen3.8-27B-GGUF", urlopen=opener)
+    assert quants(builds)[0] == "UD-IQ4_XS"
+    request = opener.seen[0]
+    assert (
+        request.full_url == "https://huggingface.co/api/models/unsloth/Qwen3.8-27B-GGUF?blobs=true"
+    )
+    assert request.get_header("Authorization") is None
+
+
+def test_list_builds_sends_the_token_as_a_bearer_header() -> None:
+    opener = _serving(UNSLOTH)
+    gguf.list_builds("unsloth/x-GGUF", token="hf_secret", urlopen=opener)
+    assert opener.seen[0].get_header("Authorization") == "Bearer hf_secret"
+
+
+def test_list_builds_is_unavailable_when_the_hub_does_not_answer() -> None:
+    def offline(request: Any, timeout: float = 0) -> Any:
+        raise OSError("no network")
+
+    with pytest.raises(gguf.Unavailable):
+        gguf.list_builds("unsloth/x-GGUF", urlopen=offline)
+
+
+def test_list_builds_is_unavailable_on_a_body_that_is_not_json() -> None:
+    def html(request: Any, timeout: float = 0) -> _Response:
+        return _Response(b"<html>rate limited</html>")
+
+    with pytest.raises(gguf.Unavailable):
+        gguf.list_builds("unsloth/x-GGUF", urlopen=html)
+
+
+def test_list_builds_returns_nothing_for_a_repo_without_gguf_files() -> None:
+    payload = {"siblings": [{"rfilename": "model.safetensors", "size": 5}]}
+    assert gguf.list_builds("Qwen/Qwen3.5-2B", urlopen=_serving(payload)) == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("hf.co/unsloth/Qwen3.8-27B-GGUF", ("unsloth/Qwen3.8-27B-GGUF", "")),
+        ("hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M", ("unsloth/Qwen3.8-27B-GGUF", "UD-Q4_K_M")),
+        ("HF.CO/unsloth/x-GGUF:Q8_0", ("unsloth/x-GGUF", "Q8_0")),
+        ("hf.co/unsloth/x-GGUF:", ("unsloth/x-GGUF", "")),
+    ],
+)
+def test_split_tag(raw: str, expected: tuple[str, str]) -> None:
+    assert gguf.split_tag(raw) == expected

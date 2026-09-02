@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
+import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,6 +20,11 @@ _SHARD = re.compile(r"-\d{5}-of-\d{5}$")
 # Not chat models: vision projectors, importance matrices, speculative-decoding drafts.
 _SKIP_PREFIXES = ("mmproj", "imatrix", "mtp-")
 _UNQUANTIZED = frozenset({"BF16", "F16", "F32"})
+
+UrlOpenFn = Callable[..., Any]
+
+HUB_API = "https://huggingface.co/api/models"
+_TIMEOUT = 5
 
 
 class Unavailable(Exception):
@@ -68,3 +76,34 @@ def parse_builds(payload: Any) -> list[Build]:
         bucket[quant] = bucket.get(quant, 0) + size
     merged = {**nested, **root}
     return sorted((Build(q, s) for q, s in merged.items()), key=lambda b: b.size_bytes)
+
+
+def split_tag(raw: str) -> tuple[str, str]:
+    """`hf.co/<org>/<repo>[:<tag>]` → (`<org>/<repo>`, tag or "")."""
+    repo = raw[len("hf.co/") :] if raw.lower().startswith("hf.co/") else raw
+    head, sep, tail = repo.rpartition("/")
+    name, _colon, tag = tail.partition(":")
+    return head + sep + name, tag
+
+
+def list_builds(
+    repo: str,
+    # B107: an empty default means "no token", not a credential — a real one
+    # arrives from the caller and travels only in the request header.
+    token: str = "",  # nosec B107
+    urlopen: UrlOpenFn | None = None,
+) -> list[Build]:
+    """The repo's GGUF builds from one Hub API call; `Unavailable` when it cannot say.
+
+    `blobs=true` is what puts a byte size on every file. Everything that is not an
+    answer — offline, 401/403/404/429, a rate-limit HTML page — is one exception the
+    caller turns into "let Ollama pick": this is a convenience, never a gate.
+    """
+    opener: UrlOpenFn = urlopen if urlopen is not None else urllib.request.urlopen
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    request = urllib.request.Request(f"{HUB_API}/{repo}?blobs=true", headers=headers)
+    try:
+        payload = json.loads(opener(request, timeout=_TIMEOUT).read().decode("utf-8"))
+    except Exception as exc:
+        raise Unavailable(str(exc)) from exc
+    return parse_builds(payload)

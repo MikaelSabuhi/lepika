@@ -399,3 +399,25 @@ def test_choose_quant_probes_nvidia_memory_only_when_it_lists(
 
     wizard.choose_quant(GGUF_REF, config.Config(), nvidia, ask=lambda *a, **k: "", run=run)
     assert "Fit (17 GB GPU)" in capsys.readouterr().out
+
+
+def _no_terminal(*a: Any, **k: Any) -> str:
+    raise EOFError("stdin is not a terminal")
+
+
+def test_choose_quant_takes_the_recommendation_when_there_is_no_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
+    ref = wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=_no_terminal)
+    assert ref.raw == "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS"
+    assert "No terminal to ask — taking UD-IQ4_XS." in " ".join(capsys.readouterr().out.split())
+
+
+def test_choose_quant_lets_ollama_pick_without_a_terminal_or_a_recommendation(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # BF16 fits, but `recommend` never returns an unquantized build: no ★ to fall back to.
+    monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("BF16", int(4e9))]))
+    assert wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=_no_terminal) == GGUF_REF
+    assert "letting Ollama pick" in " ".join(capsys.readouterr().out.split())

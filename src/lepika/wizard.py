@@ -113,7 +113,16 @@ def choose_quant(
     for attempt in (1, 2):
         # `or default`: Prompt.ask already returns the default on an empty line, but a
         # caller-supplied `ask` may hand back "" — same guard as choose_mode.
-        raw = ask_fn("Pick a number", default=default) if default else ask_fn("Pick a number")
+        # No stdin to answer with — a script or CI — is not an error: the ★ is the
+        # answer Enter would give.
+        try:
+            raw = ask_fn("Pick a number", default=default) if default else ask_fn("Pick a number")
+        except EOFError:
+            if best is not None:
+                console.print(f"[dim]No terminal to ask — taking {escape(best.quant)}.[/dim]")
+                return chosen(best.quant)
+            console.print("[dim]No terminal to ask — letting Ollama pick.[/dim]")
+            return ref
         answer = raw.strip() or default
         # isdecimal, not isdigit: "²".isdigit() is True but int("²") raises.
         if answer.isdecimal() and 1 <= int(answer) <= len(shown):

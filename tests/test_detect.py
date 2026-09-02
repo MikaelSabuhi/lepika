@@ -134,3 +134,53 @@ def test_plan_sentence_names_a_remote_engine() -> None:
     info = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
     sentence = detect.plan_sentence(info, mode="server", engine="a remote engine")
     assert "OpenWebUI + a remote engine)." in sentence
+
+
+def _info(gpu: detect.Gpu, ram_gb: float) -> detect.SystemInfo:
+    return detect.SystemInfo(
+        os="linux",
+        arch="x86_64",
+        gpu=gpu,
+        ram_gb=ram_gb,
+        has_docker=False,
+        has_ollama=True,
+        ollama_running=True,
+    )
+
+
+def test_gpu_memory_sums_every_nvidia_card_in_decimal_gb() -> None:
+    calls: list[list[str]] = []
+
+    def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        assert kwargs == {"check": False, "log": False, "timeout": 15}
+        return subprocess.CompletedProcess(cmd, 0, stdout="16303\n24576\n", stderr="")
+
+    total = detect.gpu_memory_gb(_info("nvidia", 64.0), run=run)
+    assert total == pytest.approx((16303 + 24576) * 1024 * 1024 / 1e9)
+    assert calls == [["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]]
+
+
+def test_gpu_memory_is_zero_when_nvidia_smi_fails_or_babbles() -> None:
+    def hang(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise FriendlyError("nvidia-smi timed out.", "Check the driver.")
+
+    assert detect.gpu_memory_gb(_info("nvidia", 64.0), run=hang) == 0.0
+    assert detect.gpu_memory_gb(_info("nvidia", 64.0), run=fake_run("NVIDIA-SMI has failed")) == 0.0
+    assert detect.gpu_memory_gb(_info("nvidia", 64.0), run=fake_run("")) == 0.0
+
+
+def test_gpu_memory_on_apple_silicon_is_metals_share_of_ram() -> None:
+    def never(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("no subprocess on Apple Silicon")
+
+    assert detect.gpu_memory_gb(_info("apple", 16.0), run=never) == pytest.approx(16 * 2 / 3)
+    assert detect.gpu_memory_gb(_info("apple", 36.0), run=never) == pytest.approx(27.0)
+    assert detect.gpu_memory_gb(_info("apple", 128.0), run=never) == pytest.approx(96.0)
+
+
+def test_gpu_memory_without_a_gpu_is_zero() -> None:
+    def never(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("no subprocess without a GPU")
+
+    assert detect.gpu_memory_gb(_info("none", 16.0), run=never) == 0.0

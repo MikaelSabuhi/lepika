@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
-from lepika import acquire, cli, config, detect, engine, express, models, wizard
+from lepika import acquire, cli, config, detect, engine, express, gguf, models, wizard
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
@@ -33,14 +34,21 @@ def test_choose_model_by_number_picks_fitting_curated() -> None:
     assert ref.kind == "ollama"
 
 
-def test_choose_model_free_form() -> None:
+def _offline(request: Any, timeout: float = 0) -> Any:
+    raise OSError("no network")
+
+
+def test_choose_model_free_form_survives_an_offline_hub(capsys: pytest.CaptureFixture[str]) -> None:
     ref = wizard.choose_model(
         INFO,
         config.Config(),
         ask=lambda *a, **k: "hf.co/unsloth/gemma-3-4b-it-GGUF",
         curated=CURATED,
+        urlopen=_offline,
     )
-    assert ref.kind == "hf_gguf"
+    assert ref == models.ModelRef(raw="hf.co/unsloth/gemma-3-4b-it-GGUF", kind="hf_gguf")
+    # Collapsed: rich wraps the notice at 80 columns, between "Ollama" and "pick".
+    assert "letting Ollama pick" in " ".join(capsys.readouterr().out.split())
 
 
 CPU_ONLY = detect.SystemInfo("linux", "x86_64", "none", 16.0, False, True, True)
@@ -240,3 +248,154 @@ def test_wizard_declined_download_keeps_the_old_model(
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     assert config.load().model == "previous:model"
+
+
+# Already size-sorted, as `gguf.list_builds` returns them. On the 16 GB Mac (INFO) the
+# Metal budget is 10.7 GB and 80 % of it 8.5 GB: IQ4_XS is the ★, Q4_K_M is "mixed"
+# (under 80 % of RAM and under 1.5x the GPU), Q8_0 exceeds 80 % of RAM and is hidden.
+BUILDS = [
+    gguf.Build("UD-IQ2_M", int(6.0e9)),
+    gguf.Build("UD-IQ4_XS", int(8.0e9)),
+    gguf.Build("UD-Q4_K_M", int(12.0e9)),
+    gguf.Build("Q8_0", int(28.7e9)),
+]
+GGUF_REF = models.ModelRef(raw="hf.co/unsloth/Qwen3.8-27B-GGUF", kind="hf_gguf")
+
+
+def _listing(builds: list[gguf.Build]) -> Any:
+    calls: list[str] = []
+
+    def fake(repo: str, token: str = "", urlopen: Any = None) -> list[gguf.Build]:
+        calls.append(repo)
+        return builds
+
+    fake.calls = calls  # type: ignore[attr-defined]
+    return fake
+
+
+def test_choose_quant_enter_takes_the_recommended_build(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
+    prompts: list[tuple[str, dict[str, Any]]] = []
+
+    def ask(prompt: str, **kwargs: Any) -> str:
+        prompts.append((prompt, kwargs))
+        return ""
+
+    ref = wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=ask)
+    assert ref == models.ModelRef(raw="hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS", kind="hf_gguf")
+    assert prompts == [("Pick a number", {"default": "2"})]
+    out = capsys.readouterr().out
+    assert "UD-IQ4_XS ★" in out
+    assert "fits your GPU" in out
+    assert "1 larger build hidden" in out and "16 GB RAM" in out
+    assert "GPU + some CPU" in out  # UD-Q4_K_M, row 3
+    assert "Q8_0" not in out
+
+
+def test_choose_quant_number_picks_another_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
+    ref = wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=lambda *a, **k: "3")
+    assert ref.raw == "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M"
+
+
+def test_choose_quant_reprompts_once_then_takes_the_recommendation(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
+    answers = iter(["9", "banana"])
+    ref = wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=lambda *a, **k: next(answers))
+    assert ref.raw == "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS"
+    assert "Pick 1 to 3." in capsys.readouterr().out
+
+
+def test_choose_quant_sends_the_saved_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, str] = {}
+
+    def fake(repo: str, token: str = "", urlopen: Any = None) -> list[gguf.Build]:
+        seen["token"] = token
+        return BUILDS
+
+    monkeypatch.setattr(gguf, "list_builds", fake)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    cfg = config.Config()
+    cfg.hf_token = "hf_saved"
+    wizard.choose_quant(GGUF_REF, cfg, INFO, ask=lambda *a, **k: "")
+    assert seen["token"] == "hf_saved"
+
+
+def test_choose_quant_leaves_an_explicit_tag_alone_without_asking_anyone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listing = _listing(BUILDS)
+    monkeypatch.setattr(gguf, "list_builds", listing)
+    tagged = models.ModelRef(raw="hf.co/unsloth/x-GGUF:Q4_K_M", kind="hf_gguf")
+
+    def never(*a: Any, **k: Any) -> str:
+        raise AssertionError("no prompt for a tagged ref")
+
+    assert wizard.choose_quant(tagged, config.Config(), INFO, ask=never) == tagged
+    assert listing.calls == []
+
+
+def test_choose_quant_ignores_refs_that_are_not_hf_gguf(monkeypatch: pytest.MonkeyPatch) -> None:
+    listing = _listing(BUILDS)
+    monkeypatch.setattr(gguf, "list_builds", listing)
+    for ref in (models.parse_model_ref("qwen3:8b"), models.parse_model_ref("Qwen/Qwen3.5-2B")):
+        assert wizard.choose_quant(ref, config.Config(), INFO) == ref
+    assert listing.calls == []
+
+
+def test_choose_quant_falls_through_silently_on_a_repo_without_gguf(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gguf, "list_builds", _listing([]))
+    ref = models.ModelRef(raw="hf.co/Qwen/Qwen3.5-2B", kind="hf_gguf")
+    assert wizard.choose_quant(ref, config.Config(), INFO) == ref
+    assert capsys.readouterr().out == ""
+
+
+def test_choose_quant_skips_a_malformed_repo_id_silently(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    listing = _listing(BUILDS)
+    monkeypatch.setattr(gguf, "list_builds", listing)
+    ref = models.ModelRef(raw="hf.co/../etc", kind="hf_gguf")
+    assert wizard.choose_quant(ref, config.Config(), INFO) == ref
+    assert listing.calls == []
+    assert capsys.readouterr().out == ""
+
+
+def test_choose_quant_says_so_when_nothing_fits(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q8_0", int(28.7e9))]))
+
+    def never(*a: Any, **k: Any) -> str:
+        raise AssertionError("nothing to pick from")
+
+    assert wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=never) == GGUF_REF
+    assert "None of the 1 builds fits in your 16 GB RAM" in capsys.readouterr().out
+
+
+def test_choose_quant_names_the_ram_budget_without_a_gpu(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q4_K_M", int(4e9))]))
+    wizard.choose_quant(GGUF_REF, config.Config(), CPU_ONLY, ask=lambda *a, **k: "")
+    out = capsys.readouterr().out
+    assert "Fit (16 GB RAM)" in out and "CPU only — slow" in out
+
+
+def test_choose_quant_probes_nvidia_memory_only_when_it_lists(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q4_K_M", int(4e9))]))
+    nvidia = detect.SystemInfo("linux", "x86_64", "nvidia", 32.0, False, True, True)
+
+    def run(cmd: list[str], **kwargs: Any) -> Any:
+        return SimpleNamespace(stdout="16303\n")
+
+    wizard.choose_quant(GGUF_REF, config.Config(), nvidia, ask=lambda *a, **k: "", run=run)
+    assert "Fit (17 GB GPU)" in capsys.readouterr().out

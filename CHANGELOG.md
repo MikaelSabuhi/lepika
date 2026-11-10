@@ -5,7 +5,7 @@ All notable changes to LePika are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-10
 
 ### Added
 
@@ -14,8 +14,11 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   available context size" on any model. LePika sets `OLLAMA_CONTEXT_LENGTH` on the
   `ollama serve` it starts in Express mode and on the engine container in Server
   mode; a new `context_length` key in `config.toml` changes it, and a value already
-  in the shell wins over the file. When Ollama was already running — the tray app
-  on Windows, brew, systemd — `lepika up` says where that engine's own setting is.
+  in the shell wins over the file. Change it and run `lepika up`: the Ollama
+  LePika started is restarted so the new value applies — including one started by
+  0.1.x, which runs at Ollama's 4096. When Ollama was already running on its own —
+  the tray app on Windows, brew, systemd — `lepika up` says where that engine's
+  setting is. ([#6], [#34])
 - `lepika model add hf.co/<org>/<repo>-GGUF` (and the same ref typed in the wizard)
   now shows the repo's quantizations sized against your GPU and RAM, marks the one
   that fits best ★, and takes it on Enter — no more hand-typing `:UD-Q4_K_M` after
@@ -24,20 +27,11 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- Changing `context_length` in `config.toml` and running `lepika up` now takes
-  effect. `lepika down` leaves the Ollama LePika started running, so `up` used to
-  adopt it with the old value and say nothing; it now restarts its own engine when
-  the setting changed. An engine started by LePika 0.1.x, which never set a context
-  length and so runs at Ollama's 4096, is restarted the same way. `lepika model add`
-  and `lepika model import` start the engine with the configured value too, instead
-  of always 16384.
-- In Server mode on macOS and Windows the quantization picker and the model list
-  now size models against the memory Docker Desktop gives its VM, not the
-  machine's. On a 16 GB Mac that VM has under 8 GB, so the ★ the picker
-  recommended could never load in the engine container. When Docker's limit is
-  what hides a build, the picker says where to raise it.
-- The quantization picker shows an NVIDIA card's memory in the same GB as RAM, so
-  a 16 GB card reads as 16 GB rather than 17.
+- In Server mode on macOS and Windows the model list offered models sized against
+  the machine's RAM, but the engine container only gets the memory Docker Desktop
+  gives its VM — under 8 GB on a 16 GB Mac — so some of them could never load. The
+  list, and the new quantization picker, now size against Docker's memory and say
+  where to raise it. ([#34])
 
 ## [0.1.2] - 2026-08-31
 
@@ -91,11 +85,12 @@ Initial public release — one command → local AI chat in your browser.
 - A curated in-repo model catalogue, plus importing safetensors weights from
   Hugging Face or a local folder.
 
-[Unreleased]: https://github.com/MikaelSabuhi/lepika/compare/v0.1.2...HEAD
+[0.2.0]: https://github.com/MikaelSabuhi/lepika/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/MikaelSabuhi/lepika/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/MikaelSabuhi/lepika/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/MikaelSabuhi/lepika/releases/tag/v0.1.0
 [#5]: https://github.com/MikaelSabuhi/lepika/issues/5
+[#6]: https://github.com/MikaelSabuhi/lepika/issues/6
 [#7]: https://github.com/MikaelSabuhi/lepika/pull/7
 [#8]: https://github.com/MikaelSabuhi/lepika/pull/8
 [#10]: https://github.com/MikaelSabuhi/lepika/pull/10
@@ -104,3 +99,4 @@ Initial public release — one command → local AI chat in your browser.
 [#15]: https://github.com/MikaelSabuhi/lepika/pull/15
 [#17]: https://github.com/MikaelSabuhi/lepika/pull/17
 [#18]: https://github.com/MikaelSabuhi/lepika/pull/18
+[#34]: https://github.com/MikaelSabuhi/lepika/pull/34

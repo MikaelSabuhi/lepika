@@ -148,7 +148,9 @@ def _info(gpu: detect.Gpu, ram_gb: float) -> detect.SystemInfo:
     )
 
 
-def test_gpu_memory_sums_every_nvidia_card_in_decimal_gb() -> None:
+def test_gpu_memory_sums_every_nvidia_card_in_gib() -> None:
+    """GiB, like RAM and the Metal share: a 16 GB card (16303 MiB) must read as 16,
+    not the 17 decimal GB the picker once showed on a card sold as 16."""
     calls: list[list[str]] = []
 
     def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -157,7 +159,7 @@ def test_gpu_memory_sums_every_nvidia_card_in_decimal_gb() -> None:
         return subprocess.CompletedProcess(cmd, 0, stdout="16303\n24576\n", stderr="")
 
     total = detect.gpu_memory_gb(_info("nvidia", 64.0), run=run)
-    assert total == pytest.approx((16303 + 24576) * 1024 * 1024 / 1e9)
+    assert total == pytest.approx((16303 + 24576) / 1024)
     assert calls == [["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]]
 
 
@@ -184,3 +186,27 @@ def test_gpu_memory_without_a_gpu_is_zero() -> None:
         raise AssertionError("no subprocess without a GPU")
 
     assert detect.gpu_memory_gb(_info("none", 16.0), run=never) == 0.0
+
+
+def test_docker_memory_reads_what_the_engine_container_can_use_in_gib() -> None:
+    """Docker Desktop runs containers in a VM with its own, smaller memory."""
+    calls: list[list[str]] = []
+
+    def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        assert kwargs == {"check": False, "log": False, "timeout": 15}
+        return subprocess.CompletedProcess(cmd, 0, stdout="8320299008\n", stderr="")
+
+    assert detect.docker_memory_gb(run=run) == pytest.approx(7.749, abs=0.001)
+    assert calls == [["docker", "info", "--format", "{{.MemTotal}}"]]
+
+
+def test_docker_memory_is_zero_when_docker_fails_or_babbles() -> None:
+    """Zero means unknown: callers fall back to the machine's own RAM."""
+
+    def hang(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise FriendlyError("docker timed out.", "Start Docker.")
+
+    assert detect.docker_memory_gb(run=hang) == 0.0
+    assert detect.docker_memory_gb(run=fake_run("Cannot connect to the Docker daemon")) == 0.0
+    assert detect.docker_memory_gb(run=fake_run("")) == 0.0

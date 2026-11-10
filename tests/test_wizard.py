@@ -398,7 +398,7 @@ def test_choose_quant_probes_nvidia_memory_only_when_it_lists(
         return SimpleNamespace(stdout="16303\n")
 
     wizard.choose_quant(GGUF_REF, config.Config(), nvidia, ask=lambda *a, **k: "", run=run)
-    assert "Fit (17 GB GPU)" in capsys.readouterr().out
+    assert "Fit (16 GB GPU)" in capsys.readouterr().out
 
 
 def test_choose_quant_budgets_no_gpu_for_a_container_on_apple_silicon(
@@ -409,7 +409,8 @@ def test_choose_quant_budgets_no_gpu_for_a_container_on_apple_silicon(
     cfg.mode = "server"
 
     def run(cmd: list[str], **kwargs: Any) -> Any:
-        raise AssertionError("no probe")
+        assert cmd[:2] == ["docker", "info"], f"no GPU probe: {cmd}"
+        return SimpleNamespace(stdout="")  # Docker's memory unknown: the Mac's RAM
 
     wizard.choose_quant(GGUF_REF, cfg, INFO, ask=lambda *a, **k: "", run=run)
     out = capsys.readouterr().out
@@ -480,3 +481,100 @@ def test_choose_quant_lets_ollama_pick_without_a_terminal_or_a_recommendation(
     monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("BF16", int(4e9))]))
     assert wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=_no_terminal) == GGUF_REF
     assert "letting Ollama pick" in " ".join(capsys.readouterr().out.split())
+
+
+def _docker_vm(memtotal: str) -> Any:
+    """`docker info` reporting the VM's MemTotal; any other probe is a test failure."""
+
+    def run(cmd: list[str], **kwargs: Any) -> Any:
+        assert cmd[:2] == ["docker", "info"], f"unexpected probe: {cmd}"
+        return SimpleNamespace(stdout=memtotal)
+
+    return run
+
+
+DOCKER_DESKTOP_DEFAULT = "8320299008\n"  # 7.75 GiB: a 16 GB Mac's Docker Desktop VM
+
+
+def _server() -> config.Config:
+    cfg = config.Config()
+    cfg.mode = "server"
+    return cfg
+
+
+def test_choose_quant_sizes_a_server_engine_against_dockers_memory(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The engine container cannot use the Mac's 16 GB, only the VM's 7.75: 80 % of
+    that is 6.2 GB, so only UD-IQ2_M (6.0 GB) can load and it has to be the ★."""
+    monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
+    ref = wizard.choose_quant(
+        GGUF_REF, _server(), INFO, ask=lambda *a, **k: "", run=_docker_vm(DOCKER_DESKTOP_DEFAULT)
+    )
+    assert ref.raw == "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_M"
+    out = " ".join(capsys.readouterr().out.split())  # Rich wraps at 80 columns
+    assert "Fit (Docker's 8 GB)" in out
+    assert "UD-IQ4_XS" not in out
+    assert "3 larger builds hidden — too big for Docker's 8 GB" in out
+    assert "Settings → Resources" in out  # where Docker Desktop's memory is raised
+
+
+def test_choose_quant_in_server_mode_keeps_ram_wording_when_docker_has_it_all(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Linux: containers share the host's memory, so there is nothing to explain."""
+    monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q4_K_M", int(4e9))]))
+    linux = f"{int(16.0 * 2**30)}\n"
+    wizard.choose_quant(
+        GGUF_REF, _server(), CPU_ONLY, ask=lambda *a, **k: "", run=_docker_vm(linux)
+    )
+    out = capsys.readouterr().out
+    assert "Fit (16 GB RAM)" in out
+    assert "Docker" not in out
+
+
+def test_choose_quant_in_express_never_asks_docker(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q4_K_M", int(4e9))]))
+
+    def never(cmd: list[str], **kwargs: Any) -> Any:
+        raise AssertionError(f"no probe without a GPU in Express: {cmd}")
+
+    wizard.choose_quant(GGUF_REF, config.Config(), CPU_ONLY, ask=lambda *a, **k: "", run=never)
+    assert "Fit (16 GB RAM)" in capsys.readouterr().out
+
+
+SIZED = [
+    models.CuratedModel(name="Small", ref="llama3.2:3b", min_ram_gb=6),
+    models.CuratedModel(name="Medium", ref="gemma3:12b", min_ram_gb=12),
+]
+
+
+def test_choose_model_lists_what_fits_dockers_memory_in_server_mode(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A 12 GB model offered to a 7.75 GiB VM is a pull that can never load."""
+    ref = wizard.choose_model(
+        INFO,
+        _server(),
+        ask=lambda *a, **k: "1",
+        curated=SIZED,
+        run=_docker_vm(DOCKER_DESKTOP_DEFAULT),
+    )
+    assert ref.raw == "llama3.2:3b"
+    out = " ".join(capsys.readouterr().out.split())  # Rich wraps at 80 columns
+    assert "Models that fit Docker's 8 GB" in out
+    assert "gemma3:12b" not in out
+
+
+def test_choose_model_in_express_lists_what_fits_the_machine(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def never(cmd: list[str], **kwargs: Any) -> Any:
+        raise AssertionError(f"Express runs no probe: {cmd}")
+
+    wizard.choose_model(INFO, config.Config(), ask=lambda *a, **k: "1", curated=SIZED, run=never)
+    out = capsys.readouterr().out
+    assert "Models that fit your 16 GB" in out
+    assert "gemma3:12b" in out

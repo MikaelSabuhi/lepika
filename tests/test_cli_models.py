@@ -927,3 +927,30 @@ def test_model_add_explicit_tag_never_consults_the_hub(
     result = runner.invoke(cli.app, ["model", "add", "hf.co/unsloth/x-GGUF:Q4_K_M"])
     assert result.exit_code == 0, result.output
     assert fake_engine == ["hf.co/unsloth/x-GGUF:Q4_K_M"]
+
+
+def test_model_add_starts_the_engine_with_the_configured_context_length(
+    fake_engine: list[str], isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`model add` is often what starts the engine: it must not fall back to 16384."""
+    config.save(config.Config(context_length=8192))
+    seen: list[Any] = []
+    monkeypatch.setattr(
+        express, "ensure_ollama", lambda info, **k: seen.append(k.get("context_length"))
+    )
+    result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
+    assert result.exit_code == 0, result.output
+    assert seen == [8192]
+
+
+def test_model_import_starts_the_engine_with_the_configured_context_length(
+    fake_local: dict[str, Any], weights: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config.save(config.Config(context_length=8192))
+    seen: list[Any] = []
+    monkeypatch.setattr(
+        express, "ensure_ollama", lambda info, **k: seen.append(k.get("context_length"))
+    )
+    result = runner.invoke(cli.app, ["model", "import", str(weights)])
+    assert result.exit_code == 0, result.output
+    assert seen == [8192]

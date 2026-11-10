@@ -61,9 +61,9 @@ prerequisites; uv fetches its own Python.
 - **Native GPU, no containers** — Apple Metal on macOS, CUDA on Linux/Windows.
   Ollama arrives via Homebrew, the official install script, or winget; OpenWebUI via
   `uv tool`. CPU-only machines work too (LePika warns you they'll be slow).
-- **Models that fit** — a curated list filtered to your RAM, and for any `hf.co/…`
-  GGUF repo a picker that sizes every quantization against your GPU and recommends
-  one. No guessing whether a 27B fits in 16 GB.
+- **Models that fit** — a curated list filtered to your RAM (Docker's, in Server
+  mode), and for any `hf.co/…` GGUF repo a picker that sizes every quantization
+  against your GPU and recommends one. No guessing whether a 27B fits in 16 GB.
 - **Any model, one field** — Ollama tags, Hugging Face GGUF builds, or full-weight
   safetensors repos. [Model guide →](https://github.com/MikaelSabuhi/lepika/blob/main/docs/models.md)
 - **Private by default** — Express listens on `127.0.0.1`, full stop. Sharing the
@@ -99,7 +99,8 @@ Point `LEPIKA_HOME` somewhere else if you prefer.
 
 Every model gets a **16k-token context window** (Ollama's own default is 4k, which
 one pasted document overruns). To change it, set `context_length` in
-`~/.lepika/config.toml` and run `lepika up` again; bigger windows cost GPU memory.
+`~/.lepika/config.toml` and run `lepika up` again — it restarts the Ollama it
+started so the new value applies; bigger windows cost GPU memory.
 If Ollama was already running when `lepika up` started — the tray app on Windows,
 say — it keeps its own setting, and `lepika up` tells you where to change it.
 

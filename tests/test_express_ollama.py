@@ -419,6 +419,7 @@ def test_ensure_ollama_skips_install_and_start_when_running() -> None:
         popen=lambda *a, **k: pytest.fail("should not start"),
         api_up=lambda *a, **k: True,
         sleep=lambda s: None,
+        context_length=16384,
     )
     assert run.calls == []
 
@@ -434,6 +435,7 @@ def test_ensure_ollama_probes_the_url_it_is_given() -> None:
         popen=lambda *a, **k: pytest.fail("should not start a local engine"),
         api_up=lambda url, **k: bool(probed.append(url)) or True,
         sleep=lambda s: None,
+        context_length=16384,
         url="http://gpu-box.local:11434",
     )
     assert probed == ["http://gpu-box.local:11434"]
@@ -825,3 +827,109 @@ def test_context_note_is_silent_for_a_remote_engine(isolated_home: Path) -> None
     info = dataclasses.replace(info_for("linux", has_ollama=True), ollama_running=True)
     cfg = config.Config(engine_managed=False, engine_url="http://gpu-box:11435")
     assert express.context_note(info, cfg, run=Runner()) is None
+
+
+class OurEngine:
+    """An Ollama LePika started, as `ensure_ollama` sees it: answering until signalled,
+    answering again once something starts a new one."""
+
+    def __init__(self) -> None:
+        self.up = True
+        self.killed: list[int] = []
+        self.popen = PopenRecorder()
+
+    def api_up(self, url: str, **k: Any) -> bool:
+        return self.up
+
+    def kill(self, pid: int, sig: int) -> None:
+        self.killed.append(pid)
+        self.up = False
+
+    def start(self, cmd: list[str], **kwargs: Any) -> FakeProc:
+        self.up = True
+        return self.popen(cmd, **kwargs)
+
+    def ensure(self, context_length: int, environ: dict[str, str] | None = None) -> None:
+        express.ensure_ollama(
+            info_for("linux", has_ollama=True),
+            run=Runner(stdout={"ps -p 4242": "/usr/local/bin/ollama\n"}),
+            popen=self.start,
+            api_up=self.api_up,
+            kill=self.kill,
+            sleep=lambda s: None,
+            context_length=context_length,
+            environ=environ if environ is not None else {},
+        )
+
+    def close(self) -> None:
+        for _, kwargs in self.popen.calls:
+            kwargs["stdout"].close()
+
+
+def test_ensure_ollama_restarts_our_engine_when_the_context_length_changed(
+    isolated_home: Path,
+) -> None:
+    """The README's recipe: edit context_length, run `lepika up`. `down` leaves our
+    engine running, so without a restart the new value never reaches it."""
+    engine = OurEngine()
+    express.start_ollama("linux", popen=engine.start, context_length=16384, environ={})
+    engine.ensure(context_length=8192)
+    assert engine.killed == [4242]
+    assert engine.popen.calls[-1][1]["env"]["OLLAMA_CONTEXT_LENGTH"] == "8192"
+    engine.close()
+
+
+def test_ensure_ollama_leaves_our_engine_alone_when_the_context_length_matches(
+    isolated_home: Path,
+) -> None:
+    """A restart unloads every model: only a changed setting is worth that."""
+    engine = OurEngine()
+    express.start_ollama("linux", popen=engine.start, context_length=16384, environ={})
+    engine.ensure(context_length=16384)
+    assert engine.killed == []
+    assert len(engine.popen.calls) == 1
+    engine.close()
+
+
+def test_ensure_ollama_restarts_our_engine_that_predates_the_context_setting(
+    isolated_home: Path,
+) -> None:
+    """LePika 0.1.x started Ollama without OLLAMA_CONTEXT_LENGTH and recorded only the
+    pid: that engine runs at Ollama's 4096, and an upgrade must not keep it there."""
+    paths.pid_file("ollama").write_text("4242")
+    engine = OurEngine()
+    engine.ensure(context_length=16384)
+    assert engine.killed == [4242]
+    assert engine.popen.calls[-1][1]["env"]["OLLAMA_CONTEXT_LENGTH"] == "16384"
+    engine.close()
+
+
+def test_ensure_ollama_never_restarts_an_engine_it_did_not_start(isolated_home: Path) -> None:
+    """brew services, systemd, the tray app: `context_note` explains, nothing is signalled."""
+    engine = OurEngine()
+    engine.ensure(context_length=8192)
+    assert engine.killed == []
+    assert engine.popen.calls == []
+
+
+def test_ensure_ollama_compares_against_the_shell_override(isolated_home: Path) -> None:
+    """A shell OLLAMA_CONTEXT_LENGTH wins over config.toml at launch; the same shell on
+    the next `up` asks for the same value, so restarting would change nothing."""
+    shell = {"OLLAMA_CONTEXT_LENGTH": "65536"}
+    engine = OurEngine()
+    express.start_ollama("linux", popen=engine.start, context_length=16384, environ=shell)
+    engine.ensure(context_length=16384, environ=shell)
+    assert engine.killed == []
+    engine.close()
+
+
+def test_ensure_ollama_restart_that_cannot_stop_the_engine_says_to_rerun_up(
+    isolated_home: Path,
+) -> None:
+    engine = OurEngine()
+    express.start_ollama("linux", popen=engine.start, context_length=16384, environ={})
+    engine.kill = lambda pid, sig: None  # type: ignore[method-assign]  # never dies
+    with pytest.raises(FriendlyError) as exc:
+        engine.ensure(context_length=8192)
+    assert "lepika up" in exc.value.fix
+    engine.close()

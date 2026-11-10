@@ -22,7 +22,7 @@ from lepika import detect, log, proc
 from lepika.config import DEFAULT_CONTEXT_LENGTH, Config, config_path
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
-from lepika.paths import logs_dir, openwebui_data_dir, pid_file
+from lepika.paths import lepika_home, logs_dir, openwebui_data_dir, pid_file
 
 RunFn = Callable[..., Any]
 WhichFn = Callable[[str], str | None]
@@ -124,13 +124,14 @@ def start_ollama(
     context_length: int = DEFAULT_CONTEXT_LENGTH,
     environ: Mapping[str, str] | None = None,
 ) -> None:
+    env = ollama_env(context_length, environ)
     log_file = (logs_dir() / "ollama.log").open("ab")
     try:
         proc_handle = popen(
             ["ollama", "serve"],
             stdout=log_file,
             stderr=log_file,
-            env=ollama_env(context_length, environ),
+            env=env,
             **_detach_kwargs(os_name),
         )
     except FileNotFoundError as exc:
@@ -142,6 +143,14 @@ def start_ollama(
     # Recorded so a mode switch can tell the engine LePika started from one the
     # machine already ran: only a pid we wrote down is ever ours to stop.
     pid_file("ollama").write_text(str(int(proc_handle.pid)))
+    # And what it was started with: Ollama has no way to ask an idle engine its
+    # context length, and `lepika down` leaves this one running, so the next `up`
+    # can only tell a changed setting from this record.
+    _context_record().write_text(env["OLLAMA_CONTEXT_LENGTH"])
+
+
+def _context_record() -> Path:
+    return lepika_home() / "ollama.context"
 
 
 def _is_ollama_process(pid: int, os_name: str, run: RunFn) -> bool:
@@ -172,11 +181,13 @@ def stop_ollama(
     key: str = "",
     attempts: int = 30,
     sleep: SleepFn = time.sleep,
+    rerun: str = "lepika --mode server",
 ) -> bool:
     """Stop the native Ollama LePika started — never one the machine already ran.
 
     Not part of `stop`: `lepika down` leaves the engine up on purpose, because it is
-    a shared service. A mode switch is the one case that has to reclaim port 11434.
+    a shared service. A mode switch has to reclaim port 11434, and `ensure_ollama`
+    restarts it for a changed context length; `rerun` is the command each retries with.
 
     Three things must agree before anything is signalled: a pid file we wrote, an
     engine answering on `url`, and a process by that pid that really is an Ollama.
@@ -223,7 +234,7 @@ def stop_ollama(
     # retry that has lost it can never stop this process at all.
     raise FriendlyError(
         f"Ollama at {url} is still answering after {attempts} shutdown checks.",
-        'Stop it yourself (`pkill -f "ollama serve"`), then run `lepika --mode server` again.',
+        f'Stop it yourself (`pkill -f "ollama serve"`), then run `{rerun}` again.',
     )
 
 
@@ -247,6 +258,8 @@ def wait_for(
 
 def ensure_ollama(
     info: SystemInfo,
+    *,
+    context_length: int,
     run: RunFn = proc.run_logged,
     which: WhichFn = shutil.which,
     popen: PopenFn = subprocess.Popen,
@@ -254,13 +267,27 @@ def ensure_ollama(
     sleep: SleepFn = time.sleep,
     call: CallFn = subprocess.call,
     url: str = detect.OLLAMA_URL,
-    context_length: int = DEFAULT_CONTEXT_LENGTH,
+    kill: Callable[[int, int], None] = os.kill,
+    environ: Mapping[str, str] | None = None,
 ) -> None:
     if not info.has_ollama:
         install_ollama(info, run=run, which=which, call=call)
-    if not api_up(url):
-        start_ollama(info.os, popen=popen, context_length=context_length)
-        wait_for(lambda: api_up(url), 30, "Ollama API", sleep=sleep)
+    if api_up(url):
+        # Only an engine we started is ours to restart; any other keeps its own
+        # setting and `context_note` says where it lives. A missing record is an
+        # engine from before LePika set one at all: Ollama's 4096, not the config.
+        wanted = ollama_env(context_length, environ)["OLLAMA_CONTEXT_LENGTH"]
+        if not _ours(info.os, run) or _launched_context() == wanted:
+            return
+        log.get_logger().info("engine.restart", reason="context_length", wanted=wanted)
+        stop_ollama(info.os, url, run=run, kill=kill, api_up=api_up, sleep=sleep, rerun="lepika up")
+    start_ollama(info.os, popen=popen, context_length=context_length, environ=environ)
+    wait_for(lambda: api_up(url), 30, "Ollama API", sleep=sleep)
+
+
+def _launched_context() -> str | None:
+    record = _context_record()
+    return record.read_text().strip() if record.exists() else None
 
 
 def _ours(os_name: str, run: RunFn) -> bool:

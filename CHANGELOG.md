@@ -22,6 +22,23 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reading file sizes on Hugging Face. An explicit `:TAG` behaves exactly as before,
   and so does a pull when the Hub cannot be reached. ([#5])
 
+### Fixed
+
+- Changing `context_length` in `config.toml` and running `lepika up` now takes
+  effect. `lepika down` leaves the Ollama LePika started running, so `up` used to
+  adopt it with the old value and say nothing; it now restarts its own engine when
+  the setting changed. An engine started by LePika 0.1.x, which never set a context
+  length and so runs at Ollama's 4096, is restarted the same way. `lepika model add`
+  and `lepika model import` start the engine with the configured value too, instead
+  of always 16384.
+- In Server mode on macOS and Windows the quantization picker and the model list
+  now size models against the memory Docker Desktop gives its VM, not the
+  machine's. On a 16 GB Mac that VM has under 8 GB, so the ★ the picker
+  recommended could never load in the engine container. When Docker's limit is
+  what hides a build, the picker says where to raise it.
+- The quantization picker shows an NVIDIA card's memory in the same GB as RAM, so
+  a 16 GB card reads as 16 GB rather than 17.
+
 ## [0.1.2] - 2026-08-31
 
 ### Fixed

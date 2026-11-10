@@ -43,6 +43,43 @@ def _validate(ref: ModelRef, cfg: config.Config, info: SystemInfo) -> ModelRef:
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class EngineMemory:
+    """What the engine can load a model into besides a GPU, and how to say so."""
+
+    gb: float
+    docker: bool  # Docker Desktop's VM, smaller than the machine it runs on
+
+    @property
+    def label(self) -> str:
+        return f"Docker's {self.gb:.0f} GB" if self.docker else f"{self.gb:.0f} GB RAM"
+
+    @property
+    def phrase(self) -> str:
+        return self.label if self.docker else f"your {self.label}"
+
+
+# Said wherever Docker's memory, not the machine's, is what kept a model out.
+_MORE_FOR_DOCKER = "Docker Desktop → Settings → Resources gives it more."
+
+
+def engine_memory(
+    info: SystemInfo, cfg: config.Config, run: RunFn = proc.run_logged
+) -> EngineMemory:
+    """Server mode's engine is a container: on Docker Desktop it gets the VM's memory,
+    not the machine's. Sized against the Mac's 16 GB, a 12 GB build looks fine and
+    then never loads in the 7.75 GiB the VM really has. Anything else — Express, a
+    remote engine, Linux where containers share the host's RAM, a Docker that will
+    not answer — is sized against this machine.
+    """
+    if cfg.mode == "server" and cfg.engine_managed:
+        docker = detect.docker_memory_gb(run)
+        # 95 %: Linux reports the same kernel MemTotal; only a real VM is smaller.
+        if 0 < docker < info.ram_gb * 0.95:
+            return EngineMemory(docker, docker=True)
+    return EngineMemory(info.ram_gb, docker=False)
+
+
 def choose_quant(
     ref: ModelRef,
     cfg: config.Config,
@@ -80,15 +117,17 @@ def choose_quant(
         gpu_gb = 0.0
     else:
         gpu_gb = detect.gpu_memory_gb(info, run)
-    shown = [b for b in builds if gguf.tier(b, gpu_gb, info.ram_gb) != "none"]
+    memory = engine_memory(info, cfg, run)
+    more = f" {_MORE_FOR_DOCKER}" if memory.docker else ""
+    shown = [b for b in builds if gguf.tier(b, gpu_gb, memory.gb) != "none"]
     if not shown:
         console.print(
-            f"None of the {len(builds)} builds fits in your {info.ram_gb:.0f} GB RAM — "
-            "letting Ollama pick."
+            f"None of the {len(builds)} builds fits in {memory.phrase} — letting Ollama pick."
+            + more
         )
         return ref
-    best = gguf.recommend(builds, gpu_gb, info.ram_gb)
-    budget = f"{gpu_gb:.0f} GB GPU" if gpu_gb else f"{info.ram_gb:.0f} GB RAM"
+    best = gguf.recommend(builds, gpu_gb, memory.gb)
+    budget = f"{gpu_gb:.0f} GB GPU" if gpu_gb else memory.label
     table = Table(title=f"Quantizations of {escape(repo)}")
     table.add_column("#")
     table.add_column("Quant")
@@ -97,15 +136,14 @@ def choose_quant(
     for i, b in enumerate(shown, start=1):
         # Quant names come from the Hub's file list: escape before rendering.
         name = escape(b.quant) + (" ★" if b == best else "")
-        fit = gguf.label(gguf.tier(b, gpu_gb, info.ram_gb), gpu_gb)
+        fit = gguf.label(gguf.tier(b, gpu_gb, memory.gb), gpu_gb)
         table.add_row(str(i), name, engine.human_size(b.size_bytes), fit)
     console.print(table)
     hidden = len(builds) - len(shown)
     if hidden:
         plural = "s" if hidden != 1 else ""
         console.print(
-            f"[dim]{hidden} larger build{plural} hidden — too big for your "
-            f"{info.ram_gb:.0f} GB RAM.[/dim]"
+            f"[dim]{hidden} larger build{plural} hidden — too big for {memory.phrase}.{more}[/dim]"
         )
     if not cfg.engine_managed:
         console.print(
@@ -163,19 +201,21 @@ def choose_model(
     ask: AskFn | None = None,
     curated: list[CuratedModel] | None = None,
     urlopen: UrlOpenFn | None = None,
+    run: RunFn = proc.run_logged,
 ) -> ModelRef:
     ask_fn: AskFn = ask if ask is not None else _ask
     candidates = curated if curated is not None else models.load_curated()
-    fitting = models.fitting(candidates, info.ram_gb)
+    memory = engine_memory(info, cfg, run)
+    fitting = models.fitting(candidates, memory.gb)
     if not fitting:
         # A bare empty table reads as a broken program. Name the reason and the
         # way out — typing a ref still works, and something always fits.
         console.print(
-            f"Nothing in the curated list fits comfortably in {info.ram_gb:.0f} GB — "
+            f"Nothing in the curated list fits comfortably in {memory.phrase} — "
             "you can still type any model; try qwen3:0.6b"
         )
     else:
-        table = Table(title=f"Models that fit your {info.ram_gb:.0f} GB")
+        table = Table(title=f"Models that fit {memory.phrase}")
         table.add_column("#")
         table.add_column("Model")
         table.add_column("Ref")

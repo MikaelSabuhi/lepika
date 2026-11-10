@@ -438,7 +438,7 @@ def model_add(
         # would bring up vLLM, leave ollama stopped, and fail the pull.
         server.start_stack(info, dataclasses.replace(cfg, model=model_ref.raw))
     elif cfg.engine_managed:
-        express.ensure_ollama(info, url=cfg.engine_url)
+        express.ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length)
     else:
         # A remote engine is someone else's to run: check it, never install for it.
         express.check_remote_engine(cfg, api_up=detect.api_up)
@@ -476,7 +476,7 @@ def model_import(
     acquire.check_local(path, name)
     # `import_allowed` already means Express with a managed engine, so there is no
     # container or remote case to branch on the way `model add` has to.
-    express.ensure_ollama(info, url=cfg.engine_url)
+    express.ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length)
     # Resolved from here on: the "Importing … from …" line and the `source=` log field
     # name the folder unambiguously, whatever the shell was sitting in.
     served = acquire.import_local(info, cfg, path.resolve(), name, quant)

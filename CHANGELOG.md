@@ -16,6 +16,11 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mode; a new `context_length` key in `config.toml` changes it, and a value already
   in the shell wins over the file. When Ollama was already running — the tray app
   on Windows, brew, systemd — `lepika up` says where that engine's own setting is.
+- `lepika model add hf.co/<org>/<repo>-GGUF` (and the same ref typed in the wizard)
+  now shows the repo's quantizations sized against your GPU and RAM, marks the one
+  that fits best ★, and takes it on Enter — no more hand-typing `:UD-Q4_K_M` after
+  reading file sizes on Hugging Face. An explicit `:TAG` behaves exactly as before,
+  and so does a pull when the Hub cannot be reached. ([#5])
 
 ## [0.1.2] - 2026-08-31
 
@@ -73,6 +78,7 @@ Initial public release — one command → local AI chat in your browser.
 [0.1.2]: https://github.com/MikaelSabuhi/lepika/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/MikaelSabuhi/lepika/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/MikaelSabuhi/lepika/releases/tag/v0.1.0
+[#5]: https://github.com/MikaelSabuhi/lepika/issues/5
 [#7]: https://github.com/MikaelSabuhi/lepika/pull/7
 [#8]: https://github.com/MikaelSabuhi/lepika/pull/8
 [#10]: https://github.com/MikaelSabuhi/lepika/pull/10

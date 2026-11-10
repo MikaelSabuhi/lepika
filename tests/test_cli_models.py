@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from lepika import acquire, cli, config, detect, engine, express, hf
+from lepika import acquire, cli, config, detect, engine, express, gguf, hf
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
 
@@ -36,6 +36,17 @@ INFO = detect.SystemInfo(
     has_ollama=True,
     ollama_running=True,
 )
+
+
+@pytest.fixture(autouse=True)
+def offline_hub(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`model add hf.co/…` consults the Hub for quantizations; these tests are about
+    the pull and import paths, so the Hub is offline unless a test says otherwise."""
+
+    def unavailable(repo: str, token: str = "", urlopen: Any = None) -> list[gguf.Build]:
+        raise gguf.Unavailable("offline")
+
+    monkeypatch.setattr(gguf, "list_builds", unavailable)
 
 
 @pytest.fixture()
@@ -887,3 +898,32 @@ def test_model_import_warns_when_it_may_not_fit_in_ram_but_proceeds(
     assert result.exit_code == 0, result.output
     assert "may not fit" in " ".join(result.output.split())
     assert len(fake_local["imported"]) == 1
+
+
+def test_model_add_tagless_gguf_ref_goes_through_the_quant_picker(
+    fake_engine: list[str], monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    builds = [gguf.Build("Q4_K_M", int(4e9)), gguf.Build("Q8_0", int(8e9))]
+    monkeypatch.setattr(gguf, "list_builds", lambda repo, token="", urlopen=None: builds)
+    monkeypatch.setattr(detect, "gpu_memory_gb", lambda info, run=None: 16.0)
+    # Enter at the prompt: `choose_quant` reads `wizard._ask` at call time.
+    from lepika import wizard
+
+    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "")
+    result = runner.invoke(cli.app, ["model", "add", "hf.co/unsloth/x-GGUF"])
+    assert result.exit_code == 0, result.output
+    assert "Quantizations of unsloth/x-GGUF" in _plain(result.output)
+    assert fake_engine == ["hf.co/unsloth/x-GGUF:Q8_0"]
+    assert config.load().model == "hf.co/unsloth/x-GGUF:Q8_0"
+
+
+def test_model_add_explicit_tag_never_consults_the_hub(
+    fake_engine: list[str], monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    def never(repo: str, token: str = "", urlopen: Any = None) -> list[gguf.Build]:
+        raise AssertionError("an explicit tag must not list the repo")
+
+    monkeypatch.setattr(gguf, "list_builds", never)
+    result = runner.invoke(cli.app, ["model", "add", "hf.co/unsloth/x-GGUF:Q4_K_M"])
+    assert result.exit_code == 0, result.output
+    assert fake_engine == ["hf.co/unsloth/x-GGUF:Q4_K_M"]

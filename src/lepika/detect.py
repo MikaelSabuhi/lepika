@@ -58,6 +58,37 @@ def detect_gpu(
     return "none"
 
 
+_NVIDIA_SMI_MEMORY = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
+
+
+def gpu_memory_gb(info: SystemInfo, run: RunFn = proc.run_logged) -> float:
+    """Memory a model can be loaded into on the GPU, in GB (10^9); 0.0 without one.
+
+    Asked by the quant picker alone, never by `detect()`: on NVIDIA it is a
+    subprocess (rule 6), and a wedged driver makes `nvidia-smi` hang — hence the
+    timeout, which comes back as a FriendlyError and reads here as "unknown".
+    Apple Silicon shares RAM with the GPU, and Metal caps a process's working set
+    at two thirds of it below 36 GB and three quarters above — the number Ollama
+    itself budgets with. RAM is measured in GiB and the GPU in decimal GB; the
+    mismatch is under 7 % and errs on the safe side, so both are shown as "GB".
+    """
+    if info.gpu == "apple":
+        return info.ram_gb * (0.75 if info.ram_gb >= 36 else 2 / 3)
+    if info.gpu != "nvidia":
+        return 0.0
+    try:
+        output = str(run(_NVIDIA_SMI_MEMORY, check=False, log=False, timeout=15).stdout)
+    except FriendlyError:
+        return 0.0
+    total_mib = 0
+    for line in output.splitlines():
+        try:
+            total_mib += int(float(line.strip()))
+        except ValueError:
+            continue
+    return total_mib * 1024 * 1024 / 1e9
+
+
 def _global_memory_status() -> tuple[bool, int]:  # pragma: no cover - Windows only
     """Call GlobalMemoryStatusEx, returning (succeeded, total physical bytes)."""
     import ctypes

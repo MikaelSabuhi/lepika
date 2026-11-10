@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
+from typing import Any
 
 from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Prompt
 from rich.table import Table
 
-from lepika import acquire, config, detect, engine, express, models, paths, server
+from lepika import acquire, config, detect, engine, express, gguf, hf, models, paths, proc, server
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import CuratedModel, ModelRef
 
 AskFn = Callable[..., str]
+RunFn = Callable[..., Any]
+UrlOpenFn = Callable[..., Any]
 console = Console()
 
 _ask: AskFn = Prompt.ask
@@ -40,11 +43,126 @@ def _validate(ref: ModelRef, cfg: config.Config, info: SystemInfo) -> ModelRef:
     )
 
 
+def choose_quant(
+    ref: ModelRef,
+    cfg: config.Config,
+    info: SystemInfo,
+    ask: AskFn | None = None,
+    urlopen: UrlOpenFn | None = None,
+    run: RunFn = proc.run_logged,
+) -> ModelRef:
+    """Turn a tagless `hf.co/<org>/<repo>` into `…:<TAG>` by asking, with a ★ default.
+
+    A read, never a gate: whatever the Hub does — offline, gated, rate-limited — the
+    ref goes on exactly as typed, so a pull that works today keeps working. An
+    explicit tag, or any other ref shape, costs no network at all.
+    """
+    if ref.kind != "hf_gguf":
+        return ref
+    repo, tag = gguf.split_tag(ref.raw)
+    if tag:
+        return ref
+    try:
+        hf.check_repo(repo)
+    except FriendlyError:
+        return ref  # Ollama's own rejection says what is wrong with it
+    try:
+        builds = gguf.list_builds(repo, token=hf.token_for(cfg), urlopen=urlopen)
+    except gguf.Unavailable:
+        console.print(
+            f"[dim]Couldn't list the quantizations of {escape(repo)} — letting Ollama pick.[/dim]"
+        )
+        return ref
+    if not builds:
+        return ref  # nothing GGUF here: Ollama's refusal falls through to an import
+    if cfg.mode == "server" and info.gpu == "apple":
+        # A container never sees Metal: Server mode on a Mac is a CPU engine.
+        gpu_gb = 0.0
+    else:
+        gpu_gb = detect.gpu_memory_gb(info, run)
+    shown = [b for b in builds if gguf.tier(b, gpu_gb, info.ram_gb) != "none"]
+    if not shown:
+        console.print(
+            f"None of the {len(builds)} builds fits in your {info.ram_gb:.0f} GB RAM — "
+            "letting Ollama pick."
+        )
+        return ref
+    best = gguf.recommend(builds, gpu_gb, info.ram_gb)
+    budget = f"{gpu_gb:.0f} GB GPU" if gpu_gb else f"{info.ram_gb:.0f} GB RAM"
+    table = Table(title=f"Quantizations of {escape(repo)}")
+    table.add_column("#")
+    table.add_column("Quant")
+    table.add_column("Size", justify="right")
+    table.add_column(f"Fit ({budget})")
+    for i, b in enumerate(shown, start=1):
+        # Quant names come from the Hub's file list: escape before rendering.
+        name = escape(b.quant) + (" ★" if b == best else "")
+        fit = gguf.label(gguf.tier(b, gpu_gb, info.ram_gb), gpu_gb)
+        table.add_row(str(i), name, engine.human_size(b.size_bytes), fit)
+    console.print(table)
+    hidden = len(builds) - len(shown)
+    if hidden:
+        plural = "s" if hidden != 1 else ""
+        console.print(
+            f"[dim]{hidden} larger build{plural} hidden — too big for your "
+            f"{info.ram_gb:.0f} GB RAM.[/dim]"
+        )
+    if not cfg.engine_managed:
+        console.print(
+            f"[dim]Sized against this machine — the engine at {escape(cfg.engine_url)} "
+            "is what runs it.[/dim]"
+        )
+
+    ask_fn: AskFn = ask if ask is not None else _ask
+    default = str(shown.index(best) + 1) if best is not None else ""
+
+    def chosen(quant: str) -> ModelRef:
+        return ModelRef(raw=f"hf.co/{repo}:{quant}", kind="hf_gguf")
+
+    for attempt in (1, 2):
+        # `or default`: Prompt.ask already returns the default on an empty line, but a
+        # caller-supplied `ask` may hand back "" — same guard as choose_mode.
+        # No stdin to answer with — a script or CI — is not an error: the ★ is the
+        # answer Enter would give.
+        try:
+            raw = ask_fn("Pick a number", default=default) if default else ask_fn("Pick a number")
+        except EOFError:
+            if best is not None:
+                console.print(f"[dim]No terminal to ask — taking {escape(best.quant)}.[/dim]")
+                return chosen(best.quant)
+            console.print("[dim]No terminal to ask — letting Ollama pick.[/dim]")
+            return ref
+        answer = raw.strip() or default
+        if best is None and not answer:
+            console.print("[dim]Letting Ollama pick.[/dim]")
+            return ref
+        # isdecimal, not isdigit: "²".isdigit() is True but int("²") raises.
+        if answer.isdecimal() and 1 <= int(answer) <= len(shown):
+            return chosen(shown[int(answer) - 1].quant)
+        if attempt == 1:
+            console.print(f"Pick 1 to {len(shown)}.")
+    # Two misses: the recommendation is the answer that cannot be wrong — and with no
+    # recommendation, the ref goes on as typed rather than looping.
+    return chosen(best.quant) if best is not None else ref
+
+
+def resolve(
+    ref: ModelRef,
+    cfg: config.Config,
+    info: SystemInfo,
+    ask: AskFn | None = None,
+    urlopen: UrlOpenFn | None = None,
+) -> ModelRef:
+    """Validate a typed ref, then settle the one choice it may have left open."""
+    return choose_quant(_validate(ref, cfg, info), cfg, info, ask=ask, urlopen=urlopen)
+
+
 def choose_model(
     info: SystemInfo,
     cfg: config.Config,
     ask: AskFn | None = None,
     curated: list[CuratedModel] | None = None,
+    urlopen: UrlOpenFn | None = None,
 ) -> ModelRef:
     ask_fn: AskFn = ask if ask is not None else _ask
     candidates = curated if curated is not None else models.load_curated()
@@ -90,7 +208,7 @@ def choose_model(
         chosen = picked(answer)
         if chosen is not None:
             return chosen
-    return _validate(models.parse_model_ref(answer), cfg, info)
+    return resolve(models.parse_model_ref(answer), cfg, info, ask=ask_fn, urlopen=urlopen)
 
 
 def choose_mode(info: SystemInfo, current: str, ask: AskFn | None = None) -> str:
@@ -183,6 +301,8 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     if cfg.mode != previous and not dry_run:
         info = leave_mode(info, previous, cfg)
     console.print(detect.plan_sentence(info, cfg.mode, engine=server.engine_label(cfg)))
+    # The quant picker may read the Hub and ask nvidia-smi here, dry run or not: both are
+    # reads, and the dry-run report then names the tag it would pull.
     ref = choose_model(info, cfg)
     if dry_run:
         # Nothing is written: a dry run that saved the config would leave the machine

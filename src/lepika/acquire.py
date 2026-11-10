@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Confirm
 
-from lepika import config, engine, express, hf, models, paths
+from lepika import config, engine, express, gguf, hf, models, paths
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
@@ -239,9 +239,7 @@ def acquire(
         if ref.kind != "hf_gguf" or not express.import_allowed(cfg, info):
             raise
         # `hf.co/<org>/<repo>:tag` — the tag is Ollama's, not part of the repo id.
-        repo = ref.raw.removeprefix("hf.co/")
-        head, sep, tail = repo.rpartition("/")
-        repo = head + sep + tail.partition(":")[0]
+        repo, _tag = gguf.split_tag(ref.raw)
         console.print(f"{escape(ref.raw)} ships full weights — importing it into Ollama instead.")
         return import_repo(info, cfg, models.parse_model_ref(repo), quant=quant)
     if ref.kind == "hf_gguf" and cfg.engine_managed:

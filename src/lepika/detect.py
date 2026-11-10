@@ -62,15 +62,16 @@ _NVIDIA_SMI_MEMORY = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,no
 
 
 def gpu_memory_gb(info: SystemInfo, run: RunFn = proc.run_logged) -> float:
-    """Memory a model can be loaded into on the GPU, in GB (10^9); 0.0 without one.
+    """Memory a model can be loaded into on the GPU, in GiB; 0.0 without one.
 
     Asked by the quant picker alone, never by `detect()`: on NVIDIA it is a
     subprocess (rule 6), and a wedged driver makes `nvidia-smi` hang — hence the
     timeout, which comes back as a FriendlyError and reads here as "unknown".
     Apple Silicon shares RAM with the GPU, and Metal caps a process's working set
     at two thirds of it below 36 GB and three quarters above — the number Ollama
-    itself budgets with. RAM is measured in GiB and the GPU in decimal GB; the
-    mismatch is under 7 % and errs on the safe side, so both are shown as "GB".
+    itself budgets with. GiB like RAM, so a card sold as 16 GB reads as 16; model
+    files are sized in decimal GB, and comparing those against a GiB budget errs
+    7 % on the safe side.
     """
     if info.gpu == "apple":
         return info.ram_gb * (0.75 if info.ram_gb >= 36 else 2 / 3)
@@ -86,7 +87,25 @@ def gpu_memory_gb(info: SystemInfo, run: RunFn = proc.run_logged) -> float:
             total_mib += int(float(line.strip()))
         except ValueError:
             continue
-    return total_mib * 1024 * 1024 / 1e9
+    return total_mib / 1024
+
+
+_DOCKER_MEMORY = ["docker", "info", "--format", "{{.MemTotal}}"]
+
+
+def docker_memory_gb(run: RunFn = proc.run_logged) -> float:
+    """Memory Docker's containers can use, in GiB; 0.0 when Docker will not say.
+
+    On Linux that is the machine's own RAM. Docker Desktop (macOS, Windows) runs
+    containers in a VM sized in its settings — often half the machine — and that is
+    all Server mode's engine container can load a model into. A subprocess with a
+    timeout, like `nvidia-smi`: a stopped daemon must read as "unknown", not hang.
+    """
+    try:
+        output = str(run(_DOCKER_MEMORY, check=False, log=False, timeout=15).stdout).strip()
+    except FriendlyError:
+        return 0.0
+    return int(output) / 2**30 if output.isdecimal() else 0.0
 
 
 def _global_memory_status() -> tuple[bool, int]:  # pragma: no cover - Windows only

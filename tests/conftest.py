@@ -6,6 +6,8 @@ from typing import Any
 
 import pytest
 
+from lepika import detect, proc
+
 
 class RealNetworkCall(BaseException):
     """A test reached the real `urllib.request.urlopen`.
@@ -39,3 +41,16 @@ def no_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
         raise RealNetworkCall(f"test reached the network: {getattr(target, 'full_url', target)}")
 
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
+
+
+@pytest.fixture(autouse=True)
+def no_real_docker_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep `docker info` a fake: a real one is slow and answers with the developer's own
+    Docker Desktop memory. A test that does not fake `run` gets "unknown" — what a
+    stopped daemon answers — and sizes against its own SystemInfo, as before."""
+    real = detect.docker_memory_gb
+
+    def probe(run: Any = proc.run_logged) -> float:
+        return 0.0 if run is proc.run_logged else real(run)
+
+    monkeypatch.setattr(detect, "docker_memory_gb", probe)

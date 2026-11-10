@@ -16,6 +16,11 @@ you to install Docker.
 | Windows + NVIDIA (Docker Desktop) | CUDA via WSL2 | Same |
 | macOS (Docker Desktop) | CPU only — containers can't use Metal; use Express for the GPU | Same |
 
+On Docker Desktop (macOS and Windows) containers run in a VM with its own memory
+limit, often half the machine's: under 8 GB on a 16 GB Mac. The model list and the
+quantization picker size models against that limit, not your RAM; raise it in Docker
+Desktop → Settings → Resources to fit bigger ones.
+
 ## The stack
 
 The stack lives in `~/.lepika/stack/`. LePika owns `compose.yml`; you own `.env`

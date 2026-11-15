@@ -29,7 +29,9 @@ console = Console()
 
 def ask_confirm(question: str) -> bool:
     try:
-        return prompts.confirm(question, reader=Confirm.ask)
+        # Enter means no, as it always has; no terminal is not taken as a no, because
+        # the caller would then report a decline nobody made.
+        return prompts.confirm(question, default=False, reader=Confirm.ask, require_terminal=True)
     except prompts.NoTerminal as exc:
         # Piped, redirected or in CI: rich sees EOF on stdin. A download this size is
         # never started on a guess, so say what is missing instead of tracebacking.

@@ -39,7 +39,10 @@ def ask(
     default: str | None = None,
     password: bool = False,
     reader: Reader | None = None,
+    require_terminal: bool = False,
 ) -> str:
+    """Ask once. `require_terminal`: Enter still takes the default, but no terminal
+    raises `NoTerminal` — for a caller whose no-terminal answer needs its own words."""
     # Resolved at call time, not import time, so a test patching `Prompt.ask` reaches it.
     read: Reader = reader if reader is not None else Prompt.ask
     # The same keywords rich takes, each only when it says something: rich treats a
@@ -53,7 +56,7 @@ def ask(
     try:
         return str(read(prompt, **kwargs))
     except EOFError as exc:
-        if default is None:
+        if default is None or require_terminal:
             raise _no_terminal(prompt) from exc
         if password or not default:
             # A secret's default is never echoed, and an empty one is a skip.
@@ -63,7 +66,14 @@ def ask(
         return default
 
 
-def confirm(prompt: str, *, default: bool | None = None, reader: Reader | None = None) -> bool:
+def confirm(
+    prompt: str,
+    *,
+    default: bool | None = None,
+    reader: Reader | None = None,
+    require_terminal: bool = False,
+) -> bool:
+    """Ask yes/no once; `require_terminal` as for `ask`."""
     read: Reader = reader if reader is not None else Confirm.ask
     kwargs: dict[str, Any] = {}
     if default is not None:
@@ -71,7 +81,7 @@ def confirm(prompt: str, *, default: bool | None = None, reader: Reader | None =
     try:
         return bool(read(prompt, **kwargs))
     except EOFError as exc:
-        if default is None:
+        if default is None or require_terminal:
             raise _no_terminal(prompt) from exc
         console.print(f"[dim]No terminal to ask — using {'yes' if default else 'no'}.[/dim]")
         return default

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import functools
 from collections.abc import Callable
 from typing import Any
 
@@ -175,11 +174,14 @@ def choose_quant(
         # `or default`: Prompt.ask already returns the default on an empty line, but a
         # caller-supplied `ask` may hand back "" — same guard as choose_mode.
         # No stdin to answer with — a script or CI — is not an error: the ★ is the
-        # answer Enter would give. The default reaches the reader directly rather
-        # than through `prompts.ask`, so the EOF line can name the quant, not "1".
-        reader = functools.partial(ask_fn, default=default) if default else ask_fn
+        # answer Enter would give, and the line below names it rather than its number.
         try:
-            raw = prompts.ask("Pick a number", reader=reader)
+            raw = prompts.ask(
+                "Pick a number",
+                default=default or None,
+                reader=ask_fn,
+                require_terminal=True,
+            )
         except prompts.NoTerminal:
             if best is not None:
                 console.print(f"[dim]No terminal to ask — taking {escape(best.quant)}.[/dim]")
@@ -300,9 +302,17 @@ def choose_mode(info: SystemInfo, current: str, ask: AskFn | None = None) -> str
     choices = {"1": "express", "express": "express", "2": "server", "server": "server"}
     for attempt in (1, 2):
         # `or default`: Prompt.ask already returns the default on an empty line, but a
-        # bare Enter must mean "keep what I have" whatever the prompt is. No terminal
-        # at all means the same: prompts.ask hands back the default.
-        answer = prompts.ask("Pick 1 or 2", default=default, reader=ask_fn).strip() or default
+        # bare Enter must mean "keep what I have" whatever the prompt is.
+        try:
+            answer = prompts.ask(
+                "Pick 1 or 2", default=default, reader=ask_fn, require_terminal=True
+            )
+        except prompts.NoTerminal:
+            # No terminal keeps the mode too — said by name, not as "1".
+            kept = choices[default]
+            console.print(f"[dim]No terminal to ask — staying with {_MODE_LABEL[kept]}.[/dim]")
+            return kept
+        answer = answer.strip() or default
         if answer.lower() in choices:
             return choices[answer.lower()]
         if attempt == 1:

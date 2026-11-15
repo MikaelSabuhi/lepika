@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from lepika import prompts
+from lepika import acquire, prompts
 from lepika.errors import FriendlyError
 
 
@@ -54,3 +54,47 @@ def test_confirm_default_and_no_default(capsys: pytest.CaptureFixture[str]) -> N
     assert prompts.confirm("Go?", reader=lambda q, **k: True) is True
     with pytest.raises(prompts.NoTerminal):
         prompts.confirm("Go?", reader=_no_terminal)
+
+
+def test_require_terminal_raises_even_with_a_default(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(prompts.NoTerminal):
+        prompts.ask("Pick", default="1", require_terminal=True, reader=_no_terminal)
+    with pytest.raises(prompts.NoTerminal):
+        prompts.confirm("Go?", default=False, require_terminal=True, reader=_no_terminal)
+    assert "No terminal to ask" not in capsys.readouterr().out
+
+
+def test_require_terminal_still_hands_the_default_to_the_reader() -> None:
+    seen: list[dict[str, Any]] = []
+
+    def reader(prompt: str, **kwargs: Any) -> Any:
+        seen.append(kwargs)
+        return kwargs["default"]  # what rich returns for a bare Enter
+
+    assert prompts.ask("Pick", default="2", require_terminal=True, reader=reader) == "2"
+    assert prompts.confirm("Go?", default=False, require_terminal=True, reader=reader) is False
+    assert seen == [{"default": "2"}, {"default": False}]
+
+
+def test_ask_confirm_enter_means_no(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict[str, Any]] = []
+
+    def enter(question: str, **kwargs: Any) -> Any:
+        seen.append(kwargs)
+        return kwargs["default"]
+
+    monkeypatch.setattr(acquire.Confirm, "ask", enter)
+    assert acquire.ask_confirm("Download 16 GB?") is False
+    assert seen == [{"default": False}]
+
+
+def test_ask_confirm_without_a_terminal_keeps_its_friendly_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(acquire.Confirm, "ask", _no_terminal)
+    with pytest.raises(FriendlyError) as exc:
+        acquire.ask_confirm("Download 16 GB?")
+    assert exc.value.problem == (
+        "Importing a full-weight repo needs a yes/no answer, and there is no terminal to ask."
+    )
+    assert exc.value.fix == "Run `lepika model add <repo>` from an interactive shell."

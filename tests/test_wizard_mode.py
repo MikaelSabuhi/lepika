@@ -52,9 +52,17 @@ def _no_terminal(*a: Any, **k: Any) -> str:
     raise EOFError("stdin is not a terminal")
 
 
-def test_choose_mode_keeps_the_current_mode_without_a_terminal() -> None:
+def test_choose_mode_keeps_the_current_mode_without_a_terminal(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     assert wizard.choose_mode(DOCKER, "server", ask=_no_terminal) == "server"
+    out = capsys.readouterr().out
+    assert "No terminal to ask — staying with Server." in out
+    assert "using 1" not in out and "using 2" not in out
     assert wizard.choose_mode(DOCKER, "express", ask=_no_terminal) == "express"
+    out = capsys.readouterr().out
+    assert "No terminal to ask — staying with Express." in out
+    assert "using 1" not in out
 
 
 def test_choose_mode_accepts_the_mode_by_name() -> None:

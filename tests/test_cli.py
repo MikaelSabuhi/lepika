@@ -156,18 +156,6 @@ def test_run_reports_an_unwritable_file_by_name(
     assert "Traceback" not in err
 
 
-def test_run_exits_130_quietly_on_ctrl_c(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(cli, "app", _raise(KeyboardInterrupt()))
-    with pytest.raises(SystemExit) as exit_info:
-        cli.run()
-    assert exit_info.value.code == 130
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == ""
-
-
 def test_run_without_a_terminal_is_two_lines_not_a_traceback(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

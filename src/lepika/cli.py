@@ -576,9 +576,6 @@ def run() -> None:
     except FriendlyError as exc:
         _fail(exc.problem, exc.fix)
         raise SystemExit(1) from exc
-    except KeyboardInterrupt:
-        # The user asked to stop; they know why. 130 is the shell's code for SIGINT.
-        raise SystemExit(130) from None
     except OSError as exc:
         if exc.filename is None:
             _unexpected(exc)

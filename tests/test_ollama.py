@@ -357,6 +357,8 @@ def test_ensure_ollama_probes_the_url_it_is_given() -> None:
         info_for("linux", has_ollama=True), context_length=16384, url=url, sys=machine
     )
     assert _probed(machine) == [f"{url}/api/version"]
+    # The engine it manages is probed without a key.
+    assert [r.get_header("Authorization") for r in machine.requested] == [None]
     assert machine.spawned == []
 
 

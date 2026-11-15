@@ -20,7 +20,6 @@ class Runner:
     def __init__(self, stdout: dict[str, str] | None = None, code: int = 0) -> None:
         self.calls: list[list[str]] = []
         self.stdout = stdout or {}
-        self._outputs_served: dict[str, int] = {}
         self.code = code
 
     def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:

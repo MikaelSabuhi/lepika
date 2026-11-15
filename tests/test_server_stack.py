@@ -71,7 +71,8 @@ def _box(stdout: dict[str, str | list[str]], **kwargs: Any) -> FakeSystem:
 
 
 def test_start_stack_writes_env_ups_and_waits(isolated_home: Path) -> None:
-    cfg = config.Config(mode="server", model="qwen3:8b")
+    # A key in the config does not reach the readiness probe of the engine LePika runs.
+    cfg = config.Config(mode="server", model="qwen3:8b", engine_key="k")
     machine = _box({"docker info": '{"nvidia": {}}\n'})
     # How many probes had been made when the hook ran.
     hook_ran_after: list[int] = []
@@ -91,6 +92,7 @@ def test_start_stack_writes_env_ups_and_waits(isolated_home: Path) -> None:
     # The engine is probed before the hook runs, and the UI after it.
     assert _probed(machine) == [_ENGINE, _UI]
     assert hook_ran_after == [1]
+    assert machine.requested[0].get_header("Authorization") is None
     # Services from profiles that are not active are stopped explicitly — in one
     # compose call, not one per profile.
     stops = [c for c in machine.ran if "stop" in c]

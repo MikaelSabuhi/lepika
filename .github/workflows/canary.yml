@@ -34,7 +34,7 @@ jobs:
             if curl -fsS --max-time 2 http://127.0.0.1:11434/api/version; then exit 0; fi
             sleep 2
           done
-          echo "Ollama did not answer on 127.0.0.1:11434 within two minutes" >&2
+          echo "Ollama did not answer on 127.0.0.1:11434 after 60 tries (about four minutes)" >&2
           exit 1
       - name: Sync dependencies
         run: uv sync --dev
@@ -45,7 +45,9 @@ jobs:
   # third-party installer or the test code above.
   report:
     needs: canary
-    if: failure() && github.event_name == 'schedule'
+    # `failure()` is false for a run that hit `timeout-minutes` (recorded as cancelled),
+    # and a hung upstream is exactly the case worth hearing about.
+    if: ${{ always() && github.event_name == 'schedule' && (needs.canary.result == 'failure' || needs.canary.result == 'cancelled') }}
     runs-on: ubuntu-latest
     permissions:
       issues: write

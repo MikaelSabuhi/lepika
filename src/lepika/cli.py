@@ -22,7 +22,7 @@ from rich.table import Table
 
 from lepika import acquire, config, detect, engine, express, log, models, paths, proc, server
 from lepika.backend import UpdateStep
-from lepika.errors import FriendlyError
+from lepika.errors import ISSUES_URL, FriendlyError
 
 app = typer.Typer(
     help="One command → local AI chat in your browser.",
@@ -546,14 +546,6 @@ def _utf8_stdio(streams: Iterable[TextIO] | None = None) -> None:
             stream.reconfigure(encoding="utf-8")
 
 
-ISSUES_URL = "https://github.com/MikaelSabuhi/lepika/issues"
-
-
-def _home_path() -> Path:
-    """Where LePika's home is, without creating it — creating it may be what failed."""
-    return Path(os.environ.get("LEPIKA_HOME", str(Path.home() / ".lepika")))
-
-
 def _fail(problem: str, fix: str) -> None:
     err_console.print(f"[red]✗ {escape(problem)}[/red]")
     err_console.print(f"[yellow]→ {escape(fix)}[/yellow]")
@@ -567,7 +559,7 @@ def _unexpected(exc: Exception) -> NoReturn:
     # look in. The path lookup sits inside the guard for the same reason.
     with contextlib.suppress(Exception):
         log.get_logger().error("cli.crash", error=repr(exc), traceback=traceback.format_exc())
-        fix = f"Details are in {_home_path() / 'logs' / log.LOG_FILE}. {fix}"
+        fix = f"Details are in {paths.home_path() / 'logs' / log.LOG_FILE}. {fix}"
     _fail(f"LePika hit an unexpected error: {type(exc).__name__}: {exc}", fix)
     raise SystemExit(1) from exc
 

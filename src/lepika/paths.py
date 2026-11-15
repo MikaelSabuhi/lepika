@@ -6,8 +6,13 @@ import os
 from pathlib import Path
 
 
+def home_path() -> Path:
+    """Where LePika's home is, without creating it — creating it may be what failed."""
+    return Path(os.environ.get("LEPIKA_HOME", str(Path.home() / ".lepika")))
+
+
 def lepika_home() -> Path:
-    home = Path(os.environ.get("LEPIKA_HOME", str(Path.home() / ".lepika")))
+    home = home_path()
     home.mkdir(parents=True, exist_ok=True)
     return home
 

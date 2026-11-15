@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from lepika import proc
-from lepika.errors import FriendlyError
+from lepika.errors import ISSUES_URL, FriendlyError
 
 OsName = Literal["macos", "linux", "windows"]
 Gpu = Literal["apple", "nvidia", "none"]
@@ -137,8 +137,7 @@ def _memory_error() -> FriendlyError:
     return FriendlyError(
         "Could not detect system memory.",
         # Not `lepika doctor`: it detects memory as well, and would fail the same way.
-        "Re-run the command; if it keeps happening, report it at "
-        "https://github.com/MikaelSabuhi/lepika/issues.",
+        f"Re-run the command; if it keeps happening, report it at {ISSUES_URL}.",
     )
 
 

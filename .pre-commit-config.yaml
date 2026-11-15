@@ -5,3 +5,18 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+  # Run through uv so the hooks use the project's locked mypy and bandit, exactly as CI does.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: uv run mypy src
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: bandit
+        name: bandit
+        entry: uv run bandit -c pyproject.toml -r src -q
+        language: system
+        pass_filenames: false
+        types: [python]

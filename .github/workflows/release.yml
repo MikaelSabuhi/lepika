@@ -3,21 +3,25 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # Publishes whatever main holds — for a version whose tag predates this
-  # workflow, or a re-run after a transient PyPI failure.
-  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # The full CI suite on the tagged commit: nothing is built or published unless it
+  # passes. The called jobs only read the repository.
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   build:
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - name: Tag matches pyproject version
-        if: github.ref_type == 'tag'
         run: |
           version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           test "v${version}" = "${GITHUB_REF_NAME}" || {
@@ -27,7 +31,6 @@ jobs:
       # The release body comes from CHANGELOG.md, so a version without an entry is a
       # release nobody can read. Fail here, before anything reaches PyPI.
       - name: Changelog has an entry for this version
-        if: github.ref_type == 'tag'
         run: |
           version="${GITHUB_REF_NAME#v}"
           awk -v v="${version}" \
@@ -43,7 +46,6 @@ jobs:
           grep '^\[' CHANGELOG.md >> release-notes.md
           cat release-notes.md
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: github.ref_type == 'tag'
         with:
           name: release-notes
           path: release-notes.md
@@ -73,7 +75,6 @@ jobs:
 
   github-release:
     needs: publish
-    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write

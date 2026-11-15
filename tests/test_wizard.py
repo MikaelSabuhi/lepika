@@ -425,7 +425,7 @@ def test_choose_quant_probes_nvidia_memory_only_when_it_lists(
     nvidia = detect.SystemInfo("linux", "x86_64", "nvidia", 32.0, False, True, True)
 
     sys = FakeSystem(stdout={"nvidia-smi": "16303\n"})
-    wizard.choose_quant(GGUF_REF, config.Config(), nvidia, sys, ask=lambda *a, **k: "")
+    wizard.choose_quant(GGUF_REF, config.Config(), nvidia, sys=sys, ask=lambda *a, **k: "")
     assert "Fit (16 GB GPU)" in capsys.readouterr().out
     assert [cmd[0] for cmd in sys.ran] == ["nvidia-smi"]
 
@@ -438,7 +438,7 @@ def test_choose_quant_budgets_no_gpu_for_a_container_on_apple_silicon(
     cfg.mode = "server"
 
     sys = FakeSystem(stdout={"docker info": ""})  # Docker's memory unknown: the Mac's RAM
-    wizard.choose_quant(GGUF_REF, cfg, INFO, sys, ask=lambda *a, **k: "")
+    wizard.choose_quant(GGUF_REF, cfg, INFO, sys=sys, ask=lambda *a, **k: "")
     assert sys.ran == [DOCKER_INFO], "no GPU probe"
     out = capsys.readouterr().out
     assert "Fit (16 GB RAM)" in out and "CPU only — slow" in out
@@ -467,7 +467,7 @@ def test_choose_quant_never_probes_the_gpu_when_the_listing_fails(
     nvidia = detect.SystemInfo("linux", "x86_64", "nvidia", 32.0, False, True, True)
 
     sys = FakeSystem()
-    assert wizard.choose_quant(GGUF_REF, config.Config(), nvidia, sys) == GGUF_REF
+    assert wizard.choose_quant(GGUF_REF, config.Config(), nvidia, sys=sys) == GGUF_REF
     assert sys.ran == [], "no probe"
 
 
@@ -537,7 +537,7 @@ def test_choose_quant_sizes_a_server_engine_against_dockers_memory(
     that is 6.2 GB, so only UD-IQ2_M (6.0 GB) can load and it has to be the ★."""
     monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
     sys = _docker_vm(DOCKER_DESKTOP_DEFAULT)
-    ref = wizard.choose_quant(GGUF_REF, _server(), INFO, sys, ask=lambda *a, **k: "")
+    ref = wizard.choose_quant(GGUF_REF, _server(), INFO, sys=sys, ask=lambda *a, **k: "")
     assert sys.ran == [DOCKER_INFO]
     assert ref.raw == "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_M"
     out = " ".join(capsys.readouterr().out.split())  # Rich wraps at 80 columns
@@ -554,7 +554,7 @@ def test_choose_quant_in_server_mode_keeps_ram_wording_when_docker_has_it_all(
     monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q4_K_M", int(4e9))]))
     linux = f"{int(16.0 * 2**30)}\n"
     sys = _docker_vm(linux)
-    wizard.choose_quant(GGUF_REF, _server(), CPU_ONLY, sys, ask=lambda *a, **k: "")
+    wizard.choose_quant(GGUF_REF, _server(), CPU_ONLY, sys=sys, ask=lambda *a, **k: "")
     assert sys.ran == [DOCKER_INFO]
     out = capsys.readouterr().out
     assert "Fit (16 GB RAM)" in out
@@ -567,7 +567,7 @@ def test_choose_quant_in_express_never_asks_docker(
     monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q4_K_M", int(4e9))]))
 
     sys = FakeSystem()
-    wizard.choose_quant(GGUF_REF, config.Config(), CPU_ONLY, sys, ask=lambda *a, **k: "")
+    wizard.choose_quant(GGUF_REF, config.Config(), CPU_ONLY, sys=sys, ask=lambda *a, **k: "")
     assert sys.ran == [], "no probe without a GPU in Express"
     assert "Fit (16 GB RAM)" in capsys.readouterr().out
 
@@ -583,7 +583,7 @@ def test_choose_model_lists_what_fits_dockers_memory_in_server_mode(
 ) -> None:
     """A 12 GB model offered to a 7.75 GiB VM is a pull that can never load."""
     sys = _docker_vm(DOCKER_DESKTOP_DEFAULT)
-    ref = wizard.choose_model(INFO, _server(), sys, ask=lambda *a, **k: "1", curated=SIZED)
+    ref = wizard.choose_model(INFO, _server(), sys=sys, ask=lambda *a, **k: "1", curated=SIZED)
     assert sys.ran == [DOCKER_INFO]
     assert ref.raw == "llama3.2:3b"
     out = " ".join(capsys.readouterr().out.split())  # Rich wraps at 80 columns
@@ -595,7 +595,7 @@ def test_choose_model_in_express_lists_what_fits_the_machine(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     sys = FakeSystem()
-    wizard.choose_model(INFO, config.Config(), sys, ask=lambda *a, **k: "1", curated=SIZED)
+    wizard.choose_model(INFO, config.Config(), sys=sys, ask=lambda *a, **k: "1", curated=SIZED)
     assert sys.ran == [], "Express runs no probe"
     out = capsys.readouterr().out
     assert "Models that fit your 16 GB" in out

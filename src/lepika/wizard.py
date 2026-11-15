@@ -76,7 +76,7 @@ class EngineMemory:
 _MORE_FOR_DOCKER = "Docker Desktop → Settings → Resources gives it more."
 
 
-def engine_memory(info: SystemInfo, cfg: config.Config, sys: System) -> EngineMemory:
+def engine_memory(info: SystemInfo, cfg: config.Config, *, sys: System) -> EngineMemory:
     """Server mode's engine is a container: on Docker Desktop it gets the VM's memory,
     not the machine's. Sized against the Mac's 16 GB, a 12 GB build looks fine and
     then never loads in the 7.75 GiB the VM really has. Anything else — Express, a
@@ -84,7 +84,7 @@ def engine_memory(info: SystemInfo, cfg: config.Config, sys: System) -> EngineMe
     not answer — is sized against this machine.
     """
     if cfg.mode == "server" and cfg.engine_managed:
-        docker = detect.docker_memory_gb(sys)
+        docker = detect.docker_memory_gb(sys=sys)
         # 95 %: Linux reports the same kernel MemTotal; only a real VM is smaller.
         if 0 < docker < info.ram_gb * 0.95:
             return EngineMemory(docker, docker=True)
@@ -95,9 +95,10 @@ def choose_quant(
     ref: ModelRef,
     cfg: config.Config,
     info: SystemInfo,
-    sys: System,
     ask: AskFn | None = None,
     urlopen: UrlOpenFn | None = None,
+    *,
+    sys: System,
 ) -> ModelRef:
     """Turn a tagless `hf.co/<org>/<repo>` into `…:<TAG>` by asking, with a ★ default.
 
@@ -127,8 +128,8 @@ def choose_quant(
         # A container never sees Metal: Server mode on a Mac is a CPU engine.
         gpu_gb = 0.0
     else:
-        gpu_gb = detect.gpu_memory_gb(info, sys)
-    memory = engine_memory(info, cfg, sys)
+        gpu_gb = detect.gpu_memory_gb(info, sys=sys)
+    memory = engine_memory(info, cfg, sys=sys)
     more = f" {_MORE_FOR_DOCKER}" if memory.docker else ""
     shown = [b for b in builds if gguf.tier(b, gpu_gb, memory.gb) != "none"]
     if not shown:
@@ -216,14 +217,15 @@ def resolve(
 def choose_model(
     info: SystemInfo,
     cfg: config.Config,
-    sys: System,
     ask: AskFn | None = None,
     curated: list[CuratedModel] | None = None,
     urlopen: UrlOpenFn | None = None,
+    *,
+    sys: System,
 ) -> ModelRef:
     ask_fn: AskFn = ask if ask is not None else _ask
     candidates = curated if curated is not None else models.load_curated()
-    memory = engine_memory(info, cfg, sys)
+    memory = engine_memory(info, cfg, sys=sys)
     fitting = models.fitting(candidates, memory.gb)
     if not fitting:
         # A bare empty table reads as a broken program. Name the reason and the

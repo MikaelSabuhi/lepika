@@ -65,7 +65,7 @@ def no_real_docker_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     a stopped daemon answers — and sizes against its own SystemInfo, as before."""
     real = detect.docker_memory_gb
 
-    def probe(sys: System) -> float:
-        return 0.0 if sys is system.REAL else real(sys)
+    def probe(*, sys: System) -> float:
+        return 0.0 if sys is system.REAL else real(sys=sys)
 
     monkeypatch.setattr(detect, "docker_memory_gb", probe)

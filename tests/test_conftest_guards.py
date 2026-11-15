@@ -41,7 +41,7 @@ def test_dockers_memory_is_never_asked_of_the_real_docker(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(subprocess, "run", spawned)
     monkeypatch.setattr(subprocess, "Popen", spawned)
-    assert detect.docker_memory_gb(system.REAL) == 0.0
+    assert detect.docker_memory_gb(sys=system.REAL) == 0.0
 
 
 def test_canary_tests_are_deselected_by_default(

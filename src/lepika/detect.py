@@ -42,7 +42,7 @@ def detect_os(system: str | None = None) -> OsName:
     )
 
 
-def detect_gpu(os_name: OsName, arch: str, sys: System) -> Gpu:
+def detect_gpu(os_name: OsName, arch: str, *, sys: System) -> Gpu:
     if os_name == "macos" and arch == "arm64":
         return "apple"
     if sys.which("nvidia-smi") is not None:
@@ -53,7 +53,7 @@ def detect_gpu(os_name: OsName, arch: str, sys: System) -> Gpu:
 _NVIDIA_SMI_MEMORY = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
 
 
-def gpu_memory_gb(info: SystemInfo, sys: System) -> float:
+def gpu_memory_gb(info: SystemInfo, *, sys: System) -> float:
     """Memory a model can be loaded into on the GPU, in GiB; 0.0 without one.
 
     Asked by the quant picker alone, never by `detect()`: on NVIDIA it is a
@@ -85,7 +85,7 @@ def gpu_memory_gb(info: SystemInfo, sys: System) -> float:
 _DOCKER_MEMORY = ["docker", "info", "--format", "{{.MemTotal}}"]
 
 
-def docker_memory_gb(sys: System) -> float:
+def docker_memory_gb(*, sys: System) -> float:
     """Memory Docker's containers can use, in GiB; 0.0 when Docker will not say.
 
     On Linux that is the machine's own RAM. Docker Desktop (macOS, Windows) runs
@@ -100,7 +100,7 @@ def docker_memory_gb(sys: System) -> float:
     return int(output) / 2**30 if output.isdecimal() else 0.0
 
 
-def detect_ram_gb(sys: System) -> float:
+def detect_ram_gb(*, sys: System) -> float:
     total_bytes = sys.ram_bytes()
     if total_bytes is None:
         # Guessing 0 GB would silently filter the curated list down to nothing.
@@ -129,15 +129,15 @@ def api_up(
     return True
 
 
-def detect(sys: System) -> SystemInfo:
+def detect(*, sys: System) -> SystemInfo:
     """The machine as LePika needs it, read without starting a process (rule 6)."""
     os_name = detect_os()
     arch = _platform.machine().lower()
     return SystemInfo(
         os=os_name,
         arch=arch,
-        gpu=detect_gpu(os_name, arch, sys),
-        ram_gb=detect_ram_gb(sys),
+        gpu=detect_gpu(os_name, arch, sys=sys),
+        ram_gb=detect_ram_gb(sys=sys),
         has_docker=sys.which("docker") is not None,
         has_ollama=sys.which("ollama") is not None,
         ollama_running=api_up(config.DEFAULT_ENGINE_URL, urlopen=sys.open_url),

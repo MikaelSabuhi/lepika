@@ -48,28 +48,28 @@ def test_detect_os_maps_platform_names() -> None:
 
 
 def test_detect_gpu_apple_silicon() -> None:
-    assert detect.detect_gpu("macos", "arm64", FakeSystem()) == "apple"
+    assert detect.detect_gpu("macos", "arm64", sys=FakeSystem()) == "apple"
 
 
 def test_detect_gpu_nvidia_via_nvidia_smi() -> None:
     sys = FakeSystem(which={"nvidia-smi": "/usr/bin/nvidia-smi"})
-    assert detect.detect_gpu("linux", "x86_64", sys) == "nvidia"
+    assert detect.detect_gpu("linux", "x86_64", sys=sys) == "nvidia"
 
 
 def test_detect_gpu_none() -> None:
-    assert detect.detect_gpu("linux", "x86_64", FakeSystem()) == "none"
+    assert detect.detect_gpu("linux", "x86_64", sys=FakeSystem()) == "none"
 
 
 def test_ram_comes_from_the_system_in_gib() -> None:
     sys = FakeSystem(ram_bytes=32 * 2**30)
-    assert detect.detect_ram_gb(sys) == 32.0
+    assert detect.detect_ram_gb(sys=sys) == 32.0
     assert sys.ran == []
 
 
 def test_unknown_memory_is_a_friendly_error() -> None:
     """Guessing 0 GB would silently filter the curated list down to nothing."""
     with pytest.raises(FriendlyError) as exc:
-        detect.detect_ram_gb(FakeSystem(ram_bytes=None))
+        detect.detect_ram_gb(sys=FakeSystem(ram_bytes=None))
     assert exc.value.problem == "Could not detect system memory."
     # Not `lepika doctor`: it detects memory too, and would fail the same way.
     assert exc.value.fix == (
@@ -187,7 +187,7 @@ def test_gpu_memory_sums_every_nvidia_card_in_gib() -> None:
     """GiB, like RAM and the Metal share: a 16 GB card (16303 MiB) must read as 16,
     not the 17 decimal GB the picker once showed on a card sold as 16."""
     sys = FakeSystem(stdout={"nvidia-smi": "16303\n24576\n"})
-    total = detect.gpu_memory_gb(_info("nvidia", 64.0), sys)
+    total = detect.gpu_memory_gb(_info("nvidia", 64.0), sys=sys)
     assert total == pytest.approx((16303 + 24576) / 1024)
     assert sys.ran == [_NVIDIA_SMI]
     assert sys.ran_kwargs == [_PROBE_KWARGS]
@@ -196,31 +196,31 @@ def test_gpu_memory_sums_every_nvidia_card_in_gib() -> None:
 def test_gpu_memory_is_zero_when_nvidia_smi_fails_or_babbles() -> None:
     nvidia = _info("nvidia", 64.0)
     hung = HungSystem()
-    assert detect.gpu_memory_gb(nvidia, hung) == 0.0
+    assert detect.gpu_memory_gb(nvidia, sys=hung) == 0.0
     assert hung.ran == [_NVIDIA_SMI]
     babble = FakeSystem(stdout={"nvidia-smi": "NVIDIA-SMI has failed"})
-    assert detect.gpu_memory_gb(nvidia, babble) == 0.0
-    assert detect.gpu_memory_gb(nvidia, FakeSystem(stdout={"nvidia-smi": ""})) == 0.0
+    assert detect.gpu_memory_gb(nvidia, sys=babble) == 0.0
+    assert detect.gpu_memory_gb(nvidia, sys=FakeSystem(stdout={"nvidia-smi": ""})) == 0.0
 
 
 def test_gpu_memory_on_apple_silicon_is_metals_share_of_ram() -> None:
     sys = FakeSystem()
-    assert detect.gpu_memory_gb(_info("apple", 16.0), sys) == pytest.approx(16 * 2 / 3)
-    assert detect.gpu_memory_gb(_info("apple", 36.0), sys) == pytest.approx(27.0)
-    assert detect.gpu_memory_gb(_info("apple", 128.0), sys) == pytest.approx(96.0)
+    assert detect.gpu_memory_gb(_info("apple", 16.0), sys=sys) == pytest.approx(16 * 2 / 3)
+    assert detect.gpu_memory_gb(_info("apple", 36.0), sys=sys) == pytest.approx(27.0)
+    assert detect.gpu_memory_gb(_info("apple", 128.0), sys=sys) == pytest.approx(96.0)
     assert sys.ran == []  # no subprocess on Apple Silicon
 
 
 def test_gpu_memory_without_a_gpu_is_zero() -> None:
     sys = FakeSystem()
-    assert detect.gpu_memory_gb(_info("none", 16.0), sys) == 0.0
+    assert detect.gpu_memory_gb(_info("none", 16.0), sys=sys) == 0.0
     assert sys.ran == []  # no subprocess without a GPU
 
 
 def test_docker_memory_reads_what_the_engine_container_can_use_in_gib() -> None:
     """Docker Desktop runs containers in a VM with its own, smaller memory."""
     sys = FakeSystem(stdout={"docker info": "8320299008\n"})
-    assert detect.docker_memory_gb(sys) == pytest.approx(7.749, abs=0.001)
+    assert detect.docker_memory_gb(sys=sys) == pytest.approx(7.749, abs=0.001)
     assert sys.ran == [_DOCKER_INFO]
     assert sys.ran_kwargs == [_PROBE_KWARGS]
 
@@ -228,8 +228,8 @@ def test_docker_memory_reads_what_the_engine_container_can_use_in_gib() -> None:
 def test_docker_memory_is_zero_when_docker_fails_or_babbles() -> None:
     """Zero means unknown: callers fall back to the machine's own RAM."""
     hung = HungSystem()
-    assert detect.docker_memory_gb(hung) == 0.0
+    assert detect.docker_memory_gb(sys=hung) == 0.0
     assert hung.ran == [_DOCKER_INFO]
     babble = FakeSystem(stdout={"docker info": "Cannot connect to the Docker daemon"})
-    assert detect.docker_memory_gb(babble) == 0.0
-    assert detect.docker_memory_gb(FakeSystem(stdout={"docker info": ""})) == 0.0
+    assert detect.docker_memory_gb(sys=babble) == 0.0
+    assert detect.docker_memory_gb(sys=FakeSystem(stdout={"docker info": ""})) == 0.0

@@ -419,10 +419,14 @@ def test_update_on_macos_asks_brew_before_upgrading(restarts: list[str]) -> None
     _update(_info("macos"), run, running="0.34.0")
     assert ["brew", "upgrade", "ollama"] not in run.argvs()
 
-    run = Seq({"brew outdated": "ollama\n", "ollama --version": _version("0.34.0")})
+    # Homebrew exits 1 when a formula named on the command line is outdated.
+    run = Seq({"brew outdated": (1, "ollama\n"), "ollama --version": _version("0.34.0")})
     _update(_info("macos"), run, running="0.34.0")
     upgrades = [kw for c, kw in run.calls if c == ["brew", "upgrade", "ollama"]]
     assert upgrades == [{"check": True}]
+    # That answer is expected, so `run_logged` records no failure for it.
+    asked = [kw for c, kw in run.calls if c[:2] == ["brew", "outdated"]]
+    assert asked and all(1 in kw["ok"] for kw in asked)
 
 
 def test_update_on_macos_without_brew_leaves_the_app_to_update_itself(

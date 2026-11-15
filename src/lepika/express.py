@@ -1076,9 +1076,10 @@ def upgrade_ollama(
         # No Homebrew means the Ollama.app installer, which updates itself.
         if which("brew") is None:
             return
-        # Asked first, so the upgrade itself can be checked: `outdated` exits 0
-        # either way and names the formula only when there is something to do.
-        outdated = run(["brew", "outdated", "--quiet", "ollama"], check=False, log=False)
+        # Asked first, so the upgrade itself can be checked. `outdated` names the
+        # formula only when there is something to do — and then exits 1, as it does
+        # for any outdated formula named on its command line: an answer, not a failure.
+        outdated = run(["brew", "outdated", "--quiet", "ollama"], check=False, log=False, ok=(0, 1))
         if "ollama" in str(outdated.stdout or "").split():
             run(["brew", "upgrade", "ollama"], check=True)
     elif info.os == "linux":

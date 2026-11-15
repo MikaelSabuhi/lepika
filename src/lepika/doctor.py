@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import functools
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from lepika import config, health, proc, server
+from lepika import config, health, proc, server, system
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 
 # Advisory, not a hard failure: `cli.doctor` matches on this name, not a literal.
 RAM_CHECK = "RAM"
+
+# The default probes, bound once at import as the bare functions used to be: a test
+# that patches `health.api_up` or `health.webui_up` does not reach a default.
+_REAL_API_UP = functools.partial(health.api_up, sys=system.REAL)
+_REAL_WEBUI_UP = functools.partial(health.webui_up, sys=system.REAL)
 
 
 @dataclass(frozen=True)
@@ -43,9 +49,9 @@ def _answers(run: Callable[..., Any], cmd: list[str]) -> bool:
 def run_checks(
     info: SystemInfo,
     which: Callable[[str], str | None] = shutil.which,
-    api_up: Callable[..., bool] = health.api_up,
+    api_up: Callable[..., bool] = _REAL_API_UP,
     vllm_up: Callable[..., bool] | None = None,
-    webui_up: Callable[..., bool] = health.webui_up,
+    webui_up: Callable[..., bool] = _REAL_WEBUI_UP,
     run: Callable[..., Any] = proc.run_logged,
 ) -> list[CheckResult]:
     vllm_probe = vllm_up if vllm_up is not None else server._real_vllm_up

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -39,7 +40,7 @@ def start_stack(
         ollama.ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length)
     else:
         # Someone else runs this engine: never install or start anything for it.
-        health.check_remote_engine(cfg, api_up=health.api_up)
+        health.check_remote_engine(cfg, sys=system.REAL)
     # Logged once the engine is really up, like Server: a pre-flight that refused
     # started no stack, and a `stack.up` above its own failure line reads as one that did.
     log.get_logger().info("stack.up", mode="express", engine_managed=cfg.engine_managed)
@@ -96,7 +97,9 @@ def update(
             which=which_fn,
             call=call if call is not None else proc.call,
             popen=popen_fn,
-            api_up=api_up if api_up is not None else health.api_up,
+            api_up=(
+                api_up if api_up is not None else functools.partial(health.api_up, sys=system.REAL)
+            ),
             sleep=sleep_fn,
             kill=kill_fn,
             running_version=running_version,
@@ -249,7 +252,10 @@ def _update_ollama(
         if start:
             ollama.start_ollama(info.os, popen=popen, context_length=cfg.context_length)
             health.wait_for(
-                lambda: api_up(cfg.engine_url, key=cfg.engine_key), 30, "Ollama API", sleep=sleep
+                lambda: api_up(cfg.engine_url, key=cfg.engine_key),
+                30,
+                "Ollama API",
+                sys=system.overlay(system.REAL, sleep=sleep),
             )
     serving = running()
     if serving and after and serving != after:

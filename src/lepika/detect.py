@@ -120,7 +120,7 @@ def detect(*, sys: System) -> SystemInfo:
         ram_gb=detect_ram_gb(sys=sys),
         has_docker=sys.which("docker") is not None,
         has_ollama=sys.which("ollama") is not None,
-        ollama_running=health.api_up(config.DEFAULT_ENGINE_URL, urlopen=sys.open_url),
+        ollama_running=health.api_up(config.DEFAULT_ENGINE_URL, sys=sys),
     )
 
 

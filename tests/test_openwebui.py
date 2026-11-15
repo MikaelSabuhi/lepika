@@ -9,12 +9,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import Runner
+from fakes import FakeResponse, FakeSystem, Runner, routes
 
-from lepika import express, health, log, ollama, openwebui, paths, ports
+from lepika import express, health, log, ollama, openwebui, paths, ports, system
 from lepika.config import Config
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
+
+# What `health.webui_up` asks of the default port.
+_HEALTH = "http://127.0.0.1:3000/health"
 
 
 class FakeProc:
@@ -610,42 +613,45 @@ def test_port_free_sees_a_listener_bound_to_the_wildcard_address() -> None:
         holder.bind(("0.0.0.0", 0))
         holder.listen(1)
         port = int(holder.getsockname()[1])
-        assert ports.port_free(port, sleep=lambda s: None) is False
+        # The real bind probe, on a fake clock: what is tested is that the
+        # wildcard address is asked, which only a real listener can answer.
+        sys = FakeSystem(bindable=system.REAL.can_bind)
+        assert ports.port_free(port, sys=sys) is False
+        assert ("0.0.0.0", port) in sys.bind_probes
 
 
 @pytest.mark.parametrize("busy", ["0.0.0.0", "127.0.0.1"])
 def test_bind_once_calls_a_port_busy_when_either_address_is_taken(busy: str) -> None:
-    def bind(address: str, port: int) -> bool:
-        return address != busy
-
-    assert ports._bind_once(3000, bind_address=bind) is False
+    sys = FakeSystem(bindable=lambda address, port: address != busy)
+    assert ports._bind_once(3000, sys=sys) is False
 
 
 def test_bind_once_probes_both_addresses_before_calling_a_port_free() -> None:
-    probed: list[str] = []
-
-    def bind(address: str, port: int) -> bool:
-        probed.append(address)
-        return True
-
-    assert ports._bind_once(3000, bind_address=bind) is True
-    assert probed == ["0.0.0.0", "127.0.0.1"]
+    sys = FakeSystem(bindable=True)
+    assert ports._bind_once(3000, sys=sys) is True
+    assert [address for address, _ in sys.bind_probes] == ["0.0.0.0", "127.0.0.1"]
 
 
 def test_port_free_retries_before_calling_a_port_busy() -> None:
     """A port we just stopped serving can need a moment to be released."""
+    # Each attempt probes both addresses while the port is free; the first two
+    # attempts are refused on the first address, the third succeeds on both.
     attempts = {"n": 0}
 
-    def bind(port: int) -> bool:
-        attempts["n"] += 1
-        return attempts["n"] >= 3
+    def bind(address: str, port: int) -> bool:
+        if address == "0.0.0.0":
+            attempts["n"] += 1
+            return attempts["n"] >= 3
+        return True
 
-    assert ports.port_free(3000, bind=bind, sleep=lambda s: None) is True
+    sys = FakeSystem(bindable=bind)
+    assert ports.port_free(3000, sys=sys) is True
     assert attempts["n"] == 3
+    assert sys.slept == [0.5, 0.5]
 
 
 def test_port_free_gives_up_on_a_genuinely_busy_port() -> None:
-    assert ports.port_free(3000, bind=lambda port: False, sleep=lambda s: None) is False
+    assert ports.port_free(3000, sys=FakeSystem(bindable=False)) is False
 
 
 def test_ensure_openwebui_rejects_a_port_another_app_holds(isolated_home: Path) -> None:
@@ -721,21 +727,15 @@ def test_webui_url_uses_localhost() -> None:
 
 
 def test_webui_up_is_false_when_health_check_fails() -> None:
-    def boom(*args: Any, **kwargs: Any) -> Any:
-        raise OSError("connection refused")
-
-    assert health.webui_up(3000, urlopen=boom) is False
+    sys = FakeSystem(urls=routes({_HEALTH: OSError("connection refused")}))
+    assert health.webui_up(3000, sys=sys) is False
 
 
 def test_webui_up_is_true_when_health_check_succeeds() -> None:
-    seen: list[str] = []
-
-    def ok(url: str, **kwargs: Any) -> Any:
-        seen.append(url)
-        return object()
-
-    assert health.webui_up(3000, urlopen=ok) is True
-    assert seen == ["http://127.0.0.1:3000/health"]
+    sys = FakeSystem(urls=routes({_HEALTH: FakeResponse()}))
+    assert health.webui_up(3000, sys=sys) is True
+    assert [r.full_url for r in sys.requested] == ["http://127.0.0.1:3000/health"]
+    assert sys.request_timeouts == [1.0]
 
 
 def test_start_openwebui_binds_to_localhost_only(isolated_home: Path) -> None:
@@ -757,5 +757,5 @@ def test_wait_until_down_hint_does_not_name_a_single_caller() -> None:
 def test_wait_for_hint_points_at_lepika_logs() -> None:
     """A raw ~/.lepika/logs path is the wrong place in Server mode; `lepika logs` is not."""
     with pytest.raises(FriendlyError) as exc:
-        health.wait_for(lambda: False, seconds=1, what="OpenWebUI", sleep=lambda s: None)
+        health.wait_for(lambda: False, seconds=1, what="OpenWebUI", sys=FakeSystem())
     assert exc.value.fix == "Run `lepika logs` to see why, then `lepika doctor`."

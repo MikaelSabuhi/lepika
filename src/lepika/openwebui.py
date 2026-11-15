@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -14,7 +15,7 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
-from lepika import fsio, health, ports, proc
+from lepika import fsio, health, ports, proc, system
 from lepika.config import Config, config_path
 from lepika.errors import FriendlyError
 from lepika.paths import logs_dir, openwebui_data_dir, pid_file
@@ -23,6 +24,7 @@ from lepika.system import _detach_kwargs
 RunFn = Callable[..., Any]
 PopenFn = Callable[..., Any]
 SleepFn = Callable[[float], None]
+_REAL_WEBUI_UP = functools.partial(health.webui_up, sys=system.REAL)
 
 # The interpreter OpenWebUI is installed on AND run on — both, or `uv tool run`
 # builds an ephemeral environment on the system Python instead of reusing the
@@ -197,7 +199,7 @@ def _stop_recorded_openwebui(
         pf.unlink(missing_ok=True)
         return False
     if port is not None:
-        up_fn = up if up is not None else health.webui_up
+        up_fn = up if up is not None else functools.partial(health.webui_up, sys=system.REAL)
         if not up_fn(port) and not _is_webui_process(pid, os_name, run):
             # Nothing answers on our port and no process by that pid names an
             # open-webui, so the recorded pid is not our UI — after a reboot the OS
@@ -256,7 +258,7 @@ def ensure_openwebui(
     cfg: Config,
     run: RunFn = proc.run_logged,
     popen: PopenFn = subprocess.Popen,
-    up: Callable[..., bool] = health.webui_up,
+    up: Callable[..., bool] = _REAL_WEBUI_UP,
     sleep: SleepFn = time.sleep,
     bind_check: Callable[[int], bool] | None = None,
 ) -> None:
@@ -267,7 +269,11 @@ def ensure_openwebui(
     # The port is not answering /health, but something else may still own it.
     # Caught here it is one clear sentence; caught later it is a 180s wait that
     # ends in "OpenWebUI did not become ready".
-    free = bind_check if bind_check is not None else ports.port_free
+    free = (
+        bind_check
+        if bind_check is not None
+        else functools.partial(ports.port_free, sys=system.REAL)
+    )
     if not free(cfg.webui_port):
         raise FriendlyError(
             f"Port {cfg.webui_port} is in use by another application.",
@@ -275,7 +281,9 @@ def ensure_openwebui(
         )
     install_openwebui(run=run)
     start_openwebui(cfg.webui_port, cfg.engine_url, popen=popen, engine_key=cfg.engine_key)
-    health.wait_for(lambda: up(cfg.webui_port), 180, "OpenWebUI", sleep=sleep)
+    health.wait_for(
+        lambda: up(cfg.webui_port), 180, "OpenWebUI", sys=system.overlay(system.REAL, sleep=sleep)
+    )
 
 
 def wait_until_down(
@@ -315,7 +323,7 @@ def restart_openwebui(
     bind_check: Callable[[int], bool] | None = None,
 ) -> None:
     """Stop OpenWebUI, wait for it to really be gone, then start it again."""
-    up_fn = up if up is not None else health.webui_up
+    up_fn = up if up is not None else functools.partial(health.webui_up, sys=system.REAL)
     stop_openwebui(os_name, run=run, kill=kill, port=cfg.webui_port, up=up_fn)
     wait_until_down(cfg.webui_port, up=up_fn, sleep=sleep)
     ensure_openwebui(cfg, run=run, popen=popen, up=up_fn, sleep=sleep, bind_check=bind_check)

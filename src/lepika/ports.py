@@ -2,12 +2,7 @@
 
 from __future__ import annotations
 
-import time
-from collections.abc import Callable
-
-from lepika.system import _bind_address
-
-SleepFn = Callable[[float], None]
+from lepika.system import System
 
 # A server can hold a port on the wildcard address or on loopback alone, and on
 # macOS a loopback bind succeeds straight over an existing 0.0.0.0 listener. Both
@@ -17,21 +12,13 @@ SleepFn = Callable[[float], None]
 _PROBE_ADDRESSES = ("0.0.0.0", "127.0.0.1")  # nosec B104
 
 
-def _bind_once(
-    port: int,
-    bind_address: Callable[[str, int], bool] = _bind_address,
-) -> bool:
+def _bind_once(port: int, *, sys: System) -> bool:
     """Is `port` bindable on every address a server might already be holding?"""
     # all() short-circuits: one taken address is enough to call the port busy.
-    return all(bind_address(address, port) for address in _PROBE_ADDRESSES)
+    return all(sys.can_bind(address, port) for address in _PROBE_ADDRESSES)
 
 
-def port_free(
-    port: int,
-    bind: Callable[[int], bool] = _bind_once,
-    sleep: SleepFn = time.sleep,
-    attempts: int = 3,
-) -> bool:
+def port_free(port: int, attempts: int = 3, *, sys: System) -> bool:
     """Can a server bind this port, or is another application already on it?
 
     Retried, because `lepika update` asks this moments after stopping the server
@@ -40,8 +27,8 @@ def port_free(
     the first try, so only the failing case pays for the wait.
     """
     for attempt in range(attempts):
-        if bind(port):
+        if _bind_once(port, sys=sys):
             return True
         if attempt < attempts - 1:
-            sleep(0.5)
+            sys.sleep(0.5)
     return False

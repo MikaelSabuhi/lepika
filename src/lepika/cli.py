@@ -145,9 +145,9 @@ def status() -> None:
     engine_ok = (
         health.vllm_up(server.VLLM_URL, sys=system.REAL)
         if vllm
-        else health.api_up(cfg.engine_url, key=cfg.engine_key)
+        else health.api_up(cfg.engine_url, key=cfg.engine_key, sys=system.REAL)
     )
-    webui_ok = health.webui_up(cfg.webui_port)
+    webui_ok = health.webui_up(cfg.webui_port, sys=system.REAL)
     table.add_row(
         "Engine (vLLM)" if vllm else "Engine",
         "[green]up[/green]" if engine_ok else "[red]down[/red]",
@@ -230,7 +230,7 @@ def _apply_engine_change(cfg: config.Config) -> bool:
         # recreates whatever the new engine URL changed, so it needs no probe.
         server.start_stack(detect.detect(sys=system.REAL), cfg)
         return True
-    if not health.webui_up(cfg.webui_port):
+    if not health.webui_up(cfg.webui_port, sys=system.REAL):
         return False
     openwebui.restart_openwebui(cfg, detect.detect(sys=system.REAL).os)
     return True
@@ -270,7 +270,7 @@ def connect(
             f"This machine is exposed, and the proxy can't relay a keyed engine at {url}.",
             "Run `lepika expose --off` first, then connect again — or connect without --key.",
         )
-    if not health.api_up(url, key=key):
+    if not health.api_up(url, key=key, sys=system.REAL):
         raise FriendlyError(
             f"No engine answered at {url}.",
             "Check the address and that `lepika expose` is on over there "
@@ -465,7 +465,7 @@ def model_add(
         ollama.ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length)
     else:
         # A remote engine is someone else's to run: check it, never install for it.
-        health.check_remote_engine(cfg, api_up=health.api_up)
+        health.check_remote_engine(cfg, sys=system.REAL)
     served = acquire.acquire(info, cfg, model_ref, quant=quant)
     if served is None:
         console.print("Nothing added.")

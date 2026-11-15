@@ -28,7 +28,7 @@ def test_the_guard_also_catches_a_keyword_url() -> None:
 def test_the_guard_is_not_swallowed_by_except_exception() -> None:
     # webui_up catches Exception and returns False; the guard must still fail the test.
     with pytest.raises(RealNetworkCall):
-        health.webui_up(3000)
+        health.webui_up(3000, sys=system.REAL)
 
 
 def test_dockers_memory_is_never_asked_of_the_real_docker(monkeypatch: pytest.MonkeyPatch) -> None:

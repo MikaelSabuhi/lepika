@@ -2,33 +2,22 @@
 
 from __future__ import annotations
 
-import time
 import urllib.request
 from collections.abc import Callable
-from typing import Any
 
 from lepika.config import Config
 from lepika.errors import FriendlyError
 from lepika.system import System
 
-UrlOpenFn = Callable[..., Any]
-SleepFn = Callable[[float], None]
-
 _HEALTH_TIMEOUT = 1.0
 
 
-def api_up(
-    url: str,
-    timeout: float = 1.0,
-    urlopen: UrlOpenFn | None = None,
-    key: str = "",
-) -> bool:
-    opener: UrlOpenFn = urlopen if urlopen is not None else urllib.request.urlopen
+def api_up(url: str, timeout: float = 1.0, key: str = "", *, sys: System) -> bool:
     request = urllib.request.Request(f"{url}/api/version")
     if key:
         request.add_header("Authorization", f"Bearer {key}")
     try:
-        opener(request, timeout=timeout)
+        sys.open_url(request, timeout=timeout)
     except Exception:
         return False
     return True
@@ -43,16 +32,11 @@ def vllm_up(url: str, *, sys: System) -> bool:
     return True
 
 
-def wait_for(
-    predicate: Callable[[], bool],
-    seconds: int,
-    what: str,
-    sleep: SleepFn = time.sleep,
-) -> None:
+def wait_for(predicate: Callable[[], bool], seconds: int, what: str, *, sys: System) -> None:
     for _ in range(seconds):
         if predicate():
             return
-        sleep(1)
+        sys.sleep(1)
     raise FriendlyError(
         f"{what} did not become ready within {seconds}s.",
         # `lepika logs`, not a raw path: in Server mode the cause is in the
@@ -65,21 +49,25 @@ def webui_url(port: int) -> str:
     return f"http://localhost:{port}"
 
 
-def webui_up(port: int, urlopen: Callable[..., Any] | None = None) -> bool:
-    opener: Callable[..., Any] = urlopen if urlopen is not None else urllib.request.urlopen
+def webui_up(port: int, *, sys: System) -> bool:
     try:
-        opener(f"http://127.0.0.1:{port}/health", timeout=1.0)
+        sys.open_url(urllib.request.Request(f"http://127.0.0.1:{port}/health"), timeout=1.0)
     except Exception:
         return False
     return True
 
 
-def check_remote_engine(cfg: Config, api_up: Callable[..., bool] = api_up) -> None:
-    """Confirm an engine we do not manage is answering — the only thing we may do to it."""
-    if api_up(cfg.engine_url, key=cfg.engine_key):
-        return
-    raise FriendlyError(
+def engine_unreachable(cfg: Config) -> FriendlyError:
+    """What a remote engine that does not answer is, wherever that was found out."""
+    return FriendlyError(
         f"The engine at {cfg.engine_url} is not answering.",
         "Make sure that machine is up (and `lepika expose` is on there), or run "
         "`lepika connect --local` to go back to a local engine.",
     )
+
+
+def check_remote_engine(cfg: Config, *, sys: System) -> None:
+    """Confirm an engine we do not manage is answering — the only thing we may do to it."""
+    if api_up(cfg.engine_url, key=cfg.engine_key, sys=sys):
+        return
+    raise engine_unreachable(cfg)

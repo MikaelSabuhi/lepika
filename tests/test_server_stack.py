@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fakes import Caller, Runner
 
 from lepika import config, detect, log, paths, server
+from lepika.backend import UpdateStep
 from lepika.errors import FriendlyError
 
 LINUX_NVIDIA = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
@@ -202,6 +205,41 @@ def test_update_pulls_then_starts(isolated_home: Path, monkeypatch: pytest.Monke
     )
     assert any(c[-1] == "pull" for c in call.calls)
     assert started == ["up"]
+
+
+class _ImageIds(Runner):
+    """`docker image inspect` answers `before` until the pull has run, then `after`."""
+
+    def __init__(self, before: str, after: str) -> None:
+        super().__init__({"docker info": "{}", "docker compose": "ollama/ollama:latest\n"})
+        self.ids = [before, after]
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] != ["docker", "image", "inspect"]:
+            return super().__call__(cmd, **kwargs)
+        self.calls.append(list(cmd))
+        assert kwargs == {"check": False, "log": False}
+        return subprocess.CompletedProcess(cmd, 0, stdout=self.ids.pop(0), stderr="")
+
+
+def test_server_update_reports_current_when_image_ids_are_unchanged(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
+    run = _ImageIds("sha256:aaa\n", "sha256:aaa\n")
+    steps = server.update(LINUX_NVIDIA, config.Config(mode="server"), run=run, call=Caller())
+    assert steps == [UpdateStep("Container images", "current")]
+    inspect = next(c for c in run.calls if c[:3] == ["docker", "image", "inspect"])
+    assert inspect[-1] == "ollama/ollama:latest"
+
+
+def test_server_update_reports_upgraded_when_they_change(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
+    run = _ImageIds("sha256:aaa\n", "sha256:bbb\n")
+    steps = server.update(LINUX_NVIDIA, config.Config(mode="server"), run=run, call=Caller())
+    assert steps == [UpdateStep("Container images", "upgraded")]
 
 
 def test_gpu_note_only_when_docker_cannot_see_the_gpu() -> None:

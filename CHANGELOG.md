@@ -23,6 +23,11 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   traceback goes to `lepika.log`). The mode question also accepts `express` or
   `server` by name. `install.sh` starts the wizard only when there is a terminal
   to run it in.
+- `lepika update` no longer stops a systemd `ollama.service` you ran before LePika:
+  the unit is left as it was found. It restarts the Ollama LePika started so the new
+  version actually runs, says when an engine it did not start still runs the old
+  one, fails loudly when an upgrade fails, and reports what changed instead of
+  "Everything is up to date".
 
 ## [0.2.0] - 2026-11-10
 

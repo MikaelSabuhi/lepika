@@ -7,8 +7,10 @@ import pytest
 from typer.testing import CliRunner
 
 from lepika import cli, detect, express, proc
+from lepika.backend import UpdateStep
 
 runner = CliRunner()
+LINUX = detect.SystemInfo("linux", "x86_64", "nvidia", 32.0, False, True, True)
 
 
 def test_update_upgrades_engine_and_webui(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -30,7 +32,8 @@ def test_update_upgrades_engine_and_webui(monkeypatch: pytest.MonkeyPatch) -> No
     )
     monkeypatch.setattr(detect, "detect", lambda **k: info)
     monkeypatch.setattr(proc, "run_logged", fake_run)
-    monkeypatch.setattr(express, "install_ollama", lambda i, **k: installed.append(i))
+    monkeypatch.setattr(express, "upgrade_ollama", lambda i, **k: installed.append(i))
+    monkeypatch.setattr(detect, "api_up", lambda url, **k: False)
     monkeypatch.setattr(express, "webui_up", lambda port, **k: False)
     monkeypatch.setattr(express, "stop_openwebui", lambda os_name, **k: True)
     monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: None)
@@ -38,7 +41,7 @@ def test_update_upgrades_engine_and_webui(monkeypatch: pytest.MonkeyPatch) -> No
     result = runner.invoke(cli.app, ["update"])
     assert result.exit_code == 0
     # The install script must stream (it may prompt for sudo), so it goes through
-    # express.install_ollama — never through captured run_logged.
+    # express.upgrade_ollama — never through captured run_logged.
     assert installed == [info]
     assert not any("ollama.com/install.sh" in " ".join(c) for c in calls)
     # The pin travels with every `uv tool` call: an upgrade that resolved a
@@ -62,8 +65,11 @@ def test_update_restarts_openwebui_rather_than_probing_the_dying_one(
     )
     restarts: list[tuple[int, str]] = []
     monkeypatch.setattr(detect, "detect", lambda **k: info)
-    monkeypatch.setattr(proc, "run_logged", lambda cmd, **k: None)
-    monkeypatch.setattr(express, "install_ollama", lambda i, **k: None)
+    monkeypatch.setattr(
+        proc, "run_logged", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "", "")
+    )
+    monkeypatch.setattr(express, "upgrade_ollama", lambda i, **k: None)
+    monkeypatch.setattr(detect, "api_up", lambda url, **k: False)
     monkeypatch.setattr(
         express,
         "restart_openwebui",
@@ -76,6 +82,24 @@ def test_update_restarts_openwebui_rather_than_probing_the_dying_one(
     result = runner.invoke(cli.app, ["update"])
     assert result.exit_code == 0
     assert restarts == [(3000, "linux")]
+
+
+def test_update_prints_what_happened(monkeypatch: pytest.MonkeyPatch) -> None:
+    steps = [
+        UpdateStep("Ollama", "upgraded", "0.33.2 → 0.34.0"),
+        UpdateStep("OpenWebUI", "current", "0.6.5"),
+        UpdateStep("Ollama", "stale", "running 0.33.2, installed 0.34.0 — restart Ollama"),
+        UpdateStep("Container images", "current"),
+    ]
+    monkeypatch.setattr(detect, "detect", lambda **k: LINUX)
+    monkeypatch.setattr(express, "update", lambda info, cfg, **k: steps)
+    result = runner.invoke(cli.app, ["update"])
+    assert result.exit_code == 0, result.output
+    assert "✓ Ollama: upgraded (0.33.2 → 0.34.0)" in result.output
+    assert "✓ OpenWebUI: up to date (0.6.5)" in result.output
+    assert "! Ollama: running 0.33.2, installed 0.34.0 — restart Ollama" in result.output
+    assert "✓ Container images: up to date\n" in result.output
+    assert "Everything is up to date" not in result.output
 
 
 def test_down_gates_the_signal_on_the_configured_port(monkeypatch: pytest.MonkeyPatch) -> None:

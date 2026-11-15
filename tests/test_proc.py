@@ -153,3 +153,26 @@ def test_stream_missing_binary_is_friendly() -> None:
     with pytest.raises(FriendlyError) as exc:
         proc.stream(["hf", "download"], popen=gone, sink=io.BytesIO())
     assert "hf" in exc.value.problem
+
+
+def test_an_expected_exit_code_is_not_logged_as_a_failure(isolated_home: Path) -> None:
+    """A code the caller named is an answer (`systemctl is-active` → 3), not a failure."""
+    exit_3 = [sys.executable, "-c", "raise SystemExit(3)"]
+    proc.run_logged(exit_3, check=False, log=False, ok=(0, 3))
+    log_file = paths.logs_dir() / "lepika.log"
+    assert not log_file.exists() or log_file.read_text() == ""
+    proc.run_logged(exit_3, check=False, ok=(0, 3))
+    entry = json.loads(log_file.read_text().splitlines()[-1])
+    assert entry["exit"] == 3
+    assert entry["level"] == "info"
+    assert "output" not in entry
+
+
+def test_an_expected_exit_code_passes_check(isolated_home: Path) -> None:
+    result = proc.run_logged([sys.executable, "-c", "raise SystemExit(3)"], ok=(0, 3))
+    assert result.returncode == 3
+
+
+def test_an_unexpected_exit_code_still_fails_check(isolated_home: Path) -> None:
+    with pytest.raises(FriendlyError):
+        proc.run_logged([sys.executable, "-c", "raise SystemExit(2)"], ok=(0, 3))

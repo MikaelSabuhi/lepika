@@ -23,7 +23,7 @@ def server_mode(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> list[st
         lambda info, cfg, **k: calls.append("start") or "http://localhost:3000",
     )
     monkeypatch.setattr(server, "stop", lambda info, cfg, **k: calls.append("stop") or True)
-    monkeypatch.setattr(server, "update", lambda info, cfg, **k: calls.append("update"))
+    monkeypatch.setattr(server, "update", lambda info, cfg, **k: calls.append("update") or [])
     monkeypatch.setattr(server, "logs", lambda lines, **k: [("docker compose", "ollama-1 | ready")])
     monkeypatch.setattr(server, "gpu_note", lambda info, **k: None)
     for name in ("start_stack", "stop", "update", "logs"):

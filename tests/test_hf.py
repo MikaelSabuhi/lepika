@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+import urllib.error
+import urllib.request
+from email.message import Message
 from pathlib import Path
 from typing import Any
 
@@ -209,38 +212,127 @@ def test_preflight_sees_a_gguf_only_repo() -> None:
     assert pre.has_safetensors is False
 
 
-@pytest.mark.parametrize(
-    ("output", "exc_type", "needle"),
-    [
-        ("401 Client Error: Unauthorized", hf.GatedRepo, "gated"),
-        ("403 Forbidden: gated repo", hf.GatedRepo, "gated"),
-        ("404 Client Error: Repository Not Found", FriendlyError, "not on Hugging Face"),
-        ("ConnectionError: boom", FriendlyError, "Could not list"),
-    ],
-)
-def test_preflight_failures_are_friendly(output: str, exc_type: type, needle: str) -> None:
-    run = Runner(stdout={"uv": output}, code=1)
-    with pytest.raises(exc_type) as exc:
-        hf.preflight("org/repo", run=run, environ={})
-    assert needle in exc.value.problem
+# What `huggingface_hub` 2.4.0 prints for a gated repo: no status code, no "gated".
+GATED_CLI_OUTPUT = "Error: Access denied. Model 'meta-llama/Llama-3.2-1B' requires approval."
 
 
-def test_preflight_reads_the_hubs_real_mistyped_repo_message_as_not_found() -> None:
-    """The Hub answers a typo with a 401 that also says "gated": it is still a typo.
+class _HubAnswer:
+    def __init__(self, body: bytes, status: int = 200) -> None:
+        self._body = body
+        self.status = status
 
-    `RepositoryNotFoundError` carries 401, "gated" and "not found" at once, so a
-    gated-first order would tell everyone who mistyped a name to accept a licence.
-    """
-    output = (
-        "401 Client Error. Repository Not Found for url: "
-        "https://huggingface.co/api/models/x/y. If you are trying to access a "
-        "private or gated repo, make sure you are authenticated."
+    def read(self) -> bytes:
+        return self._body
+
+
+class _Hub:
+    """Stands in for urlopen: one canned answer (a body, or an exception to raise)."""
+
+    def __init__(self, answer: Any = None, *, raises: BaseException | None = None) -> None:
+        self.answer = answer
+        self.raises = raises
+        self.seen: list[tuple[urllib.request.Request, float]] = []
+
+    def __call__(self, request: urllib.request.Request, timeout: float = 0) -> _HubAnswer:
+        self.seen.append((request, timeout))
+        if self.raises is not None:
+            raise self.raises
+        return _HubAnswer(json.dumps(self.answer).encode())
+
+
+def _http_error(code: int) -> urllib.error.HTTPError:
+    url = "https://huggingface.co/api/models/x/y"
+    return urllib.error.HTTPError(url, code, "error", Message(), None)
+
+
+def _failing_preflight(hub: _Hub, output: str = GATED_CLI_OUTPUT, token: str = "") -> None:
+    hf.preflight(
+        "meta-llama/Llama-3.2-1B",
+        token=token,
+        run=Runner(stdout={"uv": output}, code=1),
+        environ={},
+        urlopen=hub,
     )
+
+
+def test_a_gated_repo_is_recognised_whatever_the_cli_says() -> None:
+    hub = _Hub({"id": "meta-llama/Llama-3.2-1B", "gated": "manual"})
+    with pytest.raises(hf.GatedRepo) as exc:
+        _failing_preflight(hub)
+    assert "gated" in exc.value.problem
+    request, timeout = hub.seen[0]
+    assert request.full_url == "https://huggingface.co/api/models/meta-llama/Llama-3.2-1B"
+    assert timeout == 5
+
+
+def test_a_gated_repo_is_recognised_for_auto_approval() -> None:
+    with pytest.raises(hf.GatedRepo):
+        _failing_preflight(_Hub({"gated": "auto"}))
+
+
+@pytest.mark.parametrize("code", [401, 404])
+def test_a_missing_repo_is_not_found_on_401_and_404(code: int) -> None:
+    """The Hub answers a repo that does not exist with a 401 — still a typo, not a licence."""
     with pytest.raises(FriendlyError) as exc:
-        hf.preflight("x/y", run=Runner(stdout={"uv": output}, code=1), environ={})
+        _failing_preflight(_Hub(raises=_http_error(code)))
     assert not isinstance(exc.value, hf.GatedRepo)
     assert "not on Hugging Face" in exc.value.problem
     assert "HF_TOKEN" in exc.value.fix
+
+
+def test_a_forbidden_repo_is_gated() -> None:
+    with pytest.raises(hf.GatedRepo):
+        _failing_preflight(_Hub(raises=_http_error(403)))
+
+
+def test_a_public_repo_that_failed_to_list_is_a_generic_failure() -> None:
+    with pytest.raises(FriendlyError) as exc:
+        _failing_preflight(_Hub({"gated": False}), output="ConnectionError: boom")
+    assert not isinstance(exc.value, hf.GatedRepo)
+    assert "Could not list" in exc.value.problem
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [urllib.error.URLError("no network"), TimeoutError("timed out"), _http_error(500)],
+)
+def test_an_unreachable_hub_is_a_generic_failure(failure: BaseException) -> None:
+    with pytest.raises(FriendlyError) as exc:
+        _failing_preflight(_Hub(raises=failure))
+    assert not isinstance(exc.value, hf.GatedRepo)
+    assert "Could not list" in exc.value.problem
+
+
+def test_an_unreadable_hub_answer_is_a_generic_failure() -> None:
+    class Garbled(_Hub):
+        def __call__(self, request: urllib.request.Request, timeout: float = 0) -> _HubAnswer:
+            return _HubAnswer(b"<html>rate limited</html>")
+
+    with pytest.raises(FriendlyError) as exc:
+        _failing_preflight(Garbled())
+    assert "Could not list" in exc.value.problem
+
+
+def test_cli_wording_alone_never_classifies() -> None:
+    with pytest.raises(FriendlyError) as exc:
+        _failing_preflight(_Hub({"gated": False}), output="404 not found gated 401")
+    assert not isinstance(exc.value, hf.GatedRepo)
+    assert "Could not list" in exc.value.problem
+
+
+def test_the_token_travels_as_a_header_only() -> None:
+    hub = _Hub({"gated": "manual"})
+    with pytest.raises(hf.GatedRepo):
+        _failing_preflight(hub, token="hf_secret")
+    request, _timeout = hub.seen[0]
+    assert request.get_header("Authorization") == "Bearer hf_secret"
+    assert "hf_secret" not in request.full_url
+
+
+def test_a_successful_listing_never_asks_the_hub() -> None:
+    hub = _Hub(raises=AssertionError("the Hub was asked"))
+    hf.preflight("Qwen/Qwen3.5-2B", run=Runner(stdout={"uv": LISTING}), environ={}, urlopen=hub)
+    assert hub.seen == []
 
 
 MIXED_LISTING = json.dumps(

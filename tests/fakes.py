@@ -154,6 +154,8 @@ class FakeSystem:
     `bindable` answers every port probe alike, or, as a callable, per address and
     port. `writable` answers every `can_write` alike, or, as a callable, per path.
     `signal_errors` is raised, after recording, for a signal sent to that pid.
+    `route_address` and `host_addresses` are this machine's addresses, as unfiltered
+    as the real ones: by default it has no route and its hostname resolves to nothing.
     """
 
     def __init__(
@@ -176,7 +178,11 @@ class FakeSystem:
         raises: dict[str, BaseException] | None = None,
         while_streaming: Callable[[list[str], Path | None], None] | None = None,
         while_running: Callable[[list[str]], None] | None = None,
+        route_address: str | None = None,
+        host_addresses: Sequence[str] = (),
     ) -> None:
+        self.route = route_address
+        self.hosts = list(host_addresses)
         self.stdout = stdout or {}
         self._outputs_served: dict[str, int] = {}
         self.while_streaming = while_streaming
@@ -329,3 +335,9 @@ class FakeSystem:
 
     def ram_bytes(self) -> int | None:
         return self.memory
+
+    def route_address(self) -> str | None:
+        return self.route
+
+    def host_addresses(self) -> list[str]:
+        return list(self.hosts)

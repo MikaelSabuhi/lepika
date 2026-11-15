@@ -332,7 +332,7 @@ def expose(
         config.save(cfg)
         server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL)
         log.get_logger().info("expose.on", api_port=cfg.api_port)
-    ips = server.lan_ips()
+    ips = server.lan_ips(sys=system.REAL)
     # Nothing resolved at all (offline, or a locked-down host): say so in words
     # rather than print something that reads like an address.
     ip = ips[0] if ips else server.NO_ROUTE

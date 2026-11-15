@@ -5,10 +5,8 @@ from __future__ import annotations
 import importlib.resources
 import json
 import os
-import socket
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from rich.console import Console
@@ -63,26 +61,17 @@ def install_stack() -> Path:
     return target
 
 
-def lan_ip(connect: Callable[[socket.socket], None] | None = None) -> str:
-    """The address other machines reach us on. A UDP connect picks the route; nothing is sent."""
-    # 10.255.255.255 needs no DNS and no reachable host: connecting a datagram
-    # socket only makes the kernel choose the outbound interface.
-    connect_fn = connect if connect is not None else (lambda s: s.connect(("10.255.255.255", 1)))
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            connect_fn(sock)
-            return str(sock.getsockname()[0])
-    except OSError:
+def lan_ip(*, sys: System) -> str:
+    """The address other machines reach us on: the one the default route leaves from."""
+    route = sys.route_address()
+    if route is None:
         # No route at all (offline, or a locked-down host): say so in the connect
         # line rather than printing something that looks like an address.
         return NO_ROUTE
+    return route
 
 
-def lan_ips(
-    connect: Callable[[socket.socket], None] | None = None,
-    getaddrinfo: Callable[..., Any] = socket.getaddrinfo,
-    hostname: Callable[[], str] = socket.gethostname,
-) -> list[str]:
+def lan_ips(*, sys: System) -> list[str]:
     """Every address other machines could reach us on, the default route's pick first.
 
     One address is the usual answer, but a box on Wi-Fi and Ethernet (or behind a
@@ -91,16 +80,11 @@ def lan_ips(
     the next room can reach.
     """
     found: list[str] = []
-    route = lan_ip(connect=connect)
+    route = lan_ip(sys=sys)
     if route != NO_ROUTE:
         found.append(route)
-    try:
-        addresses = getaddrinfo(hostname(), None, socket.AF_INET)
-    except OSError:
-        # An unresolvable hostname is normal on a laptop; the route pick still stands.
-        addresses = []
-    for entry in addresses:
-        ip = str(entry[4][0])
+    # An unresolvable hostname is normal on a laptop; the route pick still stands.
+    for ip in sys.host_addresses():
         # Loopback and link-local are addresses nobody on the network dials.
         if ip.startswith(("127.", "169.254.")) or ip in found:
             continue

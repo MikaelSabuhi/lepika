@@ -176,6 +176,14 @@ class System(Protocol):
         """Physical memory in bytes, or None when the machine will not say."""
         ...
 
+    def route_address(self) -> str | None:
+        """The local address the default route leaves from, or None with no route at all."""
+        ...
+
+    def host_addresses(self) -> list[str]:
+        """Every IPv4 address this machine's hostname resolves to, unfiltered, in order."""
+        ...
+
 
 class RealSystem:
     """The machine itself. Each method delegates to the module that owns the effect,
@@ -256,6 +264,26 @@ class RealSystem:
         except (ValueError, OSError):
             return None
         return total if total > 0 else None
+
+    def route_address(self) -> str | None:
+        # A UDP connect picks the route; nothing is sent. 10.255.255.255 needs no
+        # DNS and no reachable host: connecting a datagram socket only makes the
+        # kernel choose the outbound interface.
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect(("10.255.255.255", 1))
+                return str(sock.getsockname()[0])
+        except OSError:
+            # No route at all: offline, or a locked-down host.
+            return None
+
+    def host_addresses(self) -> list[str]:
+        try:
+            addresses = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+        except OSError:
+            # An unresolvable hostname is normal on a laptop.
+            return []
+        return [str(entry[4][0]) for entry in addresses]
 
 
 REAL: System = RealSystem()

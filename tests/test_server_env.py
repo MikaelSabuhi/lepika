@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import os
-import socket
 import stat
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes import FakeSystem
 
 from lepika import config, detect, server, serving, stack_env
 
@@ -162,17 +162,14 @@ def test_api_key_keeps_the_rest_of_the_env(tmp_path: Path) -> None:
     assert stack_env.read_env(env)["OLLAMA_IMAGE"] == "ollama/ollama:0.11.4"
 
 
-def test_lan_ip_reports_the_address_the_socket_picked() -> None:
-    # Binding stands in for the real UDP connect: either way the answer is the
-    # local address the kernel chose, read back with getsockname.
-    assert server.lan_ip(connect=lambda sock: sock.bind(("127.0.0.1", 0))) == "127.0.0.1"
+def test_lan_ip_reports_the_address_the_route_picked() -> None:
+    assert server.lan_ip(sys=FakeSystem(route_address="192.168.1.20")) == "192.168.1.20"
+    # The route pick is not filtered: it is the address the kernel chose.
+    assert server.lan_ip(sys=FakeSystem(route_address="127.0.0.1")) == "127.0.0.1"
 
 
 def test_lan_ip_falls_back_to_a_placeholder() -> None:
-    def boom(sock: Any) -> None:
-        raise OSError("no route")
-
-    assert server.lan_ip(connect=boom) == "<this machine's IP>"
+    assert server.lan_ip(sys=FakeSystem(route_address=None)) == "<this machine's IP>"
 
 
 def test_write_env_round_trips_values_containing_quotes(tmp_path: Path) -> None:
@@ -223,69 +220,43 @@ def test_env_upstream_keeps_the_scheme_of_an_https_remote() -> None:
     )
 
 
-def _addresses(*ips: str) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-    """What `socket.getaddrinfo(host, None, AF_INET)` returns: the address is entry[4][0]."""
-    return [(socket.AF_INET, 0, 0, "", (ip, 0)) for ip in ips]
-
-
-def test_lan_ips_lists_every_address_route_pick_first(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The route pick cannot be faked through `connect`: only an address this machine
-    # really holds can be bound, and the answer is read back from the socket.
-    monkeypatch.setattr(server, "lan_ip", lambda **k: "192.168.1.20")
-    ips = server.lan_ips(
-        getaddrinfo=lambda *a, **k: _addresses(
-            "127.0.0.1", "169.254.1.9", "192.168.1.20", "10.0.0.5"
-        ),
-        hostname=lambda: "box",
+def test_lan_ips_lists_every_address_route_pick_first() -> None:
+    machine = FakeSystem(
+        route_address="192.168.1.20",
+        host_addresses=["127.0.0.1", "169.254.1.9", "192.168.1.20", "10.0.0.5"],
     )
     # The route pick leads; loopback and link-local are not addresses anyone dials,
     # and the pick must not repeat itself.
-    assert ips == ["192.168.1.20", "10.0.0.5"]
+    assert server.lan_ips(sys=machine) == ["192.168.1.20", "10.0.0.5"]
 
 
-def test_lan_ips_with_one_address_is_just_the_route_pick(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(server, "lan_ip", lambda **k: "192.168.1.20")
-    ips = server.lan_ips(
-        getaddrinfo=lambda *a, **k: _addresses("192.168.1.20"), hostname=lambda: "box"
-    )
-    assert ips == ["192.168.1.20"]
+def test_lan_ips_with_one_address_is_just_the_route_pick() -> None:
+    machine = FakeSystem(route_address="192.168.1.20", host_addresses=["192.168.1.20"])
+    assert server.lan_ips(sys=machine) == ["192.168.1.20"]
 
 
-def test_lan_ips_passes_the_route_probe_through(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The injected `connect` is the one `lan_ip` uses — nothing dials a real network."""
-    ips = server.lan_ips(
-        connect=lambda sock: sock.bind(("127.0.0.1", 0)),
-        getaddrinfo=lambda *a, **k: [],
-        hostname=lambda: "box",
-    )
-    assert ips == ["127.0.0.1"]
+def test_lan_ips_passes_the_route_probe_through() -> None:
+    """The route pick is the one `lan_ip` reads, kept even where the hostname finds nothing."""
+    machine = FakeSystem(route_address="127.0.0.1", host_addresses=[])
+    assert server.lan_ips(sys=machine) == ["127.0.0.1"]
 
 
-def test_lan_ips_survives_a_hostname_that_does_not_resolve(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_lan_ips_survives_a_hostname_that_does_not_resolve() -> None:
     """An unresolvable hostname is normal on a laptop; the route pick still stands."""
-
-    def boom(*a: Any, **k: Any) -> Any:
-        raise OSError("no such host")
-
-    monkeypatch.setattr(server, "lan_ip", lambda **k: "192.168.1.20")
-    ips = server.lan_ips(getaddrinfo=boom, hostname=lambda: "box")
-    assert ips == ["192.168.1.20"]
+    # `RealSystem.host_addresses` turns the resolver's OSError into no addresses.
+    machine = FakeSystem(route_address="192.168.1.20", host_addresses=[])
+    assert server.lan_ips(sys=machine) == ["192.168.1.20"]
 
 
 def test_lan_ips_drops_the_placeholder_when_there_is_no_route() -> None:
     """`lan_ip`'s "<this machine's IP>" is words, not an address: it is not a list entry."""
+    machine = FakeSystem(route_address=None, host_addresses=["192.168.1.20"])
+    assert server.lan_ips(sys=machine) == ["192.168.1.20"]
 
-    def no_route(sock: Any) -> None:
-        raise OSError("no route")
 
-    ips = server.lan_ips(
-        connect=no_route,
-        getaddrinfo=lambda *a, **k: _addresses("192.168.1.20"),
-        hostname=lambda: "box",
-    )
-    assert ips == ["192.168.1.20"]
+def test_lan_ips_keeps_the_order_and_drops_repeats_among_the_host_addresses() -> None:
+    machine = FakeSystem(host_addresses=["10.0.0.5", "192.168.1.20", "10.0.0.5"])
+    assert server.lan_ips(sys=machine) == ["10.0.0.5", "192.168.1.20"]
 
 
 def test_env_values_carry_the_context_length_to_the_engine_container() -> None:

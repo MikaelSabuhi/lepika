@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from lepika import paths, proc
-from lepika.errors import FriendlyError
+from lepika.errors import CommandNotFound, FriendlyError
 
 
 def test_run_logged_captures_output_and_appends_log(isolated_home: Path) -> None:
@@ -72,6 +72,7 @@ def test_run_logged_missing_executable_is_friendly(isolated_home: Path) -> None:
         proc.run_logged(["lepika-no-such-binary", "--help"])
     assert "lepika-no-such-binary" in exc.value.problem
     assert "lepika doctor" in exc.value.fix
+    assert isinstance(exc.value, CommandNotFound)
 
 
 def test_run_logged_timeout_is_friendly(isolated_home: Path) -> None:
@@ -102,6 +103,7 @@ def test_call_turns_a_missing_binary_into_a_friendly_error(isolated_home: Path) 
     assert exc.value.problem == "Command not found: lepika-no-such-binary"
     assert exc.value.fix == "Install lepika-no-such-binary or run `lepika doctor` for setup help."
     assert _log_entries()[-1]["outcome"] == "not found"
+    assert isinstance(exc.value, CommandNotFound)
 
 
 class FakePopen:
@@ -176,6 +178,7 @@ def test_stream_missing_binary_is_friendly() -> None:
     with pytest.raises(FriendlyError) as exc:
         proc.stream(["hf", "download"], popen=gone, sink=io.BytesIO())
     assert "hf" in exc.value.problem
+    assert isinstance(exc.value, CommandNotFound)
 
 
 def test_an_expected_exit_code_is_not_logged_as_a_failure(isolated_home: Path) -> None:

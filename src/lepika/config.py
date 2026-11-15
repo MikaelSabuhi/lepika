@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
-import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from lepika import fsio
 from lepika.errors import FriendlyError
 from lepika.paths import lepika_home
 
@@ -93,18 +93,8 @@ def _dump_toml(data: dict[str, object]) -> str:
 
 def save(cfg: Config) -> None:
     """Write atomically so an interrupted save can't leave a half-written config."""
-    path = config_path()
-    tmp = path.with_suffix(".toml.tmp")
-    # The file can hold an engine key, so it is private from the first byte: the
-    # mode is set when the file is created, not chmod'ed after the key is already
-    # on disk under the process umask. fchmod also tightens a stale tmp file left
-    # world-readable by an interrupted run, which O_TRUNC alone would keep.
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    if hasattr(os, "fchmod"):  # POSIX only; Windows ignores mode bits entirely
-        os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(_dump_toml(dataclasses.asdict(cfg)))
-    os.replace(tmp, path)
+    # Private, because the file can hold an engine key.
+    fsio.write_private(config_path(), _dump_toml(dataclasses.asdict(cfg)))
 
 
 _SECRET_KEYS = frozenset({"engine_key", "hf_token"})

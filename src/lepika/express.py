@@ -17,7 +17,7 @@ from itertools import pairwise
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from lepika import detect, log, proc
+from lepika import detect, fsio, log, proc
 from lepika.backend import UpdateStep
 from lepika.config import DEFAULT_CONTEXT_LENGTH, Config, config_path
 from lepika.detect import SystemInfo
@@ -442,17 +442,7 @@ def _webui_secret(data_dir: Path) -> str:
     if existing:
         return existing
     secret = secrets.token_urlsafe(32)
-    tmp = path.with_suffix(".tmp")
-    # Private from the first byte, exactly as `config.save` writes the API key:
-    # the mode is set when the file is created, not chmod'ed once the secret is
-    # already on disk, and fchmod also tightens a stale tmp file that an
-    # interrupted run left world-readable.
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    if hasattr(os, "fchmod"):  # POSIX only; Windows ignores mode bits entirely
-        os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(secret + "\n")
-    os.replace(tmp, path)
+    fsio.write_private(path, secret + "\n")
     return secret
 
 

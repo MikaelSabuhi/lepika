@@ -87,7 +87,7 @@ def test_validate_accepts_hf_repo_where_vllm_or_an_import_runs_and_rejects_elsew
 def test_profiles_and_env_switch_to_vllm() -> None:
     cfg = config.Config(mode="server", model=REPO)
     assert server.profiles(cfg) == ["vllm"]
-    values = server.env_values(cfg, LINUX_NVIDIA, existing={})
+    values = server.env_values(cfg, existing={}, environ={})
     assert values["VLLM_MODEL"] == REPO
     assert values["ENABLE_OPENAI_API"] == "true"
     assert values["OPENAI_API_BASE_URL"] == "http://vllm:8000/v1"

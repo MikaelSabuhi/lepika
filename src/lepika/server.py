@@ -6,14 +6,14 @@ import importlib.resources
 import json
 import os
 import socket
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from rich.console import Console
 
-from lepika import health, log, proc, prompts, serving, stack_env
+from lepika import health, log, prompts, serving, stack_env
 from lepika.backend import UpdateStep
 from lepika.config import Config
 from lepika.detect import SystemInfo
@@ -21,7 +21,6 @@ from lepika.errors import FriendlyError
 from lepika.paths import logs_dir, stack_dir
 from lepika.system import System
 
-RunFn = Callable[..., Any]
 AskFn = Callable[..., str]
 
 console = Console()
@@ -130,11 +129,11 @@ def _upstream(url: str) -> str:
     return f"https://{authority}" if parts.scheme == "https" else authority
 
 
-def env_values(cfg: Config, info: SystemInfo, existing: dict[str, str]) -> dict[str, str]:
+def env_values(cfg: Config, existing: dict[str, str], environ: Mapping[str, str]) -> dict[str, str]:
     """Every key compose.yml interpolates — managed ones from config, the rest preserved."""
     values = {k: existing.get(k, v) for k, v in PRESERVED_DEFAULTS.items()}
     # A token in the shell is the freshest one the user has; it wins over the file.
-    values["HF_TOKEN"] = os.environ.get("HF_TOKEN", values["HF_TOKEN"])
+    values["HF_TOKEN"] = environ.get("HF_TOKEN", values["HF_TOKEN"])
     engine_url = (
         "http://ollama:11434" if cfg.engine_managed else container_engine_url(cfg.engine_url)
     )
@@ -198,13 +197,13 @@ def hf_token_prompt(env_path: Path, ask: AskFn | None = None) -> None:
     stack_env.write_env(env_path, {"HF_TOKEN": token})
 
 
-def nvidia_in_docker(info: SystemInfo, run: RunFn = proc.run_logged) -> bool:
+def nvidia_in_docker(info: SystemInfo, *, sys: System) -> bool:
     """Can Docker hand the NVIDIA GPU to a container? (Linux: the toolkit registers a runtime.)"""
     if info.gpu != "nvidia":
         return False
     if info.os != "linux":
         return True  # Docker Desktop (WSL2) exposes the GPU without a named runtime
-    result = run(
+    result = sys.run(
         ["docker", "info", "--format", "{{json .Runtimes}}"], check=False, timeout=20, log=False
     )
     return bool(result.returncode == 0 and "nvidia" in result.stdout)
@@ -226,27 +225,27 @@ def compose_cmd(stack: Path, active: list[str], gpu_overlay: bool) -> list[str]:
     return cmd
 
 
-def ensure_docker(info: SystemInfo, run: RunFn = proc.run_logged, retry: str = "lepika up") -> None:
+def ensure_docker(info: SystemInfo, retry: str = "lepika up", *, sys: System) -> None:
     if not info.has_docker:
         raise FriendlyError(
             "Server mode needs Docker, which is not installed.",
             "Install it from https://docs.docker.com/get-docker/ — or use Express mode "
             "(no Docker): `lepika --mode express`.",
         )
-    if run(["docker", "info"], check=False, timeout=20, log=False).returncode != 0:
+    if sys.run(["docker", "info"], check=False, timeout=20, log=False).returncode != 0:
         raise FriendlyError(
             "Docker is installed but not running.",
             f"Start Docker Desktop (or `sudo systemctl start docker`) and run `{retry}` again.",
         )
 
 
-def _our_ollama(stack: Path, run: RunFn) -> bool:
+def _our_ollama(stack: Path, *, sys: System) -> bool:
     """Is the engine answering on 11434 our own container rather than a native Ollama?
 
     The stack publishes exactly `127.0.0.1:11434`, so every run after the first sees
     the port taken — by itself. Compose is the only thing that can tell them apart.
     """
-    result = run(
+    result = sys.run(
         [
             *compose_cmd(stack, ["engine"], gpu_overlay=False),
             "ps",
@@ -269,9 +268,9 @@ def _compose_failed(step: str) -> FriendlyError:
     )
 
 
-def gpu_note(info: SystemInfo, run: RunFn = proc.run_logged) -> str | None:
+def gpu_note(info: SystemInfo, *, sys: System) -> str | None:
     """One line when an NVIDIA GPU exists but Docker can't see it; None otherwise."""
-    if info.gpu == "nvidia" and info.os == "linux" and not nvidia_in_docker(info, run=run):
+    if info.gpu == "nvidia" and info.os == "linux" and not nvidia_in_docker(info, sys=sys):
         return (
             "NVIDIA GPU found, but Docker can't use it — running on CPU. Install the NVIDIA "
             f"Container Toolkit: {_TOOLKIT_URL}"
@@ -291,9 +290,9 @@ def start_stack(
     Always runs `compose up -d`: it is idempotent, takes about a second when nothing
     changed, and is what makes `connect`/`expose` edits take effect.
     """
-    ensure_docker(info, run=sys.run)
+    ensure_docker(info, sys=sys)
     stack = install_stack()
-    if cfg.engine_managed and info.ollama_running and not _our_ollama(stack, sys.run):
+    if cfg.engine_managed and info.ollama_running and not _our_ollama(stack, sys=sys):
         raise FriendlyError(
             "Ollama is already running natively on port 11434, so the Docker engine can't bind it.",
             "Stop it first: `brew services stop ollama` (macOS), `systemctl stop ollama` "
@@ -301,9 +300,9 @@ def start_stack(
             '`pkill -f "ollama serve"`.',
         )
     env_path = stack / stack_env.ENV_FILE
-    values = env_values(cfg, info, stack_env.read_env(env_path))
+    values = env_values(cfg, stack_env.read_env(env_path), sys.environ)
     active = profiles(cfg)
-    gpu = nvidia_in_docker(info, run=sys.run)
+    gpu = nvidia_in_docker(info, sys=sys)
     # Both refusals come before anything is written or started.
     # Caddy matches `Authorization: Bearer {$LEPIKA_API_KEY}`; an empty key makes a
     # bare `Bearer ` header match, which is an open proxy on the network.
@@ -363,7 +362,7 @@ def start_stack(
 
 def stop(info: SystemInfo, cfg: Config, *, sys: System) -> bool:
     """`lepika down` in Server mode: stop and remove the containers; volumes stay."""
-    ensure_docker(info, run=sys.run, retry="lepika down")
+    ensure_docker(info, retry="lepika down", sys=sys)
     stack = install_stack()
     every = list(INACTIVE)  # every profile, so nothing is left behind
     result = sys.run(
@@ -380,14 +379,14 @@ def update(
     sys: System,
 ) -> list[UpdateStep]:
     """`lepika update` in Server mode: pull newer images, then reconcile."""
-    ensure_docker(info, run=sys.run, retry="lepika update")
+    ensure_docker(info, retry="lepika update", sys=sys)
     stack = install_stack()
     log.get_logger().info("stack.update")
     base = compose_cmd(stack, profiles(cfg), gpu_overlay=False)
-    before = _image_ids(base, sys.run)
+    before = _image_ids(base, sys=sys)
     if sys.call([*base, "pull"]) != 0:
         raise _compose_failed("pull")
-    after = _image_ids(base, sys.run)
+    after = _image_ids(base, sys=sys)
     start_stack(info, cfg, sys=sys)
     if not after:
         # Nothing to compare: "up to date" would be a claim nobody checked. Unreadable
@@ -402,18 +401,18 @@ def update(
     return [UpdateStep("Container images", "current" if before == after else "upgraded")]
 
 
-def _image_ids(base: list[str], run: RunFn) -> str:
+def _image_ids(base: list[str], *, sys: System) -> str:
     """The local image ids behind the stack's images: what a pull that changed nothing keeps.
 
     Compared as a whole rather than parsed: an image not pulled yet makes `inspect`
     fail on that name, and that too changes once the pull has fetched it. Empty when
     there is nothing to compare — no images listed, or no id read for any of them.
     """
-    listed = run([*base, "config", "--images"], check=False, log=False)
+    listed = sys.run([*base, "config", "--images"], check=False, log=False)
     images = str(listed.stdout or "").split()
     if not images:
         return ""
-    ids = run(
+    ids = sys.run(
         ["docker", "image", "inspect", "--format", "{{.Id}}", *images], check=False, log=False
     )
     if not str(ids.stdout or "").strip():

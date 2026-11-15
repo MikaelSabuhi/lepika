@@ -386,7 +386,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         # Only reachable via `--mode server`: a clear error naming Express, never an
         # install prompt. Whether a present Docker is *running* is start_stack's
         # business — asking here would make --dry-run shell out.
-        server.ensure_docker(info)
+        server.ensure_docker(info, sys=system.REAL)
     if cfg.mode != previous and not dry_run:
         info = leave_mode(info, previous, cfg)
     console.print(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))

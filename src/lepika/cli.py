@@ -114,7 +114,11 @@ def up() -> None:
     # A CPU-bound container on a GPU machine is a mystery worth one line up front.
     # `has_docker` first: gpu_note runs `docker info`, and without the binary that
     # would replace Server mode's Express hint with a generic "command not found".
-    if cfg.mode == "server" and info.has_docker and (note := server.gpu_note(info)) is not None:
+    if (
+        cfg.mode == "server"
+        and info.has_docker
+        and (note := server.gpu_note(info, sys=system.REAL)) is not None
+    ):
         console.print(f"[yellow]{escape(note)}[/yellow]")
     # `info` is the pre-start snapshot: an engine running now is one `start_stack`
     # will adopt, and the context length in config.toml will not reach it.

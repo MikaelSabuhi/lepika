@@ -66,7 +66,7 @@ def run_checks(info: SystemInfo, *, sys: System) -> list[CheckResult]:
             checks.append(
                 CheckResult(
                     "NVIDIA GPU visible to Docker",
-                    _finding(lambda: server.nvidia_in_docker(info, run=sys.run)),
+                    _finding(lambda: server.nvidia_in_docker(info, sys=sys)),
                     "Install the NVIDIA Container Toolkit: https://docs.nvidia.com/"
                     "datacenter/cloud-native/container-toolkit/install-guide.html",
                 )

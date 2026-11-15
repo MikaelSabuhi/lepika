@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import FakeResponse, FakeSystem, Runner, routes
+from fakes import FakeResponse, FakeSystem, routes
 
 from lepika import config, detect, log, paths, server, stack_env
 from lepika.backend import UpdateStep
@@ -37,22 +37,27 @@ def test_compose_cmd_without_gpu_skips_the_overlay(tmp_path: Path) -> None:
 
 
 def test_nvidia_in_docker_checks_the_runtime_on_linux() -> None:
-    run = Runner({"docker info": '{"nvidia": {"path": "nvidia-container-runtime"}}\n'})
-    assert server.nvidia_in_docker(LINUX_NVIDIA, run=run) is True
-    assert server.nvidia_in_docker(LINUX_NVIDIA, run=Runner({"docker info": "{}\n"})) is False
-    assert server.nvidia_in_docker(MAC, run=Runner()) is False
+    machine = FakeSystem(
+        stdout={"docker info": '{"nvidia": {"path": "nvidia-container-runtime"}}\n'}
+    )
+    assert server.nvidia_in_docker(LINUX_NVIDIA, sys=machine) is True
+    assert (
+        server.nvidia_in_docker(LINUX_NVIDIA, sys=FakeSystem(stdout={"docker info": "{}\n"}))
+        is False
+    )
+    assert server.nvidia_in_docker(MAC, sys=FakeSystem()) is False
 
 
 def test_ensure_docker_without_docker_never_asks_to_install_it_first() -> None:
     with pytest.raises(FriendlyError) as exc:
-        server.ensure_docker(NO_DOCKER, run=Runner())
+        server.ensure_docker(NO_DOCKER, sys=FakeSystem())
     assert "Express" in exc.value.fix
     assert "docs.docker.com" in exc.value.fix
 
 
 def test_ensure_docker_daemon_down_is_friendly() -> None:
     with pytest.raises(FriendlyError) as exc:
-        server.ensure_docker(LINUX_NVIDIA, run=Runner(code=1))
+        server.ensure_docker(LINUX_NVIDIA, sys=FakeSystem(codes={"docker": 1}))
     assert "Docker" in exc.value.problem
 
 
@@ -99,6 +104,14 @@ def test_start_stack_writes_env_ups_and_waits(isolated_home: Path) -> None:
     assert len(stops) == 1
     assert stops[0][stops[0].index("stop") + 1 :] == ["vllm", "caddy"]
     assert stops[0].count("--profile") == 2
+
+
+def test_start_stack_takes_the_shell_hf_token_from_the_system(isolated_home: Path) -> None:
+    """The shell's token wins over the file's, and the shell is the system's environment."""
+    stack_env.write_env(paths.stack_dir() / ".env", {"HF_TOKEN": "old"})
+    machine = _box({"docker info": '{"nvidia": {}}\n'}, environ={"HF_TOKEN": "from-shell"})
+    server.start_stack(LINUX_NVIDIA, config.Config(mode="server"), sys=machine)
+    assert stack_env.read_env(isolated_home / "stack" / ".env")["HF_TOKEN"] == "from-shell"
 
 
 # Port 11434 already answers: either our own ollama container (a second `lepika up`)
@@ -269,10 +282,13 @@ def test_server_update_does_not_claim_up_to_date_when_image_ids_are_unreadable(
 
 
 def test_gpu_note_only_when_docker_cannot_see_the_gpu() -> None:
-    note = server.gpu_note(LINUX_NVIDIA, run=Runner({"docker info": "{}"}))
+    note = server.gpu_note(LINUX_NVIDIA, sys=FakeSystem(stdout={"docker info": "{}"}))
     assert note is not None and "CPU" in note
-    assert server.gpu_note(LINUX_NVIDIA, run=Runner({"docker info": '{"nvidia": {}}'})) is None
-    assert server.gpu_note(MAC, run=Runner()) is None
+    assert (
+        server.gpu_note(LINUX_NVIDIA, sys=FakeSystem(stdout={"docker info": '{"nvidia": {}}'}))
+        is None
+    )
+    assert server.gpu_note(MAC, sys=FakeSystem()) is None
 
 
 def test_logs_returns_compose_and_lepika_logs(isolated_home: Path) -> None:

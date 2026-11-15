@@ -58,7 +58,7 @@ def test_write_env_tightens_a_world_readable_file(tmp_path: Path) -> None:
 
 
 def test_env_values_for_a_managed_engine() -> None:
-    values = server.env_values(config.Config(mode="server"), INFO, existing={})
+    values = server.env_values(config.Config(mode="server"), existing={}, environ={})
     assert values["OLLAMA_BASE_URL"] == "http://ollama:11434"
     assert values["OLLAMA_API_CONFIGS"] == "{}"
     assert values["WEBUI_BIND"] == "127.0.0.1"
@@ -77,7 +77,7 @@ def test_env_values_keep_pinned_images_and_secrets() -> None:
         "LEPIKA_API_KEY": "k",
         "HF_TOKEN": "hf",
     }
-    values = server.env_values(config.Config(mode="server"), INFO, existing=existing)
+    values = server.env_values(config.Config(mode="server"), existing=existing, environ={})
     assert values["OLLAMA_IMAGE"] == "ollama/ollama:0.11.4"
     assert values["LEPIKA_API_KEY"] == "k"
     assert values["HF_TOKEN"] == "hf"
@@ -90,14 +90,14 @@ def test_env_values_for_a_remote_keyed_engine() -> None:
         engine_url="http://gpu-box:11435",
         engine_key="k",
     )
-    values = server.env_values(cfg, INFO, existing={})
+    values = server.env_values(cfg, existing={}, environ={})
     assert values["OLLAMA_BASE_URL"] == "http://gpu-box:11435"
     assert values["OLLAMA_API_CONFIGS"] == '{"0": {"key": "k"}}'
 
 
 def test_env_values_rewrites_loopback_for_the_container() -> None:
     cfg = config.Config(mode="server", engine_managed=False, engine_url="http://127.0.0.1:11434")
-    values = server.env_values(cfg, INFO, existing={})
+    values = server.env_values(cfg, existing={}, environ={})
     assert values["OLLAMA_BASE_URL"] == "http://host.docker.internal:11434"
     assert server.container_engine_url("http://localhost:11434") == (
         "http://host.docker.internal:11434"
@@ -108,20 +108,23 @@ def test_lepika_upstream_follows_a_remote_engine() -> None:
     # The `engine` profile is inactive with a remote engine, so proxying to
     # `ollama:11434` would be a 502 on every exposed request.
     cfg = config.Config(mode="server", engine_managed=False, engine_url="http://gpu-box:11435")
-    assert server.env_values(cfg, INFO, existing={})["LEPIKA_UPSTREAM"] == "gpu-box:11435"
+    assert server.env_values(cfg, existing={}, environ={})["LEPIKA_UPSTREAM"] == "gpu-box:11435"
     local = config.Config(mode="server", engine_managed=False, engine_url="http://127.0.0.1:11434")
-    upstream = server.env_values(local, INFO, existing={})["LEPIKA_UPSTREAM"]
+    upstream = server.env_values(local, existing={}, environ={})["LEPIKA_UPSTREAM"]
     assert upstream == "host.docker.internal:11434"
 
 
 def test_env_values_when_exposed_binds_the_ui_to_all_interfaces() -> None:
-    values = server.env_values(config.Config(mode="server", exposed=True), INFO, existing={})
+    values = server.env_values(config.Config(mode="server", exposed=True), existing={}, environ={})
     assert values["WEBUI_BIND"] == "0.0.0.0"
 
 
-def test_hf_token_from_the_shell_wins(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HF_TOKEN", "from-shell")
-    values = server.env_values(config.Config(mode="server"), INFO, existing={"HF_TOKEN": "old"})
+def test_hf_token_from_the_shell_wins() -> None:
+    values = server.env_values(
+        config.Config(mode="server"),
+        existing={"HF_TOKEN": "old"},
+        environ={"HF_TOKEN": "from-shell"},
+    )
     assert values["HF_TOKEN"] == "from-shell"
 
 
@@ -214,7 +217,10 @@ def test_upstream_keeps_https_for_a_remote_behind_tls() -> None:
 
 def test_env_upstream_keeps_the_scheme_of_an_https_remote() -> None:
     cfg = config.Config(mode="server", engine_managed=False, engine_url="https://gpu-box:11435")
-    assert server.env_values(cfg, INFO, existing={})["LEPIKA_UPSTREAM"] == "https://gpu-box:11435"
+    assert (
+        server.env_values(cfg, existing={}, environ={})["LEPIKA_UPSTREAM"]
+        == "https://gpu-box:11435"
+    )
 
 
 def _addresses(*ips: str) -> list[tuple[int, int, int, str, tuple[str, int]]]:
@@ -284,7 +290,7 @@ def test_lan_ips_drops_the_placeholder_when_there_is_no_route() -> None:
 
 def test_env_values_carry_the_context_length_to_the_engine_container() -> None:
     cfg = config.Config(mode="server", context_length=8192)
-    assert server.env_values(cfg, INFO, existing={})["OLLAMA_CONTEXT_LENGTH"] == "8192"
+    assert server.env_values(cfg, existing={}, environ={})["OLLAMA_CONTEXT_LENGTH"] == "8192"
 
 
 def test_compose_hands_the_context_length_to_the_ollama_service() -> None:

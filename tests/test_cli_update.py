@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 from typing import Any
 
@@ -15,9 +16,9 @@ LINUX = detect.SystemInfo("linux", "x86_64", "nvidia", 32.0, False, True, True)
 
 @pytest.fixture(autouse=True)
 def no_binaries_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`update` resolves `which` when it runs: faked here, a Linux host with systemd
-    takes the same branch as every other host."""
-    monkeypatch.setattr(express.shutil, "which", lambda name: None)
+    """The CLI hands `update` the real system, whose `which` is resolved when it runs:
+    faked here, a Linux host with systemd takes the same branch as every other host."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
 
 
 def test_update_upgrades_engine_and_webui(monkeypatch: pytest.MonkeyPatch) -> None:

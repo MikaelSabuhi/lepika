@@ -22,6 +22,7 @@ from lepika.config import Config
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.paths import logs_dir, stack_dir
+from lepika.system import System
 
 RunFn = Callable[..., Any]
 CallFn = Callable[[list[str]], int]
@@ -404,6 +405,8 @@ def start_stack(
     vllm_up: Callable[..., bool] | None = None,
     up: Callable[..., bool] = _REAL_WEBUI_UP,
     sleep: SleepFn = time.sleep,
+    *,
+    sys: System = system.REAL,
 ) -> str:
     """Reconcile the stack with config and return the URL to open.
 
@@ -479,7 +482,9 @@ def start_stack(
     return health.webui_url(cfg.webui_port)
 
 
-def stop(info: SystemInfo, cfg: Config, run: RunFn = proc.run_logged) -> bool:
+def stop(
+    info: SystemInfo, cfg: Config, run: RunFn = proc.run_logged, *, sys: System = system.REAL
+) -> bool:
     """`lepika down` in Server mode: stop and remove the containers; volumes stay."""
     ensure_docker(info, run=run, retry="lepika down")
     stack = install_stack()
@@ -494,6 +499,8 @@ def update(
     cfg: Config,
     run: RunFn = proc.run_logged,
     call: CallFn = proc.call,
+    *,
+    sys: System = system.REAL,
 ) -> list[UpdateStep]:
     """`lepika update` in Server mode: pull newer images, then reconcile."""
     ensure_docker(info, run=run, retry="lepika update")
@@ -537,7 +544,9 @@ def _image_ids(base: list[str], run: RunFn) -> str:
     return f"{ids.returncode}\n{ids.stdout}"
 
 
-def logs(lines: int, run: RunFn = proc.run_logged) -> list[tuple[str, str]]:
+def logs(
+    lines: int, run: RunFn = proc.run_logged, *, sys: System = system.REAL
+) -> list[tuple[str, str]]:
     """`lepika logs` in Server mode: compose logs, then LePika's own log."""
     stack = stack_dir()
     result = run(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import signal
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
 from lepika import health, log
@@ -178,7 +178,6 @@ def stop_ollama(
     rerun: str = "lepika --mode server",
     *,
     sys: System,
-    api_up: Callable[..., bool] | None = None,
 ) -> bool:
     """Stop the native Ollama LePika started — never one the machine already ran.
 
@@ -188,15 +187,9 @@ def stop_ollama(
 
     Three things must agree before anything is signalled: a pid file we wrote, an
     engine answering on `url`, and a process by that pid that really is an Ollama.
-
-    `api_up`, when given, is the "is the engine answering" probe in place of
-    `health.api_up` on `sys`: `express.update` still hands one in from its tests.
-    It is removed when `express` takes a `System` itself.
     """
 
     def answering() -> bool:
-        if api_up is not None:
-            return api_up(url, key=key)
         return health.api_up(url, key=key, sys=sys)
 
     pf = pid_file("ollama")
@@ -251,16 +244,11 @@ def ensure_ollama(
     context_length: int,
     url: str = DEFAULT_ENGINE_URL,
     sys: System,
-    api_up: Callable[..., bool] | None = None,
 ) -> None:
-    """Install Ollama if it is missing, and have an engine answering on `url`.
-
-    `api_up`, when given, is the "is the engine answering" probe in place of
-    `health.api_up` on `sys`. It is removed when `express` takes a `System` itself.
-    """
+    """Install Ollama if it is missing, and have an engine answering on `url`."""
 
     def answering() -> bool:
-        return api_up(url) if api_up is not None else health.api_up(url, sys=sys)
+        return health.api_up(url, sys=sys)
 
     if not info.has_ollama:
         install_ollama(info, sys=sys)
@@ -272,7 +260,7 @@ def ensure_ollama(
         if not _ours(info.os, sys=sys) or _launched_context() == wanted:
             return
         log.get_logger().info("engine.restart", reason="context_length", wanted=wanted)
-        stop_ollama(info.os, url, rerun="lepika up", sys=sys, api_up=api_up)
+        stop_ollama(info.os, url, rerun="lepika up", sys=sys)
     start_ollama(context_length=context_length, sys=sys)
     health.wait_for(answering, 30, "Ollama API", sys=sys)
 

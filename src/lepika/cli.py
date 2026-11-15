@@ -119,14 +119,14 @@ def up() -> None:
     # will adopt, and the context length in config.toml will not reach it.
     if (note := ollama.context_note(info, cfg, sys=system.REAL)) is not None:
         console.print(f"[yellow]{escape(note)}[/yellow]")
-    _ready(cfg, _backend(cfg).start_stack(info, cfg))
+    _ready(cfg, _backend(cfg).start_stack(info, cfg, sys=system.REAL))
 
 
 @app.command()
 def down() -> None:
     """Stop the stack (Express: OpenWebUI only; Server: every container, models kept)."""
     cfg = config.load()
-    if _backend(cfg).stop(detect.detect(sys=system.REAL), cfg):
+    if _backend(cfg).stop(detect.detect(sys=system.REAL), cfg, sys=system.REAL):
         console.print("[green]✓ Stopped.[/green]")
     else:
         console.print("Nothing was running.")
@@ -171,7 +171,7 @@ def status() -> None:
 @app.command()
 def logs(lines: int = typer.Option(50, min=1, help="Lines per log file.")) -> None:
     """Print the tail of LePika's logs (Server mode: the container logs too)."""
-    sections = _backend(config.load()).logs(lines)
+    sections = _backend(config.load()).logs(lines, sys=system.REAL)
     if not sections:
         # Silence is indistinguishable from a broken command.
         console.print("(no logs yet)")
@@ -206,7 +206,9 @@ def update() -> None:
     """Upgrade the engine and OpenWebUI to their latest versions."""
     console.print("Upgrading…")
     cfg = config.load()
-    steps: list[UpdateStep] = _backend(cfg).update(detect.detect(sys=system.REAL), cfg)
+    steps: list[UpdateStep] = _backend(cfg).update(
+        detect.detect(sys=system.REAL), cfg, sys=system.REAL
+    )
     for step in steps:
         detail = escape(step.detail)
         if step.outcome in ("stale", "note"):

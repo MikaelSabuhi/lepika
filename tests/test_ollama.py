@@ -331,21 +331,15 @@ def test_stop_ollama_permission_error_is_not_fatal(isolated_home: Path) -> None:
     assert not pf.exists()
 
 
-def test_stop_ollama_uses_an_injected_probe_in_place_of_the_systems(isolated_home: Path) -> None:
-    """`express.update` still hands its probe in; then the system's network is not asked."""
-    paths.pid_file("ollama").write_text("4242")
-    answers = iter([True, False])
-    asked: list[tuple[str, str]] = []
-
-    def api_up(url: str, key: str = "") -> bool:
-        asked.append((url, key))
-        return next(answers)
-
-    machine = answering(stdout=OLLAMA_PS)
-    assert ollama.stop_ollama("linux", _URL, key="k", sys=machine, api_up=api_up) is True
-    assert asked == [(_URL, "k"), (_URL, "k")]
-    assert machine.requested == []
+def test_stop_ollama_survives_a_process_that_is_already_gone(isolated_home: Path) -> None:
+    """The engine can exit between the probe and the signal: the wait decides."""
+    pf = paths.pid_file("ollama")
+    pf.write_text("4242")
+    gone = {4242: ProcessLookupError(3, "No such process")}
+    machine = answering(True, False, stdout=OLLAMA_PS, signal_errors=gone)
+    assert ollama.stop_ollama("linux", _URL, sys=machine) is True
     assert machine.signals == [(4242, signal.SIGTERM)]
+    assert not pf.exists()
 
 
 def test_ensure_ollama_skips_install_and_start_when_running() -> None:

@@ -456,6 +456,15 @@ def test_fake_system_answers_run_by_leading_argv() -> None:
     assert fake.call(["true"]) == 0
 
 
+def test_fake_system_answers_a_list_of_outputs_in_order_and_repeats_the_last() -> None:
+    """The same question asked before and after an upgrade gets two answers."""
+    fake = FakeSystem(stdout={"ollama --version": ["0.33.2", "0.34.0"], "uv": ["only"]})
+    said = [fake.run(["ollama", "--version"]).stdout for _ in range(3)]
+    assert said == ["0.33.2", "0.34.0", "0.34.0"]
+    # Each command keeps its own place in its own list.
+    assert fake.run(["uv", "tool", "list"]).stdout == "only"
+
+
 def test_fake_system_honours_check_and_ok_like_the_real_runner() -> None:
     fake = FakeSystem(codes={"systemctl is-active": 3})
     cmd = ["systemctl", "is-active", "ollama"]

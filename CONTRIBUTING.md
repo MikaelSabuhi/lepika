@@ -21,7 +21,8 @@ The pre-commit hooks run ruff, mypy and bandit on every commit.
 The test suite runs in about a second with no network, no Docker, and no real
 processes, because every external effect is an injected callable. New code follows
 the same pattern. The canary against the real Ollama and Hugging Face is left out of it;
-`uv run pytest -m canary tests/canary -v` runs it against a local Ollama (it pulls a small model).
+`uv run pytest -m canary tests/canary -v` runs it on Linux against your local Ollama, and
+pulls a small model into your own Ollama store.
 
 ## Making a change
 

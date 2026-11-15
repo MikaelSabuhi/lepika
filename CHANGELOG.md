@@ -17,17 +17,25 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   refusal differently, so LePika now asks the Hub's model API why a listing failed
   instead of reading the CLI's error text.
 - `lepika` without a terminal (CI, cron, `< /dev/null`) no longer fails with a
-  traceback: a question with a default takes it and says so, and the model question,
-  which has none, explains itself in two lines. An unexpected error, a file that
-  cannot be read or written, or a garbled memory reading is now two lines too (the
-  traceback goes to `lepika.log`). The mode question also accepts `express` or
-  `server` by name. `install.sh` starts the wizard only when there is a terminal
-  to run it in.
+  traceback: the wizard's questions take their defaults and say so, the model
+  question, which has none, explains itself in two lines, and the full-weight import
+  confirmation still refuses rather than download unattended. An unexpected error
+  (its traceback goes to `lepika.log`), a file that cannot be read or written, a
+  missing command, or a garbled memory reading is now two lines too. `install.sh`
+  starts the wizard only when there is a terminal to run it in.
 - `lepika update` no longer stops a systemd `ollama.service` you ran before LePika:
   the unit is left as it was found. It restarts the Ollama LePika started so the new
   version actually runs, says when an engine it did not start still runs the old
   one, fails loudly when an upgrade fails, and reports what changed instead of
   "Everything is up to date".
+- `lepika update` works on a Linux server without `sudo`: run as root it needs none,
+  OpenWebUI is still upgraded, and if `ollama.service` could not be put back the
+  report says so instead of failing with "Could not access sudo". In Server mode, it
+  no longer claims the images are up to date when it could not read their ids.
+
+### Changed
+
+- The wizard's mode question also accepts `express` or `server` by name.
 
 ## [0.2.0] - 2026-11-10
 

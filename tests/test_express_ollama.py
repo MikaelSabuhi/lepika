@@ -38,7 +38,7 @@ class RunRecorder:
 
 
 class CallRecorder:
-    """Stands in for subprocess.call: records argv, returns a canned exit code."""
+    """Stands in for proc.call: records argv, returns a canned exit code."""
 
     def __init__(self, code: int = 0) -> None:
         self.calls: list[list[str]] = []
@@ -87,18 +87,26 @@ def test_install_ollama_linux_streams_official_script() -> None:
     assert run.calls == []
 
 
+def _systemd_which(*more: str) -> Callable[[str], str | None]:
+    """A Linux box with systemd; `more` names the other binaries on PATH."""
+    return lambda n: f"/usr/bin/{n}" if n in ("systemctl", *more) else None
+
+
+_DISABLE = ["sudo", "systemctl", "disable", "--now", "ollama.service"]
+
+
 def test_install_ollama_linux_survives_a_failed_optional_step() -> None:
     """The script aborts on a wedged systemd long after the engine is in place."""
     call = CallRecorder(1)
     express.install_ollama(
         info_for("linux"),
         run=RunRecorder(),
-        which=lambda n: "/usr/local/bin/ollama" if n == "ollama" else None,
+        which=_systemd_which("ollama"),
         call=call,
+        euid=1000,
     )
     # And the service the aborted script left enabled still gets disabled.
-    assert len(call.calls) == 2
-    assert "systemctl disable --now ollama" in " ".join(call.calls[1])
+    assert call.calls[1:] == [_DISABLE]
 
 
 def test_install_ollama_linux_failure_is_friendly() -> None:
@@ -114,26 +122,55 @@ def test_install_ollama_linux_failure_is_friendly() -> None:
 
 def test_install_ollama_linux_disables_the_systemd_service_the_script_enables() -> None:
     call = CallRecorder()
+    express.install_ollama(
+        info_for("linux"), run=RunRecorder(), which=_systemd_which(), call=call, euid=1000
+    )
+    assert call.calls[1:] == [_DISABLE]
+
+
+def test_install_ollama_linux_without_systemctl_has_no_service_to_disable() -> None:
+    call = CallRecorder()
     express.install_ollama(info_for("linux"), run=RunRecorder(), which=lambda n: None, call=call)
-    assert len(call.calls) == 2
-    disable = " ".join(call.calls[1])
-    assert "systemctl disable --now ollama" in disable
-    # Missing systemctl (non-systemd distro) must short-circuit before sudo runs.
-    assert "command -v systemctl" in disable
+    assert len(call.calls) == 1
 
 
-def test_install_ollama_linux_survives_a_failed_service_disable() -> None:
+def test_install_ollama_as_root_disables_the_unit_without_sudo() -> None:
+    call = CallRecorder()
+    express.install_ollama(
+        info_for("linux"), run=RunRecorder(), which=_systemd_which(), call=call, euid=0
+    )
+    assert call.calls[1:] == [["systemctl", "disable", "--now", "ollama.service"]]
+
+
+@pytest.mark.parametrize(
+    "disable",
+    [
+        1,
+        FriendlyError("Command not found: sudo", "Install sudo or run `lepika doctor`."),
+        PermissionError(13, "Permission denied", "sudo"),
+    ],
+    ids=["exits non-zero", "no sudo", "sudo not executable"],
+)
+def test_install_ollama_linux_survives_a_failed_service_disable(
+    disable: int | Exception,
+) -> None:
     class SecondCallFails:
         def __init__(self) -> None:
             self.calls: list[list[str]] = []
 
         def __call__(self, cmd: list[str]) -> int:
             self.calls.append(list(cmd))
-            return 0 if len(self.calls) == 1 else 1
+            if len(self.calls) == 1:
+                return 0
+            if isinstance(disable, Exception):
+                raise disable
+            return disable
 
     call = SecondCallFails()
-    express.install_ollama(info_for("linux"), run=RunRecorder(), which=lambda n: None, call=call)
-    assert len(call.calls) == 2
+    express.install_ollama(
+        info_for("linux"), run=RunRecorder(), which=_systemd_which(), call=call, euid=1000
+    )
+    assert call.calls[1:] == [_DISABLE]
 
 
 def test_install_ollama_windows_uses_winget() -> None:

@@ -100,9 +100,11 @@ def _update(
     call: Caller | None = None,
     running: str | list[Any] | None = None,
     up: list[bool] | None = None,
+    euid: int = 1000,
 ) -> list[UpdateStep]:
     """`running` is what the engine reports (None: nothing answers); `up` overrides
-    the answers to `api_up` in order, for an engine that comes and goes."""
+    the answers to `api_up` in order, for an engine that comes and goes. `euid` is
+    who LePika runs as — not root by default, whoever runs the suite."""
     versions = running if isinstance(running, list) else [running or ""]
     return express.update(
         info,
@@ -115,6 +117,7 @@ def _update(
         sleep=lambda s: None,
         kill=lambda pid, sig: pytest.fail("kill must go through stop_ollama"),
         running_version=_answers(versions),
+        euid=euid,
     )
 
 
@@ -162,6 +165,71 @@ def test_update_restores_only_what_the_script_changed(restarts: list[str]) -> No
 
 def test_update_restores_the_unit_even_when_the_script_fails(restarts: list[str]) -> None:
     call = Caller(code=1)
+    with pytest.raises(FriendlyError) as exc:
+        _update(_info("linux"), _linux_run(1, 3, ["0.33.2"]), call=call, running="0.33.2")
+    assert exc.value.problem == "Ollama upgrade failed."
+    assert ["sudo", "systemctl", "disable", "--now", "ollama.service"] in call.calls
+    assert "ui" not in restarts
+
+
+class NoSudo(Caller):
+    """The install script runs; a command through `sudo` finds no `sudo` to run."""
+
+    def __call__(self, cmd: list[str]) -> int:
+        self.calls.append(list(cmd))
+        if cmd[0] == "sudo":
+            raise FriendlyError(
+                "Command not found: sudo", "Install sudo or run `lepika doctor` for setup help."
+            )
+        return self.code
+
+
+_RESTORE_FAILED = UpdateStep(
+    "Ollama service",
+    "note",
+    "could not put ollama.service back as it was — if Ollama misbehaves, run "
+    "`systemctl disable --now ollama.service` as root",
+)
+
+
+def test_update_without_sudo_still_upgrades_openwebui_and_reports_the_unit(
+    restarts: list[str],
+) -> None:
+    """A server where root has a password has systemd and no `sudo` at all."""
+    call = NoSudo()
+    run = _linux_run(1, 3)
+    run.answers["uv tool list"] = ["open-webui v0.6.5\n", "open-webui v0.6.6\n"]
+    steps = _update(_info("linux"), run, call=call, running="0.34.0")
+    assert any("install.sh" in " ".join(c) for c in call.calls)
+    assert ["sudo", "systemctl", "disable", "--now", "ollama.service"] in call.calls
+    assert _service_warning(steps) == _RESTORE_FAILED
+    assert UpdateStep("OpenWebUI", "upgraded", "0.6.5 → 0.6.6") in steps
+    assert restarts == ["ui"]
+
+
+def test_update_reports_a_restore_that_exited_non_zero(restarts: list[str]) -> None:
+    class RestoreFails(Caller):
+        def __call__(self, cmd: list[str]) -> int:
+            self.calls.append(list(cmd))
+            return 1 if "systemctl" in cmd else 0
+
+    steps = _update(_info("linux"), _linux_run(1, 3), call=RestoreFails(), running="0.34.0")
+    assert _service_warning(steps) == _RESTORE_FAILED
+
+
+def test_update_as_root_runs_systemctl_without_sudo(restarts: list[str]) -> None:
+    call = Caller()
+    steps = _update(_info("linux"), _linux_run(1, 3), call=call, running="0.34.0", euid=0)
+    assert [c for c in call.calls if "systemctl" in c] == [
+        ["systemctl", "disable", "--now", "ollama.service"]
+    ]
+    assert "Ollama service" not in [s.component for s in steps]
+
+
+def test_a_failed_restore_never_hides_the_installer_error(restarts: list[str]) -> None:
+    """The script failed with the binary unchanged, and the restore could not run either:
+    the installer's failure is the one the user needs to see."""
+    call = NoSudo(code=1)
     with pytest.raises(FriendlyError) as exc:
         _update(_info("linux"), _linux_run(1, 3, ["0.33.2"]), call=call, running="0.33.2")
     assert exc.value.problem == "Ollama upgrade failed."
@@ -278,7 +346,7 @@ def test_update_restores_nothing_when_is_enabled_fails_without_a_state(
     steps = _update(_info("linux"), _linux_run(1, 3, state=""), call=call, running="0.34.0")
     assert any("install.sh" in " ".join(c) for c in call.calls)
     assert not any("systemctl" in c for c in call.calls)
-    assert _service_warning(steps).outcome == "stale"
+    assert _service_warning(steps).outcome == "note"
 
 
 def test_update_never_starts_an_adopted_engine_the_upgrade_stopped(restarts: list[str]) -> None:
@@ -306,9 +374,9 @@ def test_update_restores_nothing_when_systemd_does_not_answer(
     warning = _service_warning(steps)
     assert warning == UpdateStep(
         "Ollama service",
-        "stale",
+        "note",
         "could not read ollama.service's state, so it was left as the installer set it — "
-        "if Ollama misbehaves, run `sudo systemctl disable --now ollama.service`",
+        "if Ollama misbehaves, run `systemctl disable --now ollama.service` as root",
     )
     log_text = (paths.logs_dir() / "lepika.log").read_text()
     assert "ollama.update.unit_state_unknown" in log_text
@@ -351,10 +419,14 @@ def test_update_on_macos_asks_brew_before_upgrading(restarts: list[str]) -> None
     _update(_info("macos"), run, running="0.34.0")
     assert ["brew", "upgrade", "ollama"] not in run.argvs()
 
-    run = Seq({"brew outdated": "ollama\n", "ollama --version": _version("0.34.0")})
+    # Homebrew exits 1 when a formula named on the command line is outdated.
+    run = Seq({"brew outdated": (1, "ollama\n"), "ollama --version": _version("0.34.0")})
     _update(_info("macos"), run, running="0.34.0")
     upgrades = [kw for c, kw in run.calls if c == ["brew", "upgrade", "ollama"]]
     assert upgrades == [{"check": True}]
+    # That answer is expected, so `run_logged` records no failure for it.
+    asked = [kw for c, kw in run.calls if c[:2] == ["brew", "outdated"]]
+    assert asked and all(1 in kw["ok"] for kw in asked)
 
 
 def test_update_on_macos_without_brew_leaves_the_app_to_update_itself(
@@ -451,4 +523,4 @@ def test_update_reports_an_unread_unit_even_when_the_script_failed_after_install
     run = _linux_run(1, 1, ["0.33.2", "0.34.0"])
     steps = _update(_info("linux"), run, call=Caller(code=1), running=None)
     assert steps[0] == UpdateStep("Ollama", "upgraded", "0.33.2 → 0.34.0")
-    assert _service_warning(steps).outcome == "stale"
+    assert _service_warning(steps).outcome == "note"

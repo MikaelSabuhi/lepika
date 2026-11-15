@@ -7,7 +7,6 @@ import json
 import os
 import secrets
 import socket
-import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -398,7 +397,7 @@ def start_stack(
     cfg: Config,
     after_engine: Callable[[], None] | None = None,
     run: RunFn = proc.run_logged,
-    call: CallFn = subprocess.call,
+    call: CallFn = proc.call,
     api_up: Callable[..., bool] = detect.api_up,
     vllm_up: Callable[..., bool] = engine.vllm_up,
     up: Callable[..., bool] = express.webui_up,
@@ -489,7 +488,7 @@ def update(
     info: SystemInfo,
     cfg: Config,
     run: RunFn = proc.run_logged,
-    call: CallFn = subprocess.call,
+    call: CallFn = proc.call,
 ) -> list[UpdateStep]:
     """`lepika update` in Server mode: pull newer images, then reconcile."""
     ensure_docker(info, run=run, retry="lepika update")
@@ -501,6 +500,16 @@ def update(
         raise _compose_failed("pull")
     after = _image_ids(base, run)
     start_stack(info, cfg, run=run, call=call)
+    if not after:
+        # Nothing to compare: "up to date" would be a claim nobody checked. Unreadable
+        # before but readable after is different: the pull certainly fetched something.
+        return [
+            UpdateStep(
+                "Container images",
+                "note",
+                "pulled the latest images; could not tell whether anything changed",
+            )
+        ]
     return [UpdateStep("Container images", "current" if before == after else "upgraded")]
 
 
@@ -508,7 +517,8 @@ def _image_ids(base: list[str], run: RunFn) -> str:
     """The local image ids behind the stack's images: what a pull that changed nothing keeps.
 
     Compared as a whole rather than parsed: an image not pulled yet makes `inspect`
-    fail on that name, and that too changes once the pull has fetched it.
+    fail on that name, and that too changes once the pull has fetched it. Empty when
+    there is nothing to compare — no images listed, or no id read for any of them.
     """
     listed = run([*base, "config", "--images"], check=False, log=False)
     images = str(listed.stdout or "").split()
@@ -517,7 +527,9 @@ def _image_ids(base: list[str], run: RunFn) -> str:
     ids = run(
         ["docker", "image", "inspect", "--format", "{{.Id}}", *images], check=False, log=False
     )
-    return f"{ids.returncode}\n{ids.stdout or ''}"
+    if not str(ids.stdout or "").strip():
+        return ""
+    return f"{ids.returncode}\n{ids.stdout}"
 
 
 def logs(lines: int, run: RunFn = proc.run_logged) -> list[tuple[str, str]]:

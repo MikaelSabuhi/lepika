@@ -30,3 +30,8 @@ def test_openwebui_data_dir_lives_under_home(isolated_home: Path) -> None:
 def test_hf_dir_is_under_home(isolated_home: Path) -> None:
     assert paths.hf_dir() == isolated_home / "hf"
     assert paths.hf_dir().is_dir()
+
+
+def test_home_path_names_the_home_without_creating_it(isolated_home: Path) -> None:
+    assert paths.home_path() == isolated_home
+    assert not isolated_home.exists()

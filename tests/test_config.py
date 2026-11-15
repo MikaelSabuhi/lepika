@@ -27,6 +27,19 @@ def test_save_then_load_round_trips(isolated_home: Path) -> None:
     assert config.config_path().read_text().startswith("schema_version = 1")
 
 
+def test_saving_always_writes_the_current_schema(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A loaded file is upgraded in memory: saving it back under its old number would
+    pair a newer key with a schema an older LePika thinks it can read."""
+    monkeypatch.setattr(config, "SCHEMA_VERSION", 2)
+    config.config_path().write_text('schema_version = 1\nmodel = "qwen3:8b"\n')
+    config.save(config.load())
+    lines = config.config_path().read_text().splitlines()
+    assert "schema_version = 2" in lines
+    assert 'model = "qwen3:8b"' in lines
+
+
 def test_save_leaves_no_temp_file_behind(isolated_home: Path) -> None:
     config.save(config.Config(model="qwen3:8b"))
     assert config.config_path().exists()

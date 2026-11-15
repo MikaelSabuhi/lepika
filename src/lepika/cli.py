@@ -20,9 +20,9 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from lepika import acquire, config, detect, engine, express, log, models, paths, server
+from lepika import acquire, config, detect, engine, express, log, models, paths, proc, server
 from lepika.backend import UpdateStep
-from lepika.errors import FriendlyError
+from lepika.errors import ISSUES_URL, FriendlyError
 
 app = typer.Typer(
     help="One command → local AI chat in your browser.",
@@ -194,7 +194,7 @@ def update() -> None:
     steps: list[UpdateStep] = _backend(cfg).update(detect.detect(), cfg)
     for step in steps:
         detail = escape(step.detail)
-        if step.outcome == "stale":
+        if step.outcome in ("stale", "note"):
             console.print(f"[yellow]! {step.component}: {detail}[/yellow]")
             continue
         suffix = f" ({detail})" if detail else ""
@@ -546,14 +546,6 @@ def _utf8_stdio(streams: Iterable[TextIO] | None = None) -> None:
             stream.reconfigure(encoding="utf-8")
 
 
-ISSUES_URL = "https://github.com/MikaelSabuhi/lepika/issues"
-
-
-def _home_path() -> Path:
-    """Where LePika's home is, without creating it — creating it may be what failed."""
-    return Path(os.environ.get("LEPIKA_HOME", str(Path.home() / ".lepika")))
-
-
 def _fail(problem: str, fix: str) -> None:
     err_console.print(f"[red]✗ {escape(problem)}[/red]")
     err_console.print(f"[yellow]→ {escape(fix)}[/yellow]")
@@ -567,7 +559,7 @@ def _unexpected(exc: Exception) -> NoReturn:
     # look in. The path lookup sits inside the guard for the same reason.
     with contextlib.suppress(Exception):
         log.get_logger().error("cli.crash", error=repr(exc), traceback=traceback.format_exc())
-        fix = f"Details are in {_home_path() / 'logs' / log.LOG_FILE}. {fix}"
+        fix = f"Details are in {paths.home_path() / 'logs' / log.LOG_FILE}. {fix}"
     _fail(f"LePika hit an unexpected error: {type(exc).__name__}: {exc}", fix)
     raise SystemExit(1) from exc
 
@@ -576,8 +568,9 @@ def run() -> None:
     """Console-script entry point.
 
     The last line of defence for rule 2: whatever escapes a command becomes two
-    lines and an exit code, never a traceback. `typer.Exit` and `SystemExit` are
-    BaseExceptions and pass through untouched.
+    lines and an exit code, never a traceback. `typer.Exit` never reaches the
+    handlers: Click's standalone mode turns it into `SystemExit`, a BaseException
+    that passes through untouched.
     """
     _utf8_stdio()
     try:
@@ -593,6 +586,17 @@ def run() -> None:
         # A read or a write, in LePika's home or the user's own folder (`model
         # import <dir>`): name the file and the folder it is in, nothing assumed.
         path = os.fsdecode(exc.filename)
+        if (
+            isinstance(exc, FileNotFoundError)
+            and not os.path.dirname(path)
+            and not os.path.lexists(path)
+        ):
+            # A bare name that is nowhere on disk is a program looked up on PATH: one
+            # that is not installed. A bare name that exists — a dangling link in the
+            # folder `model import .` reads — is a file.
+            missing = proc.not_found(path)
+            _fail(missing.problem, missing.fix)
+            raise SystemExit(1) from exc
         _fail(
             f"Could not access {path}: {exc.strerror}",
             f"Check the permissions on {Path(path).parent} and that the disk is not full.",

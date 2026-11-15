@@ -13,6 +13,13 @@ runner = CliRunner()
 LINUX = detect.SystemInfo("linux", "x86_64", "nvidia", 32.0, False, True, True)
 
 
+@pytest.fixture(autouse=True)
+def no_binaries_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`update` resolves `which` when it runs: faked here, a Linux host with systemd
+    takes the same branch as every other host."""
+    monkeypatch.setattr(express.shutil, "which", lambda name: None)
+
+
 def test_update_upgrades_engine_and_webui(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
     installed: list[detect.SystemInfo] = []
@@ -90,6 +97,7 @@ def test_update_prints_what_happened(monkeypatch: pytest.MonkeyPatch) -> None:
         UpdateStep("OpenWebUI", "current", "0.6.5"),
         UpdateStep("Ollama", "stale", "running 0.33.2, installed 0.34.0 — restart Ollama"),
         UpdateStep("Container images", "current"),
+        UpdateStep("Ollama service", "note", "could not put ollama.service back as it was"),
     ]
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX)
     monkeypatch.setattr(express, "update", lambda info, cfg, **k: steps)
@@ -99,6 +107,7 @@ def test_update_prints_what_happened(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "✓ OpenWebUI: up to date (0.6.5)" in result.output
     assert "! Ollama: running 0.33.2, installed 0.34.0 — restart Ollama" in result.output
     assert "✓ Container images: up to date\n" in result.output
+    assert "! Ollama service: could not put ollama.service back as it was" in result.output
     assert "Everything is up to date" not in result.output
 
 

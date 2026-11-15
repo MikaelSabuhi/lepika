@@ -19,6 +19,7 @@ jobs:
   canary:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Pinned so a drift report never depends on whichever interpreter the runner image has.
     env:
       UV_PYTHON: "3.13"
     steps:

@@ -242,6 +242,39 @@ def test_server_update_reports_upgraded_when_they_change(
     assert steps == [UpdateStep("Container images", "upgraded")]
 
 
+def test_server_update_reports_upgraded_when_images_appear_for_the_first_time(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No id before the pull and one after: the pull certainly fetched something."""
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
+    run = _ImageIds("", "sha256:bbb\n")
+    steps = server.update(LINUX_NVIDIA, config.Config(mode="server"), run=run, call=Caller())
+    assert steps == [UpdateStep("Container images", "upgraded")]
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        Runner({"docker info": "{}", "docker compose": ""}),
+        _ImageIds("", ""),
+        _ImageIds("sha256:aaa\n", ""),
+    ],
+    ids=["no images listed", "no ids", "no ids after the pull"],
+)
+def test_server_update_does_not_claim_up_to_date_when_image_ids_are_unreadable(
+    run: Runner, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
+    steps = server.update(LINUX_NVIDIA, config.Config(mode="server"), run=run, call=Caller())
+    assert steps == [
+        UpdateStep(
+            "Container images",
+            "note",
+            "pulled the latest images; could not tell whether anything changed",
+        )
+    ]
+
+
 def test_gpu_note_only_when_docker_cannot_see_the_gpu() -> None:
     note = server.gpu_note(LINUX_NVIDIA, run=Runner({"docker info": "{}"}))
     assert note is not None and "CPU" in note

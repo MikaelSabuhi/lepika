@@ -1,7 +1,16 @@
-# Keeps the SHA-pinned actions in .github/workflows current.
+# Keeps the SHA-pinned actions in .github/workflows and the locked Python
+# dependencies in uv.lock current.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    # One PR a week for the whole lock file instead of one per package.
+    groups:
+      python-dependencies:
+        patterns: ["*"]

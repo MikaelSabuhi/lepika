@@ -16,6 +16,8 @@ uv run pre-commit install
 uv run pytest -q
 ```
 
+The pre-commit hooks run ruff, mypy and bandit on every commit.
+
 The test suite runs in about a second with no network, no Docker, and no real
 processes, because every external effect is an injected callable. New code follows
 the same pattern.

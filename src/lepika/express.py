@@ -46,14 +46,14 @@ def start_stack(
     log.get_logger().info("stack.up", mode="express", engine_managed=cfg.engine_managed)
     if after_engine is not None:
         after_engine()
-    openwebui.ensure_openwebui(cfg)
+    openwebui.ensure_openwebui(cfg, sys=system.REAL)
     return health.webui_url(cfg.webui_port)
 
 
 def stop(info: SystemInfo, cfg: Config) -> bool:
     """`lepika down` in Express mode: stop OpenWebUI; Ollama stays as a shared service."""
     # The port is what proves the recorded pid is still our OpenWebUI.
-    stopped = openwebui.stop_openwebui(info.os, port=cfg.webui_port)
+    stopped = openwebui.stop_openwebui(info.os, port=cfg.webui_port, sys=system.REAL)
     log.get_logger().info("stack.down", mode="express", stopped=stopped)
     return stopped
 
@@ -129,7 +129,10 @@ def update(
                     "run `systemctl disable --now ollama.service` as root",
                 )
             )
-    before = openwebui.openwebui_version(run_fn)
+    # OpenWebUI takes a System; the callables this function was handed reach it
+    # through the transitional adapter.
+    legacy = system.overlay(system.REAL, run=run_fn, popen=popen_fn, sleep=sleep_fn, kill=kill_fn)
+    before = openwebui.openwebui_version(sys=legacy)
     # Pinned like the install and the run: an upgrade that resolved a different
     # interpreter would move the tool env out from under `uv tool run --python`,
     # which then builds an ephemeral one instead of reusing it. check=True: uv exits
@@ -137,16 +140,14 @@ def update(
     run_fn(
         ["uv", "tool", "upgrade", "--python", openwebui.OPENWEBUI_PYTHON, "open-webui"], check=True
     )
-    after = openwebui.openwebui_version(run_fn)
+    after = openwebui.openwebui_version(sys=legacy)
     if before is not None and before == after:
         # Unchanged: a running UI is not interrupted for nothing.
         steps.append(UpdateStep("OpenWebUI", "current", after))
         return steps
     # A restart, not a stop-then-probe: the upgraded build only takes effect once
     # the old server is really gone. An unknown version restarts too.
-    openwebui.restart_openwebui(
-        cfg, info.os, run=run_fn, popen=popen_fn, sleep=sleep_fn, kill=kill_fn
-    )
+    openwebui.restart_openwebui(cfg, info.os, sys=legacy)
     steps.append(UpdateStep("OpenWebUI", "upgraded", _changed(before, after)))
     return steps
 

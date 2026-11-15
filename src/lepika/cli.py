@@ -232,7 +232,7 @@ def _apply_engine_change(cfg: config.Config) -> bool:
         return True
     if not health.webui_up(cfg.webui_port, sys=system.REAL):
         return False
-    openwebui.restart_openwebui(cfg, detect.detect(sys=system.REAL).os)
+    openwebui.restart_openwebui(cfg, detect.detect(sys=system.REAL).os, sys=system.REAL)
     return True
 
 

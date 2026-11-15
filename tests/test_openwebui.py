@@ -5,74 +5,94 @@ import os
 import signal
 import socket
 import stat
+import urllib.request
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import FakeResponse, FakeSystem, Runner, routes
+from fakes import FakeResponse, FakeSystem, routes
 
 from lepika import express, health, log, ollama, openwebui, paths, ports, system
 from lepika.config import Config
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
+from lepika.system import Response
 
 # What `health.webui_up` asks of the default port.
 _HEALTH = "http://127.0.0.1:3000/health"
+# What a pure read of the process table hands `run`: unchecked and unlogged.
+_READ = {"check": False, "env": None, "timeout": None, "log": False, "ok": (0,)}
 
 
-class FakeProc:
-    pid = 4242
+def answering(*up: bool, port: int = 3000, **kwargs: Any) -> FakeSystem:
+    """A machine whose OpenWebUI on `port` answers /health as `up` says, probe by probe.
+
+    The last answer repeats. Anything else asked of the network is refused.
+    """
+    url = f"http://127.0.0.1:{port}/health"
+    said = [FakeResponse() if yes else OSError("connection refused") for yes in up]
+    return FakeSystem(urls=routes({url: said}), **kwargs)
 
 
-class PopenRecorder:
-    def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-        self.envs: list[dict[str, str] | None] = []
-        self.kwargs: list[dict[str, Any]] = []
+class Recorded(FakeSystem):
+    """A FakeSystem that also writes, to one shared list, the order its effects ran in."""
 
-    def __call__(self, cmd: list[str], **kwargs: Any) -> FakeProc:
-        self.calls.append(list(cmd))
-        self.envs.append(kwargs.get("env"))
-        self.kwargs.append(dict(kwargs))
-        return FakeProc()
+    def __init__(self, events: list[str], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.events = events
+
+    def run(self, cmd: Sequence[str], **kwargs: Any) -> Any:
+        kind = "install" if list(cmd[:3]) == ["uv", "tool", "install"] else "run"
+        self.events.append(f"{kind}:" + " ".join(cmd))
+        return super().run(cmd, **kwargs)
+
+    def spawn(self, cmd: Sequence[str], *, env: Mapping[str, str], log: Path) -> int:
+        self.events.append("start:" + " ".join(cmd))
+        return super().spawn(cmd, env=env, log=log)
+
+    def signal(self, pid: int, sig: int) -> None:
+        self.events.append("kill")
+        super().signal(pid, sig)
+
+
+def _kinds(events: list[str]) -> list[str]:
+    return [e.split(":")[0] for e in events]
 
 
 def test_start_openwebui_sets_engine_env_and_writes_pidfile(isolated_home: Path) -> None:
-    popen = PopenRecorder()
-    pid = openwebui.start_openwebui(
-        3000, "http://127.0.0.1:11434", popen=popen, environ={"PATH": "/usr/bin"}
-    )
+    sys = FakeSystem(environ={"PATH": "/usr/bin"})
+    pid = openwebui.start_openwebui(3000, "http://127.0.0.1:11434", sys=sys)
     assert pid == 4242
     assert paths.pid_file("openwebui").read_text() == "4242"
-    assert popen.envs[0] is not None
-    assert popen.envs[0]["OLLAMA_BASE_URL"] == "http://127.0.0.1:11434"
-    assert "open-webui" in " ".join(popen.calls[0])
-    popen.kwargs[0]["stdout"].close()
+    cmd, env, log_path = sys.spawned[0]
+    assert env["OLLAMA_BASE_URL"] == "http://127.0.0.1:11434"
+    assert env["PATH"] == "/usr/bin"
+    assert "open-webui" in " ".join(cmd)
+    # Its output goes where `lepika logs` reads it.
+    assert log_path == paths.logs_dir() / "openwebui.log"
 
 
 def test_start_openwebui_makes_env_win_over_the_saved_admin_config(isolated_home: Path) -> None:
     """OpenWebUI persists its admin panel's engine URL and would ignore ours on restart."""
-    popen = PopenRecorder()
-    openwebui.start_openwebui(3000, "http://gpu-box:11435", popen=popen, environ={})
-    assert popen.envs[0] is not None
-    assert popen.envs[0]["ENABLE_PERSISTENT_CONFIG"] == "false"
-    popen.kwargs[0]["stdout"].close()
+    sys = FakeSystem()
+    openwebui.start_openwebui(3000, "http://gpu-box:11435", sys=sys)
+    _, env, _ = sys.spawned[0]
+    assert env["ENABLE_PERSISTENT_CONFIG"] == "false"
 
 
 def test_start_openwebui_passes_the_engine_key_to_openwebui(isolated_home: Path) -> None:
-    popen = PopenRecorder()
-    openwebui.start_openwebui(3000, "http://gpu-box:11435", popen=popen, environ={}, engine_key="k")
-    assert popen.envs[0] is not None
-    assert json.loads(popen.envs[0]["OLLAMA_API_CONFIGS"]) == {"0": {"key": "k"}}
-    popen.kwargs[0]["stdout"].close()
+    sys = FakeSystem()
+    openwebui.start_openwebui(3000, "http://gpu-box:11435", engine_key="k", sys=sys)
+    _, env, _ = sys.spawned[0]
+    assert json.loads(env["OLLAMA_API_CONFIGS"]) == {"0": {"key": "k"}}
 
 
 def test_start_openwebui_omits_the_key_config_when_there_is_no_key(isolated_home: Path) -> None:
-    popen = PopenRecorder()
-    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
-    assert popen.envs[0] is not None
-    assert "OLLAMA_API_CONFIGS" not in popen.envs[0]
-    popen.kwargs[0]["stdout"].close()
+    sys = FakeSystem()
+    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", sys=sys)
+    _, env, _ = sys.spawned[0]
+    assert "OLLAMA_API_CONFIGS" not in env
 
 
 def test_start_openwebui_pins_the_interpreter(isolated_home: Path) -> None:
@@ -82,50 +102,49 @@ def test_start_openwebui_pins_the_interpreter(isolated_home: Path) -> None:
     pyarrow has none for 3.14 — so the launch never finishes and the user only
     sees "OpenWebUI did not become ready".
     """
-    popen = PopenRecorder()
-    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
-    argv = popen.calls[0]
+    sys = FakeSystem()
+    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", sys=sys)
+    argv, _, _ = sys.spawned[0]
     after_run = argv.index("run") + 1
     assert argv[after_run : after_run + 2] == ["--python", openwebui.OPENWEBUI_PYTHON]
-    popen.kwargs[0]["stdout"].close()
 
 
 def test_install_openwebui_pins_the_same_interpreter_as_the_launch() -> None:
-    cmds: list[list[str]] = []
-    openwebui.install_openwebui(run=lambda cmd, **k: cmds.append(list(cmd)))
-    assert cmds == [["uv", "tool", "install", "--python", openwebui.OPENWEBUI_PYTHON, "open-webui"]]
+    sys = FakeSystem()
+    openwebui.install_openwebui(sys=sys)
+    assert sys.ran == [
+        ["uv", "tool", "install", "--python", openwebui.OPENWEBUI_PYTHON, "open-webui"]
+    ]
     assert openwebui.OPENWEBUI_PYTHON == "3.11"
 
 
 def test_start_openwebui_keeps_openwebui_data_under_lepika_home(isolated_home: Path) -> None:
     """Left to itself OpenWebUI stores chats inside the uv tool venv, which
     `lepika update` rewrites — and which no `LEPIKA_HOME` can move."""
-    popen = PopenRecorder()
-    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
-    assert popen.envs[0] is not None
-    assert popen.envs[0]["DATA_DIR"] == str(isolated_home / "openwebui")
+    sys = FakeSystem()
+    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", sys=sys)
+    _, env, _ = sys.spawned[0]
+    assert env["DATA_DIR"] == str(isolated_home / "openwebui")
     assert (isolated_home / "openwebui").is_dir()
-    popen.kwargs[0]["stdout"].close()
 
 
 def test_start_openwebui_owns_the_signing_secret(isolated_home: Path) -> None:
     """Unset, OpenWebUI drops a `.webui_secret_key` in whatever directory the
     user happened to run `lepika up` from, with the ambient umask."""
-    popen = PopenRecorder()
-    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
+    sys = FakeSystem()
+    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", sys=sys)
     secret = (isolated_home / "openwebui" / "secret_key").read_text(encoding="utf-8").strip()
     assert secret != ""
-    assert popen.envs[0] is not None
-    assert popen.envs[0]["WEBUI_SECRET_KEY"] == secret
-    popen.kwargs[0]["stdout"].close()
+    _, env, _ = sys.spawned[0]
+    assert env["WEBUI_SECRET_KEY"] == secret
 
 
 def test_start_openwebui_never_puts_the_secret_in_argv(isolated_home: Path) -> None:
-    popen = PopenRecorder()
-    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
+    sys = FakeSystem()
+    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", sys=sys)
     secret = (isolated_home / "openwebui" / "secret_key").read_text(encoding="utf-8").strip()
-    assert secret not in " ".join(popen.calls[0])
-    popen.kwargs[0]["stdout"].close()
+    argv, _, _ = sys.spawned[0]
+    assert secret not in " ".join(argv)
 
 
 def test_webui_secret_is_stable_across_restarts(isolated_home: Path) -> None:
@@ -146,13 +165,12 @@ def test_start_openwebui_replaces_an_unreadable_secret_file(isolated_home: Path)
     """A corrupted secret_key is a fresh secret, never a UnicodeDecodeError."""
     data_dir = paths.openwebui_data_dir()
     (data_dir / "secret_key").write_bytes(b"\xff\xfe not utf-8")
-    popen = PopenRecorder()
-    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
+    sys = FakeSystem()
+    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", sys=sys)
     secret = (data_dir / "secret_key").read_text(encoding="utf-8").strip()
     assert secret != ""
-    assert popen.envs[0] is not None
-    assert popen.envs[0]["WEBUI_SECRET_KEY"] == secret
-    popen.kwargs[0]["stdout"].close()
+    _, env, _ = sys.spawned[0]
+    assert env["WEBUI_SECRET_KEY"] == secret
 
 
 def test_stop_is_the_backend_stop_for_express(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -222,11 +240,8 @@ def test_logs_returns_the_tail_of_every_log_file(isolated_home: Path) -> None:
 
 
 def test_start_openwebui_missing_uv_is_friendly(isolated_home: Path) -> None:
-    def missing(*args: Any, **kwargs: Any) -> Any:
-        raise FileNotFoundError(2, "No such file or directory: 'uv'")
-
     with pytest.raises(FriendlyError) as exc:
-        openwebui.start_openwebui(3000, "http://127.0.0.1:11434", popen=missing)
+        openwebui.start_openwebui(3000, "http://127.0.0.1:11434", sys=FakeSystem(missing={"uv"}))
     assert "uv" in exc.value.problem
     assert "astral.sh/uv" in exc.value.fix
     assert not paths.pid_file("openwebui").exists()
@@ -234,26 +249,24 @@ def test_start_openwebui_missing_uv_is_friendly(isolated_home: Path) -> None:
 
 def test_stop_openwebui_kills_pid_and_removes_pidfile(isolated_home: Path) -> None:
     paths.pid_file("openwebui").write_text("4242")
-    killed: list[tuple[int, int]] = []
-    stopped = openwebui.stop_openwebui("linux", kill=lambda pid, sig: killed.append((pid, sig)))
+    sys = FakeSystem()
+    stopped = openwebui.stop_openwebui("linux", sys=sys)
     assert stopped is True
-    assert killed == [(4242, signal.SIGTERM)]
+    assert sys.signals == [(4242, signal.SIGTERM)]
     assert not paths.pid_file("openwebui").exists()
 
 
 def test_stop_openwebui_no_pidfile_returns_false(isolated_home: Path) -> None:
-    assert openwebui.stop_openwebui("linux") is False
+    assert openwebui.stop_openwebui("linux", sys=FakeSystem()) is False
 
 
 def test_stop_openwebui_malformed_pidfile_is_cleaned_up(isolated_home: Path) -> None:
     """A truncated or garbage pid file means nothing to stop — never a traceback."""
     pf = paths.pid_file("openwebui")
     pf.write_text("not-a-pid\n")
-
-    def never(pid: int, sig: int) -> None:
-        raise AssertionError("should not signal anything")
-
-    assert openwebui.stop_openwebui("linux", kill=never) is False
+    sys = FakeSystem()
+    assert openwebui.stop_openwebui("linux", sys=sys) is False
+    assert sys.signals == []
     assert not pf.exists()
 
 
@@ -264,11 +277,9 @@ def test_stop_openwebui_nonpositive_pid_is_never_signalled(
     """`os.kill(0, ...)` signals the whole process group; 0 and negatives never reach kill."""
     pf = paths.pid_file("openwebui")
     pf.write_text(content)
-
-    def never(pid: int, sig: int) -> None:
-        raise AssertionError("should not signal anything")
-
-    assert openwebui.stop_openwebui("linux", kill=never) is False
+    sys = FakeSystem()
+    assert openwebui.stop_openwebui("linux", sys=sys) is False
+    assert sys.signals == []
     assert not pf.exists()
 
 
@@ -276,11 +287,8 @@ def test_stop_openwebui_permission_error_is_not_fatal(isolated_home: Path) -> No
     """A truncated pid can parse to a live foreign pid — refusing it is not a crash."""
     pf = paths.pid_file("openwebui")
     pf.write_text("1")
-
-    def denied(pid: int, sig: int) -> None:
-        raise PermissionError(1, "Operation not permitted")
-
-    assert openwebui.stop_openwebui("linux", kill=denied) is True
+    sys = FakeSystem(signal_errors={1: PermissionError(1, "Operation not permitted")})
+    assert openwebui.stop_openwebui("linux", sys=sys) is True
     assert not pf.exists()
 
 
@@ -288,14 +296,10 @@ def test_stop_openwebui_stale_pidfile_is_never_signalled(isolated_home: Path) ->
     """After a reboot the recorded pid can belong to a stranger — nothing vouches for it."""
     pf = paths.pid_file("openwebui")
     pf.write_text("4242")
-
-    def never(pid: int, sig: int) -> None:
-        raise AssertionError("must not signal a process we cannot confirm is ours")
-
-    stopped = openwebui.stop_openwebui(
-        "linux", run=Runner(), kill=never, port=3000, up=lambda port, **k: False
-    )
+    sys = answering(False)
+    stopped = openwebui.stop_openwebui("linux", port=3000, sys=sys)
     assert stopped is False
+    assert sys.signals == []
     assert not pf.exists()
 
 
@@ -307,18 +311,13 @@ def test_stop_openwebui_stops_a_hung_but_alive_webui(isolated_home: Path) -> Non
     """
     pf = paths.pid_file("openwebui")
     pf.write_text("4242")
-    killed: list[tuple[int, int]] = []
-    run = Runner(stdout={"ps": "uv tool run --from open-webui open-webui serve --port 3000\n"})
-    stopped = openwebui.stop_openwebui(
-        "linux",
-        run=run,
-        kill=lambda pid, sig: killed.append((pid, sig)),
-        port=3000,
-        up=lambda port, **k: False,
+    sys = answering(
+        False, stdout={"ps": "uv tool run --from open-webui open-webui serve --port 3000\n"}
     )
+    stopped = openwebui.stop_openwebui("linux", port=3000, sys=sys)
     assert stopped is True
-    assert killed == [(4242, signal.SIGTERM)]
-    assert run.calls == [["ps", "-o", "args=", "-p", "4242"]]
+    assert sys.signals == [(4242, signal.SIGTERM)]
+    assert sys.ran == [["ps", "-o", "args=", "-p", "4242"]]
     assert not pf.exists()
 
 
@@ -326,72 +325,45 @@ def test_stop_openwebui_leaves_a_recycled_pid_alone(isolated_home: Path) -> None
     """The command line is what separates our hung UI from a stranger's process."""
     pf = paths.pid_file("openwebui")
     pf.write_text("4242")
-
-    def never(pid: int, sig: int) -> None:
-        raise AssertionError("must not signal a process we cannot confirm is ours")
-
-    stopped = openwebui.stop_openwebui(
-        "linux",
-        run=Runner(stdout={"ps": "/usr/lib/systemd/systemd --user\n"}),
-        kill=never,
-        port=3000,
-        up=lambda port, **k: False,
-    )
+    sys = answering(False, stdout={"ps": "/usr/lib/systemd/systemd --user\n"})
+    stopped = openwebui.stop_openwebui("linux", port=3000, sys=sys)
     assert stopped is False
+    assert sys.signals == []
     assert not pf.exists()
 
 
 def test_stop_openwebui_reads_the_command_line_without_logging_it(isolated_home: Path) -> None:
     """A pure read, and a pid that is simply gone is not a failure (rule 12)."""
     paths.pid_file("openwebui").write_text("4242")
-    seen: list[dict[str, Any]] = []
-
-    def run(cmd: list[str], **kwargs: Any) -> Any:
-        seen.append(dict(kwargs))
-        return Runner()(cmd, **kwargs)
-
-    openwebui.stop_openwebui(
-        "linux", run=run, kill=lambda pid, sig: None, port=3000, up=lambda port, **k: False
-    )
+    sys = answering(False)
+    openwebui.stop_openwebui("linux", port=3000, sys=sys)
     # A stale pid file reads twice: its own command line, then the process list the
     # fallback searches once that pid has vouched for nothing. Both are pure reads.
-    assert seen == [{"check": False, "log": False}, {"check": False, "log": False}]
+    assert sys.ran_kwargs == [_READ, _READ]
 
 
 def test_stop_openwebui_on_windows_still_trusts_the_port_alone(isolated_home: Path) -> None:
     """`tasklist` lists images, not argv: nothing there can tell our UI from a stranger."""
     pf = paths.pid_file("openwebui")
     pf.write_text("4242")
-
-    def never(pid: int, sig: int) -> None:
-        raise AssertionError("must not signal a process we cannot confirm is ours")
-
-    run = Runner(stdout={"tasklist": '"python.exe","4242","Console","1","94,208 K"\n'})
-    stopped = openwebui.stop_openwebui(
-        "windows", run=run, kill=never, port=3000, up=lambda port, **k: False
-    )
+    sys = answering(False, stdout={"tasklist": '"python.exe","4242","Console","1","94,208 K"\n'})
+    stopped = openwebui.stop_openwebui("windows", port=3000, sys=sys)
     assert stopped is False
-    assert run.calls == []
+    assert sys.signals == []
+    assert sys.ran == []
     assert not pf.exists()
 
 
 def test_stop_openwebui_signals_when_the_port_answers(isolated_home: Path) -> None:
     """The healthy path is unchanged: a live OpenWebUI on our port still gets SIGTERM."""
     paths.pid_file("openwebui").write_text("4242")
-    killed: list[tuple[int, int]] = []
-    run = Runner()
-    stopped = openwebui.stop_openwebui(
-        "linux",
-        run=run,
-        kill=lambda pid, sig: killed.append((pid, sig)),
-        port=3000,
-        up=lambda port, **k: True,
-    )
+    sys = answering(True)
+    stopped = openwebui.stop_openwebui("linux", port=3000, sys=sys)
     assert stopped is True
-    assert killed == [(4242, signal.SIGTERM)]
+    assert sys.signals == [(4242, signal.SIGTERM)]
     # An answering port settles it on its own: the `and` must short-circuit before
     # `ps` runs, or the common path pays a subprocess it never needed.
-    assert run.calls == []
+    assert sys.ran == []
     assert not paths.pid_file("openwebui").exists()
 
 
@@ -410,138 +382,100 @@ def test_stop_openwebui_adopts_a_webui_no_pidfile_names(isolated_home: Path) -> 
     absent while the UI keeps serving — and `down` reported "Nothing was running"
     every time while `status` went on showing it up.
     """
-    killed: list[tuple[int, int]] = []
-    run = Runner(stdout={"ps": _ps_line(900, 3000)})
-    stopped = openwebui.stop_openwebui(
-        "linux",
-        run=run,
-        kill=lambda pid, sig: killed.append((pid, sig)),
-        port=3000,
-        up=lambda port, **k: True,
-    )
+    sys = answering(True, stdout={"ps": _ps_line(900, 3000)})
+    stopped = openwebui.stop_openwebui("linux", port=3000, sys=sys)
     assert stopped is True
-    assert killed == [(900, signal.SIGTERM)]
-    assert run.calls == [["ps", "-eo", "pid=,args="]]
+    assert sys.signals == [(900, signal.SIGTERM)]
+    assert sys.ran == [["ps", "-eo", "pid=,args="]]
 
 
 def test_stop_openwebui_adopts_every_process_serving_our_port(isolated_home: Path) -> None:
     """`uv tool run` and the server it wraps both carry the argv; neither may be left."""
-    killed: list[int] = []
-    run = Runner(
+    sys = FakeSystem(
         stdout={
             "ps": _ps_line(900, 3000)
             + " 901 /opt/uv/tools/open-webui/bin/python"
             + " /opt/uv/tools/open-webui/bin/open-webui serve --host 127.0.0.1 --port 3000\n"
         }
     )
-    stopped = openwebui.stop_openwebui(
-        "linux", run=run, kill=lambda pid, sig: killed.append(pid), port=3000
-    )
+    stopped = openwebui.stop_openwebui("linux", port=3000, sys=sys)
     assert stopped is True
-    assert killed == [900, 901]
+    assert [pid for pid, _ in sys.signals] == [900, 901]
 
 
 def test_stop_openwebui_adopts_nothing_when_no_process_is_ours(isolated_home: Path) -> None:
     """Without a pid file the argv is the only evidence — a stranger provides none."""
-
-    def never(pid: int, sig: int) -> None:
-        raise AssertionError("must not signal a process we cannot confirm is ours")
-
-    run = Runner(stdout={"ps": " 900 /usr/lib/systemd/systemd --user\n"})
-    assert openwebui.stop_openwebui("linux", run=run, kill=never, port=3000) is False
+    sys = FakeSystem(stdout={"ps": " 900 /usr/lib/systemd/systemd --user\n"})
+    assert openwebui.stop_openwebui("linux", port=3000, sys=sys) is False
+    assert sys.signals == []
 
 
 def test_stop_openwebui_adopts_only_the_webui_on_our_own_port(isolated_home: Path) -> None:
     """A second LEPIKA_HOME runs its own UI on its own port; ours is the one we stop."""
-
-    def never(pid: int, sig: int) -> None:
-        raise AssertionError("another port's UI belongs to another LePika")
-
-    run = Runner(stdout={"ps": _ps_line(900, 3001)})
-    assert openwebui.stop_openwebui("linux", run=run, kill=never, port=3000) is False
+    sys = FakeSystem(stdout={"ps": _ps_line(900, 3001)})
+    assert openwebui.stop_openwebui("linux", port=3000, sys=sys) is False
+    assert sys.signals == []
 
 
 def test_stop_openwebui_matches_the_port_whole(isolated_home: Path) -> None:
     """`--port 30000` starts with `--port 3000`: a substring match would kill it."""
-
-    def never(pid: int, sig: int) -> None:
-        raise AssertionError("port 30000 is not port 3000")
-
-    run = Runner(stdout={"ps": _ps_line(900, 30000)})
-    assert openwebui.stop_openwebui("linux", run=run, kill=never, port=3000) is False
+    sys = FakeSystem(stdout={"ps": _ps_line(900, 30000)})
+    assert openwebui.stop_openwebui("linux", port=3000, sys=sys) is False
+    assert sys.signals == []
 
 
 def test_stop_openwebui_adopts_nothing_on_windows(isolated_home: Path) -> None:
     """`tasklist` lists images, not argv: there is no command line to search there."""
-
-    def never(pid: int, sig: int) -> None:
-        raise AssertionError("must not signal a process we cannot confirm is ours")
-
-    run = Runner(stdout={"ps": _ps_line(900, 3000)})
-    assert openwebui.stop_openwebui("windows", run=run, kill=never, port=3000) is False
-    assert run.calls == []
+    sys = FakeSystem(stdout={"ps": _ps_line(900, 3000)})
+    assert openwebui.stop_openwebui("windows", port=3000, sys=sys) is False
+    assert sys.signals == []
+    assert sys.ran == []
 
 
 def test_stop_openwebui_never_searches_without_a_port(isolated_home: Path) -> None:
     """The port is what the search matches on — with none given there is nothing to ask."""
-    run = Runner(stdout={"ps": _ps_line(900, 3000)})
-    assert openwebui.stop_openwebui("linux", run=run, kill=lambda pid, sig: None) is False
-    assert run.calls == []
+    sys = FakeSystem(stdout={"ps": _ps_line(900, 3000)})
+    assert openwebui.stop_openwebui("linux", sys=sys) is False
+    assert sys.ran == []
 
 
 def test_stop_openwebui_adoption_reads_the_process_list_without_logging_it(
     isolated_home: Path,
 ) -> None:
     """A pure read of every command line on the machine is never written to the log."""
-    seen: list[dict[str, Any]] = []
-
-    def run(cmd: list[str], **kwargs: Any) -> Any:
-        seen.append(dict(kwargs))
-        return Runner(stdout={"ps": _ps_line(900, 3000)})(cmd, **kwargs)
-
-    openwebui.stop_openwebui("linux", run=run, kill=lambda pid, sig: None, port=3000)
-    assert seen == [{"check": False, "log": False}]
+    sys = FakeSystem(stdout={"ps": _ps_line(900, 3000)})
+    openwebui.stop_openwebui("linux", port=3000, sys=sys)
+    assert sys.ran_kwargs == [_READ]
 
 
 def test_stop_openwebui_adoption_survives_a_process_that_just_exited(
     isolated_home: Path,
 ) -> None:
     """`ps` and the signal are two moments: what it listed may already be gone."""
-
-    def vanished(pid: int, sig: int) -> None:
-        raise ProcessLookupError(3, "No such process")
-
-    run = Runner(stdout={"ps": _ps_line(900, 3000)})
-    assert openwebui.stop_openwebui("linux", run=run, kill=vanished, port=3000) is False
+    sys = FakeSystem(
+        stdout={"ps": _ps_line(900, 3000)},
+        signal_errors={900: ProcessLookupError(3, "No such process")},
+    )
+    assert openwebui.stop_openwebui("linux", port=3000, sys=sys) is False
 
 
 def test_stop_openwebui_adoption_ignores_rows_with_no_readable_pid(
     isolated_home: Path,
 ) -> None:
     """`ps` output is parsed, not trusted: a header or a wrapped row is not a pid."""
-
-    def never(pid: int, sig: int) -> None:
-        raise AssertionError("must not signal something that is not a pid")
-
-    run = Runner(stdout={"ps": "  PID COMMAND\n" + " open-webui serve --port 3000\n"})
-    assert openwebui.stop_openwebui("linux", run=run, kill=never, port=3000) is False
+    sys = FakeSystem(stdout={"ps": "  PID COMMAND\n" + " open-webui serve --port 3000\n"})
+    assert openwebui.stop_openwebui("linux", port=3000, sys=sys) is False
+    assert sys.signals == []
 
 
 def test_stop_openwebui_prefers_the_pidfile_over_the_search(isolated_home: Path) -> None:
     """The recorded pid is still the first answer; the search is only the fallback."""
     paths.pid_file("openwebui").write_text("4242")
-    killed: list[int] = []
-    run = Runner(stdout={"ps": _ps_line(900, 3000)})
-    stopped = openwebui.stop_openwebui(
-        "linux",
-        run=run,
-        kill=lambda pid, sig: killed.append(pid),
-        port=3000,
-        up=lambda port, **k: True,
-    )
+    sys = answering(True, stdout={"ps": _ps_line(900, 3000)})
+    stopped = openwebui.stop_openwebui("linux", port=3000, sys=sys)
     assert stopped is True
-    assert killed == [4242]
-    assert run.calls == []
+    assert [pid for pid, _ in sys.signals] == [4242]
+    assert sys.ran == []
 
 
 def test_restart_openwebui_waits_for_the_old_server_to_die_before_starting(
@@ -550,56 +484,39 @@ def test_restart_openwebui_waits_for_the_old_server_to_die_before_starting(
     """`lepika update` must not probe the dying server and call it 'already running'."""
     paths.pid_file("openwebui").write_text("4242")
     events: list[str] = []
-    popen = PopenRecorder()
     lingering = {"probes": 0}
 
-    def up(port: int, **k: Any) -> bool:
+    def up(request: urllib.request.Request) -> Response:
+        assert request.full_url == _HEALTH
         events.append("probe")
-        if "start" in events:
-            return True
+        if "start" in _kinds(events):
+            return FakeResponse()
         # Still answering for a few probes after the SIGTERM, then gone.
         lingering["probes"] += 1
-        return lingering["probes"] <= 4
+        if lingering["probes"] <= 4:
+            return FakeResponse()
+        raise OSError("connection refused")
 
-    def record_popen(cmd: list[str], **k: Any) -> FakeProc:
-        events.append("start")
-        return popen(cmd, **k)
-
-    openwebui.restart_openwebui(
-        Config(),
-        "linux",
-        run=lambda cmd, **k: events.append("install"),
-        popen=record_popen,
-        up=up,
-        sleep=lambda s: None,
-        kill=lambda pid, sig: events.append("kill"),
-        bind_check=lambda port: True,
-    )
-    assert "kill" in events
+    openwebui.restart_openwebui(Config(), "linux", sys=Recorded(events, urls=up))
+    kinds = _kinds(events)
+    assert "kill" in kinds
     # 4 lingering "yes" answers had to be outwaited, not believed: the staleness
     # gate, four probes that still saw the dying server, and the one that finally
     # saw it gone — then ensure_openwebui's own probe before it starts anything.
     assert lingering["probes"] == 6
-    assert events.index("kill") < events.index("install") < events.index("start")
-    popen.kwargs[0]["stdout"].close()
+    assert kinds.index("kill") < kinds.index("install") < kinds.index("start")
 
 
 def test_restart_openwebui_raises_when_the_old_server_never_dies(
     isolated_home: Path,
 ) -> None:
     paths.pid_file("openwebui").write_text("4242")
+    sys = answering(True, port=3210)
     with pytest.raises(FriendlyError) as exc:
-        openwebui.restart_openwebui(
-            Config(webui_port=3210),
-            "linux",
-            run=lambda cmd, **k: None,
-            popen=lambda *a, **k: pytest.fail("must not start a second server"),
-            up=lambda port, **k: True,
-            sleep=lambda s: None,
-            kill=lambda pid, sig: None,
-            bind_check=lambda port: True,
-        )
+        openwebui.restart_openwebui(Config(webui_port=3210), "linux", sys=sys)
     assert "3210" in exc.value.problem or "3210" in exc.value.fix
+    # Never a second server next to the one that would not die.
+    assert sys.spawned == []
 
 
 def test_port_free_sees_a_listener_bound_to_the_wildcard_address() -> None:
@@ -656,70 +573,39 @@ def test_port_free_gives_up_on_a_genuinely_busy_port() -> None:
 
 def test_ensure_openwebui_rejects_a_port_another_app_holds(isolated_home: Path) -> None:
     """A busy port must be named, not hidden behind a 180s 'did not become ready'."""
-
-    def never(*a: Any, **k: Any) -> Any:
-        raise AssertionError("must not install or start when the port is taken")
-
+    sys = answering(False, port=3210, bindable=False)
     with pytest.raises(FriendlyError) as exc:
-        openwebui.ensure_openwebui(
-            Config(webui_port=3210),
-            run=never,
-            popen=never,
-            up=lambda port, **k: False,
-            sleep=lambda s: None,
-            bind_check=lambda port: False,
-        )
+        openwebui.ensure_openwebui(Config(webui_port=3210), sys=sys)
     assert "3210" in exc.value.problem
     assert "webui_port" in exc.value.fix
+    # Neither installed nor started when the port is taken.
+    assert sys.ran == []
+    assert sys.spawned == []
 
 
 def test_ensure_openwebui_noop_when_healthy(isolated_home: Path) -> None:
     """A healthy OpenWebUI must cost nothing: no install round-trip, no start."""
-
-    class NoStart:
-        def __call__(self, *a: Any, **k: Any) -> FakeProc:
-            raise AssertionError("should not start")
-
-    run_calls: list[list[str]] = []
-    openwebui.ensure_openwebui(
-        Config(),
-        run=lambda cmd, **k: run_calls.append(list(cmd)),
-        popen=NoStart(),
-        up=lambda port, urlopen=None: True,
-        sleep=lambda s: None,
-    )
-    assert run_calls == []
+    sys = answering(True)
+    openwebui.ensure_openwebui(Config(), sys=sys)
+    assert sys.ran == []
+    assert sys.spawned == []
 
 
 def test_ensure_openwebui_installs_then_starts_then_waits(isolated_home: Path) -> None:
     events: list[str] = []
-    popen = PopenRecorder()
-
-    def record_run(cmd: list[str], **k: Any) -> None:
-        events.append("install:" + " ".join(cmd))
-
-    def record_popen(cmd: list[str], **k: Any) -> FakeProc:
-        events.append("start:" + " ".join(cmd))
-        return popen(cmd, **k)
 
     # Down until started, up afterwards — so wait_for must run after start.
-    def up(port: int, urlopen: Any = None) -> bool:
+    def up(request: urllib.request.Request) -> Response:
+        assert request.full_url == _HEALTH
         events.append("probe")
-        return any(e.startswith("start:") for e in events)
+        if any(e.startswith("start:") for e in events):
+            return FakeResponse()
+        raise OSError("connection refused")
 
-    openwebui.ensure_openwebui(
-        Config(),
-        run=record_run,
-        popen=record_popen,
-        up=up,
-        sleep=lambda s: None,
-        bind_check=lambda port: True,
-    )
-    kinds = [e.split(":")[0] for e in events]
-    assert kinds == ["probe", "install", "start", "probe"]
+    openwebui.ensure_openwebui(Config(), sys=Recorded(events, urls=up))
+    assert _kinds(events) == ["probe", "install", "start", "probe"]
     assert "uv tool install --python 3.11 open-webui" in events[1]
     assert "--port 3000" in events[2]
-    popen.kwargs[0]["stdout"].close()
 
 
 def test_webui_url_uses_localhost() -> None:
@@ -740,17 +626,16 @@ def test_webui_up_is_true_when_health_check_succeeds() -> None:
 
 def test_start_openwebui_binds_to_localhost_only(isolated_home: Path) -> None:
     """OpenWebUI defaults to 0.0.0.0: Express mode must not put the UI on the network."""
-    popen = PopenRecorder()
-    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", popen=popen, environ={})
-    argv = popen.calls[0]
+    sys = FakeSystem()
+    openwebui.start_openwebui(3000, "http://127.0.0.1:11434", sys=sys)
+    argv, _, _ = sys.spawned[0]
     assert argv[argv.index("--host") + 1] == "127.0.0.1"
-    popen.kwargs[0]["stdout"].close()
 
 
 def test_wait_until_down_hint_does_not_name_a_single_caller() -> None:
     """`lepika connect` restarts the UI too — the hint must not say `lepika update`."""
     with pytest.raises(FriendlyError) as exc:
-        openwebui.wait_until_down(3210, up=lambda port, **k: True, attempts=2, sleep=lambda s: None)
+        openwebui.wait_until_down(3210, attempts=2, sys=answering(True, port=3210))
     assert exc.value.fix == "Stop whatever is listening on port 3210, then try again."
 
 

@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 from conftest import RealNetworkCall
-from fakes import FakeSystem, UnansweredURL
+from fakes import FakeResponse, FakeSystem, UnansweredURL, routes
 
 from lepika import proc, system
 from lepika.errors import CommandNotFound, FriendlyError
@@ -415,3 +415,52 @@ def test_an_unanswered_url_is_not_swallowed_by_a_broad_except() -> None:
         except Exception:
             result = False
         assert result  # never reached: the refusal must escape the except
+
+
+def test_routes_answers_by_url_and_refuses_the_rest() -> None:
+    tags = FakeResponse(b'{"models": []}')
+    answer = routes({"http://x/api/tags": tags})
+    assert answer(urllib.request.Request("http://x/api/tags")) is tags
+    # An unlisted URL escapes a broad `except Exception`, as FakeSystem's own refusal does.
+    with pytest.raises(UnansweredURL, match=re.escape("http://x/api/version")):
+        try:
+            answer(urllib.request.Request("http://x/api/version"))
+        except Exception:
+            pytest.fail("the refusal was an ordinary exception")
+
+
+def test_routes_raises_an_exception_it_was_given() -> None:
+    answer = routes({"http://x/health": OSError("refused")})
+    with pytest.raises(OSError, match="refused"):
+        answer(urllib.request.Request("http://x/health"))
+
+
+def test_fake_response_reads_iterates_and_closes() -> None:
+    whole = FakeResponse(b'{"a": 1}', status=201)
+    with whole as response:
+        assert response is whole
+        assert response.status == 201
+        assert response.read() == b'{"a": 1}'
+    assert whole.closed is True
+
+    streamed = FakeResponse(b'{"status": "a"}\n{"status": "b"}')
+    assert list(streamed) == [b'{"status": "a"}\n', b'{"status": "b"}']
+    assert list(FakeResponse([b"one", b"two"])) == [b"one", b"two"]
+    assert FakeResponse([b"one\n", b"two"]).read() == b"one\ntwo"
+
+    # A connection that drops mid-stream: the lines it got, then the error.
+    dropping = FakeResponse([b"first\n"], fails=TimeoutError("timed out"))
+    lines = iter(dropping)
+    assert next(lines) == b"first\n"
+    with pytest.raises(TimeoutError):
+        next(lines)
+    with pytest.raises(TimeoutError):
+        FakeResponse(b"", fails=TimeoutError("timed out")).read()
+
+
+def test_fake_system_records_the_timeout_of_each_request() -> None:
+    fake = FakeSystem(urls=lambda request: FakeResponse(b""))
+    fake.open_url(urllib.request.Request("http://x/1"), timeout=5)
+    fake.open_url(urllib.request.Request("http://x/2"), timeout=300.0)
+    assert [r.full_url for r in fake.requested] == ["http://x/1", "http://x/2"]
+    assert fake.request_timeouts == [5, 300.0]

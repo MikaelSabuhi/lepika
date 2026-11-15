@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from fakes import Runner
 
-from lepika import config, express, paths
+from lepika import config, health, mlx, ollama, paths, serving
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.paths import logs_dir
@@ -64,7 +64,7 @@ class PopenRecorder:
 
 def test_install_ollama_macos_uses_brew() -> None:
     run = RunRecorder()
-    express.install_ollama(
+    ollama.install_ollama(
         info_for("macos"),
         run=run,
         which=lambda n: "/opt/homebrew/bin/brew" if n == "brew" else None,
@@ -74,14 +74,14 @@ def test_install_ollama_macos_uses_brew() -> None:
 
 def test_install_ollama_macos_without_brew_gives_download_link() -> None:
     with pytest.raises(FriendlyError) as exc:
-        express.install_ollama(info_for("macos"), run=RunRecorder(), which=lambda n: None)
+        ollama.install_ollama(info_for("macos"), run=RunRecorder(), which=lambda n: None)
     assert "ollama.com" in exc.value.fix
 
 
 def test_install_ollama_linux_streams_official_script() -> None:
     run = RunRecorder()
     call = CallRecorder()
-    express.install_ollama(info_for("linux"), run=run, which=lambda n: None, call=call)
+    ollama.install_ollama(info_for("linux"), run=run, which=lambda n: None, call=call)
     assert any("ollama.com/install.sh" in " ".join(c) for c in call.calls)
     # Streamed, not captured: the script may prompt for sudo.
     assert run.calls == []
@@ -98,7 +98,7 @@ _DISABLE = ["sudo", "systemctl", "disable", "--now", "ollama.service"]
 def test_install_ollama_linux_survives_a_failed_optional_step() -> None:
     """The script aborts on a wedged systemd long after the engine is in place."""
     call = CallRecorder(1)
-    express.install_ollama(
+    ollama.install_ollama(
         info_for("linux"),
         run=RunRecorder(),
         which=_systemd_which("ollama"),
@@ -112,9 +112,7 @@ def test_install_ollama_linux_survives_a_failed_optional_step() -> None:
 def test_install_ollama_linux_failure_is_friendly() -> None:
     call = CallRecorder(1)
     with pytest.raises(FriendlyError) as exc:
-        express.install_ollama(
-            info_for("linux"), run=RunRecorder(), which=lambda n: None, call=call
-        )
+        ollama.install_ollama(info_for("linux"), run=RunRecorder(), which=lambda n: None, call=call)
     assert "ollama.com/download/linux" in exc.value.fix
     # A failed install has no service to disable.
     assert len(call.calls) == 1
@@ -122,7 +120,7 @@ def test_install_ollama_linux_failure_is_friendly() -> None:
 
 def test_install_ollama_linux_disables_the_systemd_service_the_script_enables() -> None:
     call = CallRecorder()
-    express.install_ollama(
+    ollama.install_ollama(
         info_for("linux"), run=RunRecorder(), which=_systemd_which(), call=call, euid=1000
     )
     assert call.calls[1:] == [_DISABLE]
@@ -130,13 +128,13 @@ def test_install_ollama_linux_disables_the_systemd_service_the_script_enables() 
 
 def test_install_ollama_linux_without_systemctl_has_no_service_to_disable() -> None:
     call = CallRecorder()
-    express.install_ollama(info_for("linux"), run=RunRecorder(), which=lambda n: None, call=call)
+    ollama.install_ollama(info_for("linux"), run=RunRecorder(), which=lambda n: None, call=call)
     assert len(call.calls) == 1
 
 
 def test_install_ollama_as_root_disables_the_unit_without_sudo() -> None:
     call = CallRecorder()
-    express.install_ollama(
+    ollama.install_ollama(
         info_for("linux"), run=RunRecorder(), which=_systemd_which(), call=call, euid=0
     )
     assert call.calls[1:] == [["systemctl", "disable", "--now", "ollama.service"]]
@@ -167,7 +165,7 @@ def test_install_ollama_linux_survives_a_failed_service_disable(
             return disable
 
     call = SecondCallFails()
-    express.install_ollama(
+    ollama.install_ollama(
         info_for("linux"), run=RunRecorder(), which=_systemd_which(), call=call, euid=1000
     )
     assert call.calls[1:] == [_DISABLE]
@@ -175,13 +173,13 @@ def test_install_ollama_linux_survives_a_failed_service_disable(
 
 def test_install_ollama_windows_uses_winget() -> None:
     run = RunRecorder()
-    express.install_ollama(info_for("windows"), run=run, which=lambda n: None)
+    ollama.install_ollama(info_for("windows"), run=run, which=lambda n: None)
     assert any(c[:2] == ["winget", "install"] for c in run.calls)
 
 
 def test_start_ollama_windows_detaches_and_logs() -> None:
     popen = PopenRecorder()
-    express.start_ollama("windows", popen=popen)
+    ollama.start_ollama("windows", popen=popen)
     cmd, kwargs = popen.calls[0]
     assert cmd == ["ollama", "serve"]
     assert kwargs["creationflags"] == 0x208
@@ -194,7 +192,7 @@ def test_start_ollama_windows_detaches_and_logs() -> None:
 @pytest.mark.parametrize("os_name", ["linux", "macos"])
 def test_start_ollama_posix_detaches_and_logs(os_name: str) -> None:
     popen = PopenRecorder()
-    express.start_ollama(os_name, popen=popen)
+    ollama.start_ollama(os_name, popen=popen)
     cmd, kwargs = popen.calls[0]
     assert cmd == ["ollama", "serve"]
     assert kwargs["start_new_session"] is True
@@ -209,7 +207,7 @@ def test_start_ollama_missing_binary_is_friendly() -> None:
         raise FileNotFoundError(2, "No such file or directory: 'ollama'")
 
     with pytest.raises(FriendlyError) as exc:
-        express.start_ollama("linux", popen=missing)
+        ollama.start_ollama("linux", popen=missing)
     assert "PATH" in exc.value.problem
     assert not paths.pid_file("ollama").exists()
 
@@ -217,7 +215,7 @@ def test_start_ollama_missing_binary_is_friendly() -> None:
 def test_start_ollama_records_the_pid(isolated_home: Path) -> None:
     """Without the pid file a mode switch cannot tell our Ollama from anyone else's."""
     popen = PopenRecorder()
-    express.start_ollama("linux", popen=popen)
+    ollama.start_ollama("linux", popen=popen)
     assert paths.pid_file("ollama").read_text() == "4242"
     popen.calls[0][1]["stdout"].close()
 
@@ -228,7 +226,7 @@ def test_stop_ollama_no_pidfile_returns_false(isolated_home: Path) -> None:
     def never(*a: Any, **k: Any) -> Any:
         raise AssertionError("must not probe or signal anything without a pid file")
 
-    assert express.stop_ollama("linux", "http://127.0.0.1:11434", kill=never, api_up=never) is False
+    assert ollama.stop_ollama("linux", "http://127.0.0.1:11434", kill=never, api_up=never) is False
 
 
 def test_stop_ollama_malformed_pidfile_is_cleaned_up(isolated_home: Path) -> None:
@@ -239,7 +237,7 @@ def test_stop_ollama_malformed_pidfile_is_cleaned_up(isolated_home: Path) -> Non
         raise AssertionError("should not signal anything")
 
     assert (
-        express.stop_ollama(
+        ollama.stop_ollama(
             "linux", "http://127.0.0.1:11434", kill=never, api_up=lambda *a, **k: True
         )
         is False
@@ -257,7 +255,7 @@ def test_stop_ollama_nonpositive_pid_is_never_signalled(isolated_home: Path, con
         raise AssertionError("should not signal anything")
 
     assert (
-        express.stop_ollama(
+        ollama.stop_ollama(
             "linux", "http://127.0.0.1:11434", kill=never, api_up=lambda *a, **k: True
         )
         is False
@@ -273,7 +271,7 @@ def test_stop_ollama_stale_pidfile_is_never_signalled(isolated_home: Path) -> No
     def never(pid: int, sig: int) -> None:
         raise AssertionError("must not signal a process we cannot confirm is ours")
 
-    stopped = express.stop_ollama(
+    stopped = ollama.stop_ollama(
         "linux", "http://127.0.0.1:11434", kill=never, api_up=lambda *a, **k: False
     )
     assert stopped is False
@@ -302,7 +300,7 @@ def test_stop_ollama_signals_when_the_api_answers(isolated_home: Path) -> None:
     probed: list[str] = []
     answers = iter([True, False])
     run = ollama_ps()
-    stopped = express.stop_ollama(
+    stopped = ollama.stop_ollama(
         "linux",
         "http://gpu-box.local:11434",
         run=run,
@@ -322,7 +320,7 @@ def test_stop_ollama_passes_the_engine_key_to_the_probe(isolated_home: Path) -> 
     paths.pid_file("ollama").write_text("4242")
     keys: list[str] = []
     answers = iter([True, False])
-    express.stop_ollama(
+    ollama.stop_ollama(
         "linux",
         "http://127.0.0.1:11434",
         run=ollama_ps(),
@@ -338,7 +336,7 @@ def test_stop_ollama_waits_for_the_engine_to_actually_exit(isolated_home: Path) 
     pf = paths.pid_file("ollama")
     pf.write_text("4242")
     kept: list[bool] = []
-    stopped = express.stop_ollama(
+    stopped = ollama.stop_ollama(
         "linux",
         "http://127.0.0.1:11434",
         run=ollama_ps(),
@@ -359,7 +357,7 @@ def test_stop_ollama_that_never_dies_is_friendly_and_keeps_the_pid_file(
     pf = paths.pid_file("ollama")
     pf.write_text("4242")
     with pytest.raises(FriendlyError) as exc:
-        express.stop_ollama(
+        ollama.stop_ollama(
             "linux",
             "http://127.0.0.1:11434",
             run=ollama_ps(),
@@ -383,7 +381,7 @@ def test_stop_ollama_never_signals_a_pid_that_is_not_an_ollama(isolated_home: Pa
     def never(pid: int, sig: int) -> None:
         raise AssertionError("must not signal a process that is not ours")
 
-    stopped = express.stop_ollama(
+    stopped = ollama.stop_ollama(
         "linux", "http://127.0.0.1:11434", run=run, kill=never, api_up=lambda *a, **k: True
     )
     assert stopped is False
@@ -397,7 +395,7 @@ def test_stop_ollama_windows_checks_tasklist_then_taskkills(isolated_home: Path)
     def never(pid: int, sig: int) -> None:
         raise AssertionError("Windows has no SIGTERM")
 
-    stopped = express.stop_ollama(
+    stopped = ollama.stop_ollama(
         "windows",
         "http://127.0.0.1:11434",
         run=run,
@@ -417,7 +415,7 @@ def test_stop_ollama_windows_leaves_a_pid_that_is_not_an_ollama_alone(isolated_h
     pf.write_text("4242")
     run = Runner(stdout={"tasklist": '"notepad.exe","4242","Console","1","9,208 K"\n'})
     assert (
-        express.stop_ollama(
+        ollama.stop_ollama(
             "windows", "http://127.0.0.1:11434", run=run, api_up=lambda *a, **k: True
         )
         is False
@@ -435,7 +433,7 @@ def test_stop_ollama_permission_error_is_not_fatal(isolated_home: Path) -> None:
         raise PermissionError(1, "Operation not permitted")
 
     assert (
-        express.stop_ollama(
+        ollama.stop_ollama(
             "linux",
             "http://127.0.0.1:11434",
             run=ollama_ps(1),
@@ -449,7 +447,7 @@ def test_stop_ollama_permission_error_is_not_fatal(isolated_home: Path) -> None:
 
 def test_ensure_ollama_skips_install_and_start_when_running() -> None:
     run = RunRecorder()
-    express.ensure_ollama(
+    ollama.ensure_ollama(
         info_for("linux", has_ollama=True),
         run=run,
         which=lambda n: None,
@@ -465,7 +463,7 @@ def test_ensure_ollama_probes_the_url_it_is_given() -> None:
     """A configured remote engine must be probed there, not on the local default."""
     probed: list[str] = []
 
-    express.ensure_ollama(
+    ollama.ensure_ollama(
         info_for("linux", has_ollama=True),
         run=RunRecorder(),
         which=lambda n: None,
@@ -480,7 +478,7 @@ def test_ensure_ollama_probes_the_url_it_is_given() -> None:
 
 def test_wait_for_raises_after_timeout() -> None:
     with pytest.raises(FriendlyError):
-        express.wait_for(lambda: False, seconds=3, what="Ollama API", sleep=lambda s: None)
+        health.wait_for(lambda: False, seconds=3, what="Ollama API", sleep=lambda s: None)
 
 
 def _info(os_name: str, arch: str, gpu: str) -> SystemInfo:
@@ -505,44 +503,42 @@ def _info(os_name: str, arch: str, gpu: str) -> SystemInfo:
 def test_import_allowed_needs_an_mlx_capable_machine(
     os_name: str, arch: str, gpu: str, expected: bool
 ) -> None:
-    assert express.import_allowed(config.Config(), _info(os_name, arch, gpu)) is expected
+    assert serving.import_allowed(config.Config(), _info(os_name, arch, gpu)) is expected
 
 
 def test_import_allowed_is_express_only_and_needs_our_own_engine() -> None:
     mac = _info("macos", "arm64", "apple")
-    assert express.import_allowed(config.Config(mode="server"), mac) is False
-    assert express.import_allowed(config.Config(engine_managed=False), mac) is False
+    assert serving.import_allowed(config.Config(mode="server"), mac) is False
+    assert serving.import_allowed(config.Config(engine_managed=False), mac) is False
 
 
 def test_ollama_install_dir_mirrors_install_sh(tmp_path: Path) -> None:
     exe = tmp_path / "usr" / "local" / "bin" / "ollama"
     exe.parent.mkdir(parents=True)
     exe.write_text("")
-    assert (
-        express.ollama_install_dir("linux", which=lambda n: str(exe)) == tmp_path / "usr" / "local"
-    )
+    assert mlx.ollama_install_dir("linux", which=lambda n: str(exe)) == tmp_path / "usr" / "local"
     win = tmp_path / "Programs" / "Ollama" / "ollama.exe"
     win.parent.mkdir(parents=True)
     win.write_text("")
-    assert express.ollama_install_dir("windows", which=lambda n: str(win)) == win.parent
-    assert express.ollama_install_dir("linux", which=lambda n: None) is None
+    assert mlx.ollama_install_dir("windows", which=lambda n: str(win)) == win.parent
+    assert mlx.ollama_install_dir("linux", which=lambda n: None) is None
 
 
 def test_mlx_present_looks_for_the_cuda_backend_dir(tmp_path: Path) -> None:
-    assert express.mlx_present(tmp_path) is False
+    assert mlx.mlx_present(tmp_path) is False
     (tmp_path / "lib" / "ollama" / "mlx_cuda_v13").mkdir(parents=True)
-    assert express.mlx_present(tmp_path) is True
+    assert mlx.mlx_present(tmp_path) is True
 
 
 def test_cuda_major_parses_nvidia_smi_and_defaults_to_zero() -> None:
     smi = "| NVIDIA-SMI 580.65   Driver Version: 580.65   CUDA Version: 13.0  |"
-    assert express.cuda_major(run=Runner(stdout={"nvidia-smi": smi})) == 13
-    assert express.cuda_major(run=Runner(stdout={"nvidia-smi": "no gpu"})) == 0
+    assert mlx.cuda_major(run=Runner(stdout={"nvidia-smi": smi})) == 13
+    assert mlx.cuda_major(run=Runner(stdout={"nvidia-smi": "no gpu"})) == 0
 
     def gone(cmd: list[str], **k: Any) -> Any:
         raise FriendlyError("Command not found: nvidia-smi", "Install it.")
 
-    assert express.cuda_major(run=gone) == 0
+    assert mlx.cuda_major(run=gone) == 0
 
 
 def test_cuda_major_bounds_a_wedged_driver() -> None:
@@ -553,7 +549,7 @@ def test_cuda_major_bounds_a_wedged_driver() -> None:
         seen.append(dict(kwargs))
         raise FriendlyError("nvidia-smi timed out after 15s.", "Try again.")
 
-    assert express.cuda_major(run=timed_out) == 0
+    assert mlx.cuda_major(run=timed_out) == 0
     assert seen[0]["timeout"] == 15
     assert seen[0]["log"] is False and seen[0]["check"] is False
 
@@ -580,13 +576,13 @@ def test_ensure_mlx_is_a_no_op_on_macos_and_when_the_bundle_is_present(tmp_path:
     call = CallRecorder()
     smi = Runner(stdout={"nvidia-smi": "CUDA Version: 13.0"})
     # macOS returns before it looks at anything: every effect is faked, and none is used.
-    express.ensure_mlx(
+    mlx.ensure_mlx(
         SystemInfo("macos", "arm64", "apple", 32.0, False, True, True),
         which=lambda n: pytest.fail("macOS must not probe for a binary"),
         run=smi,
         call=call,
     )
-    express.ensure_mlx(NVIDIA_LINUX, which=which, run=smi, call=call)
+    mlx.ensure_mlx(NVIDIA_LINUX, which=which, run=smi, call=call)
     assert call.calls == []
     # The bundle is already there, so the driver is never asked about either.
     assert smi.calls == []
@@ -603,10 +599,10 @@ def test_ensure_mlx_installs_the_linux_bundle_with_sudo_when_needed(
             return super().__call__(cmd)
 
     call = Installer()
-    express.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=call, writable=lambda p: False)
+    mlx.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=call, writable=lambda p: False)
     script = call.calls[0][2]
     assert call.calls[0][:2] == ["sh", "-c"]
-    assert express.MLX_BUNDLE["linux"] in script
+    assert mlx.MLX_BUNDLE["linux"] in script
     assert "zstd -d" in script and "sudo tar" in script and str(root) in script
     entry = json.loads((logs_dir() / "lepika.log").read_text().splitlines()[-1])
     assert entry["event"] == "engine.mlx_install"
@@ -623,7 +619,7 @@ def test_ensure_mlx_skips_sudo_for_a_writable_install(tmp_path: Path) -> None:
 
     call = Installer()
     probed: list[Path] = []
-    express.ensure_mlx(
+    mlx.ensure_mlx(
         NVIDIA_LINUX,
         which=which,
         run=SMI13,
@@ -647,7 +643,7 @@ def test_ensure_mlx_quotes_an_awkward_linux_install_dir(tmp_path: Path) -> None:
             return super().__call__(cmd)
 
     call = Installer()
-    express.ensure_mlx(
+    mlx.ensure_mlx(
         NVIDIA_LINUX,
         which=lambda n: str(root / "bin" / "ollama") if n == "ollama" else "/usr/bin/zstd",
         run=SMI13,
@@ -669,11 +665,9 @@ def test_ensure_mlx_installs_the_windows_zip_with_powershell(tmp_path: Path) -> 
             return super().__call__(cmd)
 
     call = Installer()
-    express.ensure_mlx(
-        NVIDIA_WINDOWS, which=lambda n: str(root / "ollama.exe"), run=SMI13, call=call
-    )
+    mlx.ensure_mlx(NVIDIA_WINDOWS, which=lambda n: str(root / "ollama.exe"), run=SMI13, call=call)
     assert call.calls[0][:3] == ["powershell", "-NoProfile", "-Command"]
-    assert express.MLX_BUNDLE["windows"] in call.calls[0][3]
+    assert mlx.MLX_BUNDLE["windows"] in call.calls[0][3]
     assert "Expand-Archive" in call.calls[0][3]
 
 
@@ -688,9 +682,7 @@ def test_ensure_mlx_quotes_an_apostrophe_in_the_windows_install_dir(tmp_path: Pa
             return super().__call__(cmd)
 
     call = Installer()
-    express.ensure_mlx(
-        NVIDIA_WINDOWS, which=lambda n: str(root / "ollama.exe"), run=SMI13, call=call
-    )
+    mlx.ensure_mlx(NVIDIA_WINDOWS, which=lambda n: str(root / "ollama.exe"), run=SMI13, call=call)
     script = call.calls[0][3]
     # Doubled, not raw: a lone `'` would end the string PowerShell is parsing.
     assert f"-DestinationPath '{str(root).replace(chr(39), chr(39) * 2)}'" in script
@@ -703,7 +695,7 @@ def test_ensure_mlx_quotes_an_apostrophe_in_the_windows_install_dir(tmp_path: Pa
 def test_ensure_mlx_refuses_an_old_driver(tmp_path: Path) -> None:
     _root, which = _linux_install(tmp_path)
     with pytest.raises(FriendlyError) as exc:
-        express.ensure_mlx(
+        mlx.ensure_mlx(
             NVIDIA_LINUX,
             which=which,
             run=Runner(stdout={"nvidia-smi": "CUDA Version: 12.8"}),
@@ -724,7 +716,7 @@ def test_ensure_mlx_needs_curl_and_tar_on_linux(tmp_path: Path, missing: str) ->
 
     call = CallRecorder()
     with pytest.raises(FriendlyError) as exc:
-        express.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=call)
+        mlx.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=call)
     assert exc.value.problem == "Installing Ollama's MLX engine bundle needs curl and tar."
     assert "sudo apt install curl tar" in exc.value.fix
     assert call.calls == []  # nothing downloaded before the pipeline could run
@@ -737,7 +729,7 @@ def test_ensure_mlx_needs_zstd_on_linux(tmp_path: Path) -> None:
         return str(root / "bin" / "ollama") if name == "ollama" else None
 
     with pytest.raises(FriendlyError) as exc:
-        express.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=CallRecorder())
+        mlx.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=CallRecorder())
     assert "zstd" in exc.value.problem
 
 
@@ -746,16 +738,16 @@ def test_ensure_mlx_refuses_a_non_standard_install(tmp_path: Path) -> None:
     exe.parent.mkdir(parents=True)
     exe.write_text("")
     with pytest.raises(FriendlyError) as exc:
-        express.ensure_mlx(NVIDIA_LINUX, which=lambda n: str(exe), run=SMI13, call=CallRecorder())
+        mlx.ensure_mlx(NVIDIA_LINUX, which=lambda n: str(exe), run=SMI13, call=CallRecorder())
     # The probed directory is named: "not a standard install" alone is not actionable.
     assert f"{tmp_path / 'snap'} is not a standard Ollama install" in exc.value.problem
-    assert express.MLX_BUNDLE["linux"] in exc.value.fix
+    assert mlx.MLX_BUNDLE["linux"] in exc.value.fix
 
 
 def test_ensure_mlx_reads_a_missing_binary_as_a_stale_path(tmp_path: Path) -> None:
     """A shell opened before OllamaSetup.exe ran has no `ollama` — that is not a broken install."""
     with pytest.raises(FriendlyError) as exc:
-        express.ensure_mlx(NVIDIA_WINDOWS, which=lambda n: None, run=SMI13, call=CallRecorder())
+        mlx.ensure_mlx(NVIDIA_WINDOWS, which=lambda n: None, run=SMI13, call=CallRecorder())
     assert exc.value.problem == "Ollama is installed but not on your PATH yet."
     assert "open a new one" in exc.value.fix
     assert "standard Ollama install" not in exc.value.problem
@@ -764,7 +756,7 @@ def test_ensure_mlx_reads_a_missing_binary_as_a_stale_path(tmp_path: Path) -> No
 def test_ensure_mlx_failed_install_is_friendly(tmp_path: Path, isolated_home: Path) -> None:
     _root, which = _linux_install(tmp_path)
     with pytest.raises(FriendlyError) as exc:
-        express.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=CallRecorder(code=1))
+        mlx.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=CallRecorder(code=1))
     assert "MLX engine bundle failed" in exc.value.problem
     entry = json.loads((logs_dir() / "lepika.log").read_text().splitlines()[-1])
     assert entry["result"] == "failed"
@@ -776,7 +768,7 @@ def test_ensure_mlx_refuses_when_the_installer_reports_success_but_the_bundle_is
     """Exit 0 is not proof: a truncated archive unpacks cleanly and leaves no runner."""
     _root, which = _linux_install(tmp_path)
     with pytest.raises(FriendlyError) as exc:
-        express.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=CallRecorder())
+        mlx.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=CallRecorder())
     assert "MLX engine bundle failed" in exc.value.problem
     entry = json.loads((logs_dir() / "lepika.log").read_text().splitlines()[-1])
     assert entry["result"] == "failed"
@@ -784,30 +776,30 @@ def test_ensure_mlx_refuses_when_the_installer_reports_success_but_the_bundle_is
 
 def test_ollama_store_prefers_the_env_then_the_service_dir_then_home() -> None:
     """The disk an import fills: OLLAMA_MODELS, else the systemd store, else ~/.ollama."""
-    assert express.ollama_store({"OLLAMA_MODELS": "/mnt/models"}) == Path("/mnt/models")
-    assert express.ollama_store({}, exists=lambda p: True) == Path("/usr/share/ollama/.ollama")
-    assert express.ollama_store({}, exists=lambda p: False) == Path.home() / ".ollama"
+    assert mlx.ollama_store({"OLLAMA_MODELS": "/mnt/models"}) == Path("/mnt/models")
+    assert mlx.ollama_store({}, exists=lambda p: True) == Path("/usr/share/ollama/.ollama")
+    assert mlx.ollama_store({}, exists=lambda p: False) == Path.home() / ".ollama"
     # An empty value is not a configured path.
-    assert express.ollama_store({"OLLAMA_MODELS": ""}, exists=lambda p: False) == (
+    assert mlx.ollama_store({"OLLAMA_MODELS": ""}, exists=lambda p: False) == (
         Path.home() / ".ollama"
     )
 
 
 def test_ollama_env_sets_the_context_length_from_config() -> None:
-    env = express.ollama_env(16384, environ={"PATH": "/usr/bin"})
+    env = ollama.ollama_env(16384, environ={"PATH": "/usr/bin"})
     assert env["OLLAMA_CONTEXT_LENGTH"] == "16384"
     assert env["PATH"] == "/usr/bin"
 
 
 def test_ollama_env_lets_the_shell_win() -> None:
     """Like HF_TOKEN: a value the user just exported is fresher than the file."""
-    env = express.ollama_env(16384, environ={"OLLAMA_CONTEXT_LENGTH": "65536"})
+    env = ollama.ollama_env(16384, environ={"OLLAMA_CONTEXT_LENGTH": "65536"})
     assert env["OLLAMA_CONTEXT_LENGTH"] == "65536"
 
 
 def test_start_ollama_passes_the_context_length_to_serve() -> None:
     popen = PopenRecorder()
-    express.start_ollama("linux", popen=popen, context_length=8192, environ={"HOME": "/h"})
+    ollama.start_ollama("linux", popen=popen, context_length=8192, environ={"HOME": "/h"})
     cmd, kwargs = popen.calls[0]
     assert cmd == ["ollama", "serve"]
     assert kwargs["env"]["OLLAMA_CONTEXT_LENGTH"] == "8192"
@@ -819,7 +811,7 @@ def test_ensure_ollama_starts_the_engine_with_the_configured_context_length(
     isolated_home: Path,
 ) -> None:
     popen = PopenRecorder()
-    express.ensure_ollama(
+    ollama.ensure_ollama(
         info_for("linux", has_ollama=True),
         popen=popen,
         api_up=lambda url, **k: bool(popen.calls),
@@ -834,7 +826,7 @@ def test_ensure_ollama_starts_the_engine_with_the_configured_context_length(
 def test_context_note_when_someone_elses_engine_was_already_up(isolated_home: Path) -> None:
     """The tray app or brew started it: our env never reached it, so say how to set it."""
     info = dataclasses.replace(info_for("windows", has_ollama=True), ollama_running=True)
-    note = express.context_note(info, config.Config(context_length=16384), run=Runner())
+    note = ollama.context_note(info, config.Config(context_length=16384), run=Runner())
     assert note is not None
     assert "16384" in note
     assert "Settings" in note  # the Windows app has a Context length setting
@@ -842,14 +834,14 @@ def test_context_note_when_someone_elses_engine_was_already_up(isolated_home: Pa
 
 def test_context_note_on_posix_says_to_restart(isolated_home: Path) -> None:
     info = dataclasses.replace(info_for("linux", has_ollama=True), ollama_running=True)
-    note = express.context_note(info, config.Config(), run=Runner())
+    note = ollama.context_note(info, config.Config(), run=Runner())
     assert note is not None
     assert "lepika up" in note
 
 
 def test_context_note_is_silent_when_nothing_was_running(isolated_home: Path) -> None:
     info = info_for("linux", has_ollama=True)
-    assert express.context_note(info, config.Config(), run=Runner()) is None
+    assert ollama.context_note(info, config.Config(), run=Runner()) is None
 
 
 def test_context_note_is_silent_for_our_own_engine(isolated_home: Path) -> None:
@@ -857,13 +849,13 @@ def test_context_note_is_silent_for_our_own_engine(isolated_home: Path) -> None:
     paths.pid_file("ollama").write_text("4242")
     run = Runner(stdout={"ps -p 4242": "/usr/local/bin/ollama\n"})
     info = dataclasses.replace(info_for("linux", has_ollama=True), ollama_running=True)
-    assert express.context_note(info, config.Config(), run=run) is None
+    assert ollama.context_note(info, config.Config(), run=run) is None
 
 
 def test_context_note_is_silent_for_a_remote_engine(isolated_home: Path) -> None:
     info = dataclasses.replace(info_for("linux", has_ollama=True), ollama_running=True)
     cfg = config.Config(engine_managed=False, engine_url="http://gpu-box:11435")
-    assert express.context_note(info, cfg, run=Runner()) is None
+    assert ollama.context_note(info, cfg, run=Runner()) is None
 
 
 class OurEngine:
@@ -887,7 +879,7 @@ class OurEngine:
         return self.popen(cmd, **kwargs)
 
     def ensure(self, context_length: int, environ: dict[str, str] | None = None) -> None:
-        express.ensure_ollama(
+        ollama.ensure_ollama(
             info_for("linux", has_ollama=True),
             run=Runner(stdout={"ps -p 4242": "/usr/local/bin/ollama\n"}),
             popen=self.start,
@@ -909,7 +901,7 @@ def test_ensure_ollama_restarts_our_engine_when_the_context_length_changed(
     """The README's recipe: edit context_length, run `lepika up`. `down` leaves our
     engine running, so without a restart the new value never reaches it."""
     engine = OurEngine()
-    express.start_ollama("linux", popen=engine.start, context_length=16384, environ={})
+    ollama.start_ollama("linux", popen=engine.start, context_length=16384, environ={})
     engine.ensure(context_length=8192)
     assert engine.killed == [4242]
     assert engine.popen.calls[-1][1]["env"]["OLLAMA_CONTEXT_LENGTH"] == "8192"
@@ -921,7 +913,7 @@ def test_ensure_ollama_leaves_our_engine_alone_when_the_context_length_matches(
 ) -> None:
     """A restart unloads every model: only a changed setting is worth that."""
     engine = OurEngine()
-    express.start_ollama("linux", popen=engine.start, context_length=16384, environ={})
+    ollama.start_ollama("linux", popen=engine.start, context_length=16384, environ={})
     engine.ensure(context_length=16384)
     assert engine.killed == []
     assert len(engine.popen.calls) == 1
@@ -954,7 +946,7 @@ def test_ensure_ollama_compares_against_the_shell_override(isolated_home: Path) 
     the next `up` asks for the same value, so restarting would change nothing."""
     shell = {"OLLAMA_CONTEXT_LENGTH": "65536"}
     engine = OurEngine()
-    express.start_ollama("linux", popen=engine.start, context_length=16384, environ=shell)
+    ollama.start_ollama("linux", popen=engine.start, context_length=16384, environ=shell)
     engine.ensure(context_length=16384, environ=shell)
     assert engine.killed == []
     engine.close()
@@ -964,7 +956,7 @@ def test_ensure_ollama_restart_that_cannot_stop_the_engine_says_to_rerun_up(
     isolated_home: Path,
 ) -> None:
     engine = OurEngine()
-    express.start_ollama("linux", popen=engine.start, context_length=16384, environ={})
+    ollama.start_ollama("linux", popen=engine.start, context_length=16384, environ={})
     engine.kill = lambda pid, sig: None  # type: ignore[method-assign]  # never dies
     with pytest.raises(FriendlyError) as exc:
         engine.ensure(context_length=8192)

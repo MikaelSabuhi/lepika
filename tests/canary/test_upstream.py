@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from lepika import engine, express, hf, models, proc, system
+from lepika import engine, hf, models, ollama, proc, system
 from lepika.errors import FriendlyError
 from lepika.system import System
 
@@ -85,8 +85,8 @@ def test_a_running_ollama_is_recognised_by_pid() -> None:
     found = subprocess.run(["pgrep", "-x", "ollama"], capture_output=True, text=True, check=False)
     pids = [int(pid) for pid in found.stdout.split()]
     assert pids, "no process named ollama is running"
-    assert express._is_ollama_process(pids[0], "linux", proc.run_logged) is True
-    assert express._is_ollama_process(os.getpid(), "linux", proc.run_logged) is False
+    assert ollama._is_ollama_process(pids[0], "linux", proc.run_logged) is True
+    assert ollama._is_ollama_process(os.getpid(), "linux", proc.run_logged) is False
 
 
 def test_the_engine_reports_a_version_lepika_can_compare() -> None:

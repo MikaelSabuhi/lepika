@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from fakes import Caller
 
-from lepika import config, detect, express, paths
+from lepika import config, detect, express, health, ollama, openwebui, paths
 from lepika.backend import UpdateStep
 from lepika.errors import FriendlyError
 
@@ -70,12 +70,12 @@ def _which(*present: str) -> Callable[[str], str | None]:
 @pytest.fixture()
 def restarts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     seen: list[str] = []
-    monkeypatch.setattr(express, "restart_openwebui", lambda cfg, os_name, **k: seen.append("ui"))
+    monkeypatch.setattr(openwebui, "restart_openwebui", lambda cfg, os_name, **k: seen.append("ui"))
     monkeypatch.setattr(
-        express, "stop_ollama", lambda os_name, url, **k: seen.append("stop") or True
+        ollama, "stop_ollama", lambda os_name, url, **k: seen.append("stop") or True
     )
-    monkeypatch.setattr(express, "start_ollama", lambda os_name, **k: seen.append("start"))
-    monkeypatch.setattr(express, "wait_for", lambda pred, secs, what, **k: None)
+    monkeypatch.setattr(ollama, "start_ollama", lambda os_name, **k: seen.append("start"))
+    monkeypatch.setattr(health, "wait_for", lambda pred, secs, what, **k: None)
     return seen
 
 
@@ -293,7 +293,7 @@ def test_update_does_not_start_a_second_engine_when_the_stop_was_refused(
     run = _linux_run(0, 0, ["0.33.2", "0.34.0"])
     run.answers["ps -p 4242"] = "ollama\n"
     monkeypatch.setattr(
-        express, "stop_ollama", lambda os_name, url, **k: bool(restarts.append("stop"))
+        ollama, "stop_ollama", lambda os_name, url, **k: bool(restarts.append("stop"))
     )
     steps = _update(_info("linux"), run, running="0.33.2")
     assert "stop" in restarts and "start" not in restarts
@@ -485,21 +485,21 @@ def test_update_skips_the_engine_entirely_when_it_is_remote(restarts: list[str])
 
 
 def test_ollama_binary_version_reads_both_spellings() -> None:
-    assert express.ollama_binary_version(Seq({"ollama": "ollama version is 0.40.16\n"})) == (
+    assert ollama.ollama_binary_version(Seq({"ollama": "ollama version is 0.40.16\n"})) == (
         "0.40.16"
     )
     no_engine = "Warning: could not connect to a running Ollama instance\n"
     no_engine += "Warning: client version is 0.40.16\n"
-    assert express.ollama_binary_version(Seq({"ollama": no_engine})) == "0.40.16"
-    assert express.ollama_binary_version(Seq({"ollama": ""})) is None
+    assert ollama.ollama_binary_version(Seq({"ollama": no_engine})) == "0.40.16"
+    assert ollama.ollama_binary_version(Seq({"ollama": ""})) is None
     missing = Seq({"ollama": FriendlyError("Command not found: ollama", "install it")})
-    assert express.ollama_binary_version(missing) is None
+    assert ollama.ollama_binary_version(missing) is None
 
 
 def test_ollama_binary_version_reads_the_client_line_when_both_are_printed() -> None:
     """A running engine older than the binary prints both: the client line is the binary."""
     both = "ollama version is 0.33.2\nWarning: client version is 0.34.0\n"
-    assert express.ollama_binary_version(Seq({"ollama": both})) == "0.34.0"
+    assert ollama.ollama_binary_version(Seq({"ollama": both})) == "0.34.0"
 
 
 def test_update_stops_its_engine_with_the_configured_key(
@@ -510,7 +510,7 @@ def test_update_stops_its_engine_with_the_configured_key(
     run.answers["ps -p 4242"] = "ollama\n"
     keys: list[str] = []
     monkeypatch.setattr(
-        express, "stop_ollama", lambda os_name, url, **k: keys.append(k["key"]) or True
+        ollama, "stop_ollama", lambda os_name, url, **k: keys.append(k["key"]) or True
     )
     _update(_info("linux"), run, cfg=config.Config(engine_key="k"), running=["0.33.2", "0.34.0"])
     assert keys == ["k"]

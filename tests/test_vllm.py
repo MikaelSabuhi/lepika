@@ -9,7 +9,7 @@ import pytest
 from fakes import Caller, FakeResponse, FakeSystem, Runner, routes
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, doctor, engine, express, models, paths, server, wizard
+from lepika import cli, config, detect, doctor, engine, health, models, paths, server, wizard
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
@@ -85,14 +85,14 @@ def test_profiles_and_env_switch_to_vllm() -> None:
 
 def test_vllm_up_probes_health() -> None:
     sys = FakeSystem(urls=routes({"http://127.0.0.1:8000/health": FakeResponse()}))
-    assert engine.vllm_up("http://127.0.0.1:8000", sys=sys) is True
+    assert health.vllm_up("http://127.0.0.1:8000", sys=sys) is True
     assert [r.full_url for r in sys.requested] == ["http://127.0.0.1:8000/health"]
 
 
 def test_vllm_up_is_false_when_nothing_answers() -> None:
     refused = OSError("connection refused")
     sys = FakeSystem(urls=routes({"http://127.0.0.1:8000/health": refused}))
-    assert engine.vllm_up("http://127.0.0.1:8000", sys=sys) is False
+    assert health.vllm_up("http://127.0.0.1:8000", sys=sys) is False
 
 
 def test_start_stack_waits_for_vllm_not_ollama(isolated_home: Path) -> None:
@@ -206,9 +206,9 @@ def test_status_labels_and_probes_vllm(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     config.save(config.Config(mode="server", model=REPO))
-    monkeypatch.setattr(detect, "api_up", lambda url, **k: pytest.fail("Ollama is not the engine"))
-    monkeypatch.setattr(engine, "vllm_up", lambda url, **k: True)
-    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    monkeypatch.setattr(health, "api_up", lambda url, **k: pytest.fail("Ollama is not the engine"))
+    monkeypatch.setattr(health, "vllm_up", lambda url, **k: True)
+    monkeypatch.setattr(health, "webui_up", lambda port, **k: True)
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0, result.output
     assert "Engine (vLLM)" in result.output

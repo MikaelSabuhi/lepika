@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from lepika import cli, detect, express, proc
+from lepika import cli, detect, express, health, ollama, openwebui, proc
 from lepika.backend import UpdateStep
 
 runner = CliRunner()
@@ -39,22 +39,22 @@ def test_update_upgrades_engine_and_webui(monkeypatch: pytest.MonkeyPatch) -> No
     )
     monkeypatch.setattr(detect, "detect", lambda **k: info)
     monkeypatch.setattr(proc, "run_logged", fake_run)
-    monkeypatch.setattr(express, "upgrade_ollama", lambda i, **k: installed.append(i))
-    monkeypatch.setattr(detect, "api_up", lambda url, **k: False)
-    monkeypatch.setattr(express, "webui_up", lambda port, **k: False)
-    monkeypatch.setattr(express, "stop_openwebui", lambda os_name, **k: True)
-    monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: None)
+    monkeypatch.setattr(ollama, "upgrade_ollama", lambda i, **k: installed.append(i))
+    monkeypatch.setattr(health, "api_up", lambda url, **k: False)
+    monkeypatch.setattr(health, "webui_up", lambda port, **k: False)
+    monkeypatch.setattr(openwebui, "stop_openwebui", lambda os_name, **k: True)
+    monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
 
     result = runner.invoke(cli.app, ["update"])
     assert result.exit_code == 0
     # The install script must stream (it may prompt for sudo), so it goes through
-    # express.upgrade_ollama — never through captured run_logged.
+    # ollama.upgrade_ollama — never through captured run_logged.
     assert installed == [info]
     assert not any("ollama.com/install.sh" in " ".join(c) for c in calls)
     # The pin travels with every `uv tool` call: an upgrade that resolved a
     # different interpreter would leave `uv tool run --python 3.11` with no
     # matching env to reuse, which is the ephemeral-build failure again.
-    assert ["uv", "tool", "upgrade", "--python", express.OPENWEBUI_PYTHON, "open-webui"] in calls
+    assert ["uv", "tool", "upgrade", "--python", openwebui.OPENWEBUI_PYTHON, "open-webui"] in calls
 
 
 def test_update_restarts_openwebui_rather_than_probing_the_dying_one(
@@ -75,15 +75,15 @@ def test_update_restarts_openwebui_rather_than_probing_the_dying_one(
     monkeypatch.setattr(
         proc, "run_logged", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "", "")
     )
-    monkeypatch.setattr(express, "upgrade_ollama", lambda i, **k: None)
-    monkeypatch.setattr(detect, "api_up", lambda url, **k: False)
+    monkeypatch.setattr(ollama, "upgrade_ollama", lambda i, **k: None)
+    monkeypatch.setattr(health, "api_up", lambda url, **k: False)
     monkeypatch.setattr(
-        express,
+        openwebui,
         "restart_openwebui",
         lambda cfg, os_name, **k: restarts.append((cfg.webui_port, os_name)),
     )
     monkeypatch.setattr(
-        express, "stop_openwebui", lambda *a, **k: pytest.fail("update must go through restart")
+        openwebui, "stop_openwebui", lambda *a, **k: pytest.fail("update must go through restart")
     )
 
     result = runner.invoke(cli.app, ["update"])
@@ -125,7 +125,7 @@ def test_down_gates_the_signal_on_the_configured_port(monkeypatch: pytest.Monkey
     seen: list[int | None] = []
     monkeypatch.setattr(detect, "detect", lambda **k: info)
     monkeypatch.setattr(
-        express,
+        openwebui,
         "stop_openwebui",
         lambda os_name, port=None, **k: bool(seen.append(port)),
     )

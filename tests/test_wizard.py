@@ -7,7 +7,19 @@ import pytest
 from fakes import FakeSystem
 from typer.testing import CliRunner
 
-from lepika import acquire, cli, config, detect, engine, express, gguf, models, wizard
+from lepika import (
+    acquire,
+    cli,
+    config,
+    detect,
+    engine,
+    gguf,
+    health,
+    models,
+    ollama,
+    openwebui,
+    wizard,
+)
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
@@ -148,9 +160,9 @@ def test_run_wizard_orders_engine_then_pull_then_ui_then_browser(
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "1")
-    monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: events.append("engine"))
+    monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: events.append("engine"))
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: events.append("pull"))
-    monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: events.append("ui"))
+    monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: events.append("ui"))
     monkeypatch.setattr(cli, "_open_browser", lambda url: events.append("browser"))
 
     result = runner.invoke(cli.app, [])
@@ -168,14 +180,14 @@ def test_wizard_keeps_the_old_model_when_the_pull_fails(
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "1")
-    monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
+    monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: None)
 
     def boom(url: str, ref: Any, **k: Any) -> None:
         raise FriendlyError("Failed to pull model.", "Check the name.")
 
     monkeypatch.setattr(engine, "pull_model", boom)
     monkeypatch.setattr(
-        express, "ensure_openwebui", lambda cfg, **k: pytest.fail("no UI after a failed pull")
+        openwebui, "ensure_openwebui", lambda cfg, **k: pytest.fail("no UI after a failed pull")
     )
 
     with pytest.raises(FriendlyError):
@@ -198,9 +210,9 @@ def test_dry_run_writes_nothing_and_executes_nothing(
 
     # A dry run installs nothing, downloads nothing, starts nothing, opens nothing:
     # if the early return ever moves, these fail loudly instead of running for real.
-    monkeypatch.setattr(express, "ensure_ollama", never("express.ensure_ollama"))
+    monkeypatch.setattr(ollama, "ensure_ollama", never("ollama.ensure_ollama"))
     monkeypatch.setattr(engine, "pull_model", never("engine.pull_model"))
-    monkeypatch.setattr(express, "ensure_openwebui", never("express.ensure_openwebui"))
+    monkeypatch.setattr(openwebui, "ensure_openwebui", never("openwebui.ensure_openwebui"))
     monkeypatch.setattr(cli, "_open_browser", never("cli._open_browser"))
 
     result = runner.invoke(cli.app, ["--dry-run"])
@@ -242,9 +254,9 @@ def test_wizard_acquires_the_model_through_acquire(
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "Qwen/Qwen3.5-2B")
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
-    monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
-    monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: None)
-    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: None)
+    monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
+    monkeypatch.setattr(health, "webui_up", lambda port, **k: True)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
     monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref: "Qwen/Qwen3.5-2B")
     result = runner.invoke(cli.app, [])
@@ -260,9 +272,9 @@ def test_wizard_declined_download_keeps_the_old_model(
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "Qwen/Qwen3.5-2B")
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
-    monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
-    monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: None)
-    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: None)
+    monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
+    monkeypatch.setattr(health, "webui_up", lambda port, **k: True)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
     monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref: None)
     result = runner.invoke(cli.app, [])

@@ -308,7 +308,7 @@ def test_update_restores_nothing_when_systemd_does_not_answer(
         "Ollama service",
         "stale",
         "could not read ollama.service's state, so it was left as the installer set it — "
-        "if Ollama misbehaves after a reboot, run `sudo systemctl disable --now ollama.service`",
+        "if Ollama misbehaves, run `sudo systemctl disable --now ollama.service`",
     )
     log_text = (paths.logs_dir() / "lepika.log").read_text()
     assert "ollama.update.unit_state_unknown" in log_text

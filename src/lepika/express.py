@@ -1142,13 +1142,13 @@ def update(
         if systemd and unit is None:
             # Left alone rather than restored from a guess: wrongly disabling a
             # user's own service is the worse mistake. But a unit the script just
-            # enabled can win port 11434 after a reboot, so the user hears of it.
+            # enabled and started can contend for port 11434, so the user hears of it.
             steps.append(
                 UpdateStep(
                     "Ollama service",
                     "stale",
                     "could not read ollama.service's state, so it was left as the installer "
-                    "set it — if Ollama misbehaves after a reboot, run "
+                    "set it — if Ollama misbehaves, run "
                     "`sudo systemctl disable --now ollama.service`",
                 )
             )
@@ -1257,7 +1257,9 @@ def _update_ollama(
                 )
         if start:
             start_ollama(info.os, popen=popen, context_length=cfg.context_length)
-            wait_for(lambda: api_up(cfg.engine_url), 30, "Ollama API", sleep=sleep)
+            wait_for(
+                lambda: api_up(cfg.engine_url, key=cfg.engine_key), 30, "Ollama API", sleep=sleep
+            )
     serving = running()
     if serving and after and serving != after:
         # Ours when its stop was refused; otherwise whoever started it restarts it.

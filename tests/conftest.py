@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,15 @@ class RealNetworkCall(BaseException):
     A BaseException on purpose: every opener in `src/` sits under an
     `except Exception` that turns failures into `False` or a fallback, which is
     exactly how an un-faked probe used to pass silently (docs/architecture.md rule 3).
+    """
+
+
+class RealProcessCall(BaseException):
+    """A test started or signalled a real process.
+
+    A BaseException for the same reason as `RealNetworkCall`: production code reads
+    an `OSError` or any `Exception` from a launch or a signal as "not there" and
+    carries on, which is how a real `ps` or a real SIGTERM went unnoticed.
     """
 
 
@@ -56,6 +67,56 @@ def guard_network(node: pytest.Item, monkeypatch: pytest.MonkeyPatch) -> None:
 def no_real_network(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail any test that lets production code call the real `urlopen`."""
     guard_network(request.node, monkeypatch)
+
+
+def guard_processes(node: pytest.Item, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace every standard-library way to launch or signal a process, except for
+    a `canary` test, which is opted out by marker exactly as from the network guard.
+
+    A `real_subprocess` test (the wrapper's own, launching the test interpreter) may
+    start a child, and may signal only a child it started: `subprocess.run` kills
+    its own child on a timeout. Every other pid stays refused. A test that exercises
+    `RealSystem` patches these same names with its own doubles; its
+    `monkeypatch.setattr` runs after this autouse fixture and wins.
+    """
+    if node.get_closest_marker("canary") is not None:
+        return
+    children: set[int] = set()
+    real_kill = os.kill
+
+    def launcher(name: str) -> Any:
+        def refuse(*args: Any, **kwargs: Any) -> Any:
+            argv = args[0] if args else kwargs.get("args", "<unknown>")
+            raise RealProcessCall(f"test started a real process via {name}: {argv}")
+
+        return refuse
+
+    def guarded_kill(pid: int, sig: int) -> None:
+        if pid not in children:
+            raise RealProcessCall(f"test sent a real signal {sig} to pid {pid}")
+        real_kill(pid, sig)
+
+    if node.get_closest_marker("real_subprocess") is None:
+        for name in ("run", "call", "Popen"):
+            monkeypatch.setattr(subprocess, name, launcher(f"subprocess.{name}"))
+    else:
+
+        class RecordedPopen(subprocess.Popen):  # type: ignore[type-arg]
+            """`subprocess.Popen`, noting each pid so the test may signal only its own."""
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                children.add(self.pid)
+
+        # `run` and `call` build their child through the module's `Popen`.
+        monkeypatch.setattr(subprocess, "Popen", RecordedPopen)
+    monkeypatch.setattr(os, "kill", guarded_kill)
+
+
+@pytest.fixture(autouse=True)
+def no_real_processes(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail any test that lets production code start or signal a real process."""
+    guard_processes(request.node, monkeypatch)
 
 
 @pytest.fixture(autouse=True)

@@ -1,4 +1,4 @@
-"""Ports: whether a server could bind one."""
+"""Port probing: can a server bind a port, or is another application on it?"""
 
 from __future__ import annotations
 

@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from fakes import Runner
 
-from lepika import express, health, log, ollama, openwebui, paths, procs
+from lepika import express, health, log, ollama, openwebui, paths, ports
 from lepika.config import Config
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
@@ -610,7 +610,7 @@ def test_port_free_sees_a_listener_bound_to_the_wildcard_address() -> None:
         holder.bind(("0.0.0.0", 0))
         holder.listen(1)
         port = int(holder.getsockname()[1])
-        assert procs.port_free(port, sleep=lambda s: None) is False
+        assert ports.port_free(port, sleep=lambda s: None) is False
 
 
 @pytest.mark.parametrize("busy", ["0.0.0.0", "127.0.0.1"])
@@ -618,7 +618,7 @@ def test_bind_once_calls_a_port_busy_when_either_address_is_taken(busy: str) -> 
     def bind(address: str, port: int) -> bool:
         return address != busy
 
-    assert procs._bind_once(3000, bind_address=bind) is False
+    assert ports._bind_once(3000, bind_address=bind) is False
 
 
 def test_bind_once_probes_both_addresses_before_calling_a_port_free() -> None:
@@ -628,7 +628,7 @@ def test_bind_once_probes_both_addresses_before_calling_a_port_free() -> None:
         probed.append(address)
         return True
 
-    assert procs._bind_once(3000, bind_address=bind) is True
+    assert ports._bind_once(3000, bind_address=bind) is True
     assert probed == ["0.0.0.0", "127.0.0.1"]
 
 
@@ -640,12 +640,12 @@ def test_port_free_retries_before_calling_a_port_busy() -> None:
         attempts["n"] += 1
         return attempts["n"] >= 3
 
-    assert procs.port_free(3000, bind=bind, sleep=lambda s: None) is True
+    assert ports.port_free(3000, bind=bind, sleep=lambda s: None) is True
     assert attempts["n"] == 3
 
 
 def test_port_free_gives_up_on_a_genuinely_busy_port() -> None:
-    assert procs.port_free(3000, bind=lambda port: False, sleep=lambda s: None) is False
+    assert ports.port_free(3000, bind=lambda port: False, sleep=lambda s: None) is False
 
 
 def test_ensure_openwebui_rejects_a_port_another_app_holds(isolated_home: Path) -> None:

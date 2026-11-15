@@ -14,7 +14,7 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
-from lepika import fsio, health, proc, procs
+from lepika import fsio, health, ports, proc
 from lepika.config import Config, config_path
 from lepika.errors import FriendlyError
 from lepika.paths import logs_dir, openwebui_data_dir, pid_file
@@ -267,7 +267,7 @@ def ensure_openwebui(
     # The port is not answering /health, but something else may still own it.
     # Caught here it is one clear sentence; caught later it is a 180s wait that
     # ends in "OpenWebUI did not become ready".
-    free = bind_check if bind_check is not None else procs.port_free
+    free = bind_check if bind_check is not None else ports.port_free
     if not free(cfg.webui_port):
         raise FriendlyError(
             f"Port {cfg.webui_port} is in use by another application.",

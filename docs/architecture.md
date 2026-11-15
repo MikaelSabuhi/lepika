@@ -17,9 +17,9 @@ LePika CLI (Python: Typer + Rich, structlog for the log)
  ├─ express.py  Express backend: start_stack · stop · update · logs
  ├─ ollama.py   native Ollama: install, upgrade, its systemd unit, the process
  ├─ openwebui.py native OpenWebUI via uv: install, secret, start, find, stop, restart
- ├─ mlx.py      Ollama's MLX bundle + where Ollama keeps its models
+ ├─ mlx.py      Ollama's MLX bundle + where Ollama keeps its files
  ├─ health.py   is it answering (Ollama API, vLLM, OpenWebUI), and waiting until it is
- ├─ procs.py    ports: can a server bind one
+ ├─ ports.py    can a server bind a port
  ├─ serving.py  which engine serves a ref on this machine (import_allowed)
  ├─ server.py   Server backend: docker compose (profiles engine · vllm · expose), .env, API key
  ├─ backend.py  what an update reports: one UpdateStep (upgraded · current · stale · note) per component

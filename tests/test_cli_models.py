@@ -43,7 +43,7 @@ def offline_hub(monkeypatch: pytest.MonkeyPatch) -> None:
     """`model add hf.co/…` consults the Hub for quantizations; these tests are about
     the pull and import paths, so the Hub is offline unless a test says otherwise."""
 
-    def unavailable(repo: str, token: str = "", urlopen: Any = None) -> list[gguf.Build]:
+    def unavailable(repo: str, token: str = "", *, sys: Any) -> list[gguf.Build]:
         raise gguf.Unavailable("offline")
 
     monkeypatch.setattr(gguf, "list_builds", unavailable)
@@ -932,7 +932,7 @@ def test_model_add_tagless_gguf_ref_goes_through_the_quant_picker(
     fake_engine: list[str], monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     builds = [gguf.Build("Q4_K_M", int(4e9)), gguf.Build("Q8_0", int(8e9))]
-    monkeypatch.setattr(gguf, "list_builds", lambda repo, token="", urlopen=None: builds)
+    monkeypatch.setattr(gguf, "list_builds", lambda repo, token="", *, sys: builds)
     monkeypatch.setattr(detect, "gpu_memory_gb", lambda info, *, sys: 16.0)
     # Enter at the prompt: `choose_quant` reads `wizard._ask` at call time.
     from lepika import wizard
@@ -948,7 +948,7 @@ def test_model_add_tagless_gguf_ref_goes_through_the_quant_picker(
 def test_model_add_explicit_tag_never_consults_the_hub(
     fake_engine: list[str], monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
-    def never(repo: str, token: str = "", urlopen: Any = None) -> list[gguf.Build]:
+    def never(repo: str, token: str = "", *, sys: Any) -> list[gguf.Build]:
         raise AssertionError("an explicit tag must not list the repo")
 
     monkeypatch.setattr(gguf, "list_builds", never)

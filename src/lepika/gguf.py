@@ -9,6 +9,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from lepika.system import System
+
 # The quantization is the tail of the file stem, read the way the Hub reads it when it
 # resolves `hf.co/<org>/<repo>:<TAG>` for Ollama — so the tag shown is the tag pulled.
 # `UD-` is Unsloth's dynamic-quant prefix and part of the tag.
@@ -105,7 +107,8 @@ def list_builds(
     # B107: an empty default means "no token", not a credential — a real one
     # arrives from the caller and travels only in the request header.
     token: str = "",  # nosec B107
-    urlopen: UrlOpenFn | None = None,
+    *,
+    sys: System,
 ) -> list[Build]:
     """The repo's GGUF builds from one Hub API call; `Unavailable` when it cannot say.
 
@@ -113,10 +116,9 @@ def list_builds(
     answer — offline, 401/403/404/429, a rate-limit HTML page — is one exception the
     caller turns into "let Ollama pick": this is a convenience, never a gate.
     """
-    opener: UrlOpenFn = urlopen if urlopen is not None else urllib.request.urlopen
     request = hub_request(repo, token, "?blobs=true")
     try:
-        with opener(request, timeout=TIMEOUT) as response:
+        with sys.open_url(request, timeout=TIMEOUT) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
         raise Unavailable(str(exc)) from exc

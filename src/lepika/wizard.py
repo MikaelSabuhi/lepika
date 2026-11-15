@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
-from typing import Any
 
 from rich.console import Console
 from rich.markup import escape
@@ -31,7 +30,6 @@ from lepika.models import CuratedModel, ModelRef
 from lepika.system import System
 
 AskFn = Callable[..., str]
-UrlOpenFn = Callable[..., Any]
 console = Console()
 
 _ask: AskFn = Prompt.ask
@@ -96,7 +94,6 @@ def choose_quant(
     cfg: config.Config,
     info: SystemInfo,
     ask: AskFn | None = None,
-    urlopen: UrlOpenFn | None = None,
     *,
     sys: System,
 ) -> ModelRef:
@@ -116,7 +113,7 @@ def choose_quant(
     except FriendlyError:
         return ref  # Ollama's own rejection says what is wrong with it
     try:
-        builds = gguf.list_builds(repo, token=hf.token_for(cfg), urlopen=urlopen)
+        builds = gguf.list_builds(repo, token=hf.token_for(cfg), sys=sys)
     except gguf.Unavailable:
         console.print(
             f"[dim]Couldn't list the quantizations of {escape(repo)} — letting Ollama pick.[/dim]"
@@ -206,12 +203,11 @@ def resolve(
     cfg: config.Config,
     info: SystemInfo,
     ask: AskFn | None = None,
-    urlopen: UrlOpenFn | None = None,
     *,
     sys: System,
 ) -> ModelRef:
     """Validate a typed ref, then settle the one choice it may have left open."""
-    return choose_quant(_validate(ref, cfg, info), cfg, info, ask=ask, urlopen=urlopen, sys=sys)
+    return choose_quant(_validate(ref, cfg, info), cfg, info, ask=ask, sys=sys)
 
 
 def choose_model(
@@ -219,12 +215,11 @@ def choose_model(
     cfg: config.Config,
     ask: AskFn | None = None,
     curated: list[CuratedModel] | None = None,
-    urlopen: UrlOpenFn | None = None,
     *,
     sys: System,
 ) -> ModelRef:
     ask_fn: AskFn = ask if ask is not None else _ask
-    candidates = curated if curated is not None else models.load_curated()
+    candidates = curated if curated is not None else models.load_curated(sys=sys)
     memory = engine_memory(info, cfg, sys=sys)
     fitting = models.fitting(candidates, memory.gb)
     if not fitting:
@@ -280,7 +275,7 @@ def choose_model(
         chosen = picked(answer)
         if chosen is not None:
             return chosen
-    return resolve(models.parse_model_ref(answer), cfg, info, ask=ask_fn, urlopen=urlopen, sys=sys)
+    return resolve(models.parse_model_ref(answer), cfg, info, ask=ask_fn, sys=sys)
 
 
 def choose_mode(info: SystemInfo, current: str, ask: AskFn | None = None) -> str:

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from lepika import engine, express, hf, models, proc
+from lepika import engine, express, hf, models, proc, system
 from lepika.errors import FriendlyError
 
 pytestmark = pytest.mark.canary
@@ -35,7 +35,8 @@ def _no_stored_token(tmp_path: Path) -> dict[str, str]:
 
 
 def test_pull_of_the_smallest_curated_model_succeeds() -> None:
-    smallest = min(models.load_curated(fetch_remote=False), key=lambda m: m.min_ram_gb)
+    curated = models.load_curated(fetch_remote=False, sys=system.REAL)
+    smallest = min(curated, key=lambda m: m.min_ram_gb)
     engine.pull_model(OLLAMA_URL, models.parse_model_ref(smallest.ref))
     installed = [name for name, _size in engine.list_models(OLLAMA_URL)]
     assert any(engine.same_model(name, smallest.ref) for name in installed), installed

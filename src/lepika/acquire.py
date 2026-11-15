@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Confirm
 
-from lepika import config, engine, express, gguf, hf, models, paths, prompts
+from lepika import config, engine, express, gguf, hf, models, paths, prompts, system
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
@@ -47,14 +47,14 @@ confirm: Callable[[str], bool] = ask_confirm
 
 def preflight_with_token(repo: str, cfg: config.Config) -> tuple[hf.Preflight, str]:
     """List the repo; on a gated answer ask for a token once and try again."""
-    token = hf.token_for(cfg)
+    token = hf.token_for(cfg, sys=system.REAL)
     try:
-        return hf.preflight(repo, token), token
+        return hf.preflight(repo, token, sys=system.REAL), token
     except hf.GatedRepo:
         token = hf.ask_token(cfg)
         if not token:
             raise
-        return hf.preflight(repo, token), token
+        return hf.preflight(repo, token, sys=system.REAL), token
 
 
 def _ram_advisory(label: str, quantized: int, info: SystemInfo) -> None:
@@ -93,7 +93,7 @@ def import_repo(
     # The one small file that says so is fetched into the staging dir up front, so
     # the confirm question, the disk math and the RAM advisory all tell the truth.
     dest = hf.download_dir(repo)
-    method = hf.quant_method(hf.fetch_config(repo, dest, token))
+    method = hf.quant_method(hf.fetch_config(repo, dest, token, sys=system.REAL))
     # Only what download fetches (download_bytes skips the GGUF/PyTorch twins), plus
     # the copy Ollama writes — a quarter of a raw source, all of a quantized one.
     # Two filesystems can be involved: the download lands under ~/.lepika, while
@@ -124,7 +124,7 @@ def import_repo(
     if info.os != "macos":
         console.print("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
     express.ensure_mlx(info)
-    hf.download(repo, dest, token)
+    hf.download(repo, dest, token, sys=system.REAL)
     engine.import_model(
         cfg.engine_url,
         ref.raw,

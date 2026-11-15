@@ -5,24 +5,20 @@ from __future__ import annotations
 import fnmatch
 import http.client
 import json
-import os
 import re
 import subprocess
 import urllib.error
-import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from lepika import config, gguf, log, paths, proc, prompts
+from lepika import config, gguf, log, paths, prompts
 from lepika.config import Config
 from lepika.errors import FriendlyError
+from lepika.system import System
 
-RunFn = Callable[..., Any]
-StreamFn = Callable[..., tuple[int, str]]
 AskFn = Callable[..., str]
-UrlOpenFn = gguf.UrlOpenFn
 
 # Same shape as OpenWebUI's `uv tool run`: pinned interpreter, named package.
 HF_PYTHON = "3.12"
@@ -103,12 +99,11 @@ def _parse_size(text: str) -> int:
     return int(float(number) * _UNITS.get(unit, 1))
 
 
-def cache_dir(environ: Mapping[str, str] | None = None) -> Path:
+def cache_dir(environ: Mapping[str, str]) -> Path:
     """Where `huggingface_hub` keeps its download cache, resolved as the library does."""
-    env = environ if environ is not None else os.environ
-    if hub := env.get("HF_HUB_CACHE", "").strip():
+    if hub := environ.get("HF_HUB_CACHE", "").strip():
         return Path(hub)
-    if home := env.get("HF_HOME", "").strip():
+    if home := environ.get("HF_HOME", "").strip():
         return Path(home) / "hub"
     return Path.home() / ".cache" / "huggingface" / "hub"
 
@@ -144,8 +139,8 @@ def _size_of(repo: str, name: str, text: str, cache: Path) -> int:
     return _cached_size(repo, name, cache) if text.strip() == "-" else _parse_size(text)
 
 
-def _env(token: str, environ: Mapping[str, str] | None) -> dict[str, str]:
-    env = dict(environ if environ is not None else os.environ)
+def _env(token: str, environ: Mapping[str, str]) -> dict[str, str]:
+    env = dict(environ)
     if token:
         # The child reads HF_TOKEN; the command line never carries it (rule 11).
         env["HF_TOKEN"] = token
@@ -160,7 +155,7 @@ def _parse_listing(stdout: str) -> list[dict[str, str]]:
     return listing
 
 
-def _listing_failure(repo: str, token: str, urlopen: UrlOpenFn | None) -> FriendlyError:
+def _listing_failure(repo: str, token: str, *, sys: System) -> FriendlyError:
     """Why `hf` could not list the repo, asked of the Hub's model API in one request.
 
     `hf`'s error text changes between releases (2.4.0 says only "Access denied"), so
@@ -169,11 +164,10 @@ def _listing_failure(repo: str, token: str, urlopen: UrlOpenFn | None) -> Friend
     unknown repo with 401 so as not to reveal private ones). Anything else, including
     the Hub not answering, is the generic failure.
     """
-    opener: UrlOpenFn = urlopen if urlopen is not None else urllib.request.urlopen
     status: int | None
     gated = False
     try:
-        with opener(gguf.hub_request(repo, token), timeout=gguf.TIMEOUT) as response:
+        with sys.open_url(gguf.hub_request(repo, token), timeout=gguf.TIMEOUT) as response:
             status = getattr(response, "status", None)
             payload = json.loads(response.read().decode("utf-8"))
         gated = isinstance(payload, dict) and bool(payload.get("gated"))
@@ -205,9 +199,8 @@ def preflight(
     # B107: an empty default means "no token", not a credential — a real one
     # arrives from the caller and travels only in the child's environment.
     token: str = "",  # nosec B107
-    run: RunFn = proc.run_logged,
-    environ: Mapping[str, str] | None = None,
-    urlopen: UrlOpenFn | None = None,
+    *,
+    sys: System,
 ) -> Preflight:
     """What the repo holds and how big it is, without downloading a byte.
 
@@ -216,18 +209,18 @@ def preflight(
     A failed listing is classified by the Hub's own answer, not by `hf`'s wording.
     """
     check_repo(repo)
-    result: subprocess.CompletedProcess[str] = run(
+    result: subprocess.CompletedProcess[str] = sys.run(
         [*HF_CMD, "download", repo, "--dry-run", "--json"],
         check=False,
         log=False,
-        env=_env(token, environ),
+        env=_env(token, sys.environ),
         timeout=_PREFLIGHT_TIMEOUT,
     )
     if result.returncode != 0:
-        raise _listing_failure(repo, token, urlopen)
+        raise _listing_failure(repo, token, sys=sys)
     try:
         entries = _parse_listing(result.stdout)
-        cache = cache_dir(environ)
+        cache = cache_dir(sys.environ)
         sized = [
             (str(e["file"]), _size_of(repo, str(e["file"]), str(e["size"]), cache)) for e in entries
         ]
@@ -276,8 +269,8 @@ def fetch_config(
     # B107: an empty default means "no token", not a credential — a real one
     # arrives from the caller and travels only in the child's environment.
     token: str = "",  # nosec B107
-    run: RunFn = proc.run_logged,
-    environ: Mapping[str, str] | None = None,
+    *,
+    sys: System,
 ) -> dict[str, Any]:
     """config.json alone, into the staging dir the full download will reuse.
 
@@ -286,11 +279,11 @@ def fetch_config(
     """
     check_repo(repo)
     dest.mkdir(parents=True, exist_ok=True)
-    run(
+    sys.run(
         [*HF_CMD, "download", repo, "config.json", "--local-dir", str(dest)],
         check=False,
         log=False,
-        env=_env(token, environ),
+        env=_env(token, sys.environ),
         timeout=_PREFLIGHT_TIMEOUT,
     )
     return load_config(dest)
@@ -302,15 +295,15 @@ def download(
     # B107: an empty default means "no token", not a credential — a real one
     # arrives from the caller and travels only in the child's environment.
     token: str = "",  # nosec B107
-    stream: StreamFn = proc.stream,
-    environ: Mapping[str, str] | None = None,
+    *,
+    sys: System,
 ) -> None:
     """Fetch the weights, resumably: `hf` skips every file that is already complete."""
     dest.mkdir(parents=True, exist_ok=True)
     excludes = [arg for pattern in EXCLUDES for arg in ("--exclude", pattern)]
-    code, _tail = stream(
+    code, _tail = sys.stream(
         [*HF_CMD, "download", repo, "--local-dir", str(dest), *excludes],
-        env=_env(token, environ),
+        env=_env(token, sys.environ),
     )
     logger = log.get_logger()
     if code != 0:
@@ -322,14 +315,13 @@ def download(
     logger.info("hf.download", repo=repo, dest=str(dest), result="success")
 
 
-def token_for(cfg: Config, environ: Mapping[str, str] | None = None) -> str:
+def token_for(cfg: Config, *, sys: System) -> str:
     """HF_TOKEN from the environment wins; the one saved by `ask_token` is the fallback.
 
     Both are stripped: `export HF_TOKEN=$(cat token.txt)` carries a trailing newline,
     which the Hub rejects as a malformed bearer token.
     """
-    env = environ if environ is not None else os.environ
-    return env.get("HF_TOKEN", "").strip() or cfg.hf_token.strip()
+    return sys.environ.get("HF_TOKEN", "").strip() or cfg.hf_token.strip()
 
 
 def ask_token(cfg: Config, ask: AskFn | None = None) -> str:

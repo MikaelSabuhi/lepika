@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 import urllib.request
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -22,8 +21,6 @@ _SHARD = re.compile(r"-\d{5}-of-\d{5}$")
 # Not chat models: vision projectors, importance matrices, speculative-decoding drafts.
 _SKIP_PREFIXES = ("mmproj", "imatrix", "mtp-")
 _UNQUANTIZED = frozenset({"BF16", "F16", "F32"})
-
-UrlOpenFn = Callable[..., Any]
 
 HUB_API = "https://huggingface.co/api/models"
 TIMEOUT = 5

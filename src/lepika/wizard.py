@@ -113,7 +113,7 @@ def choose_quant(
     except FriendlyError:
         return ref  # Ollama's own rejection says what is wrong with it
     try:
-        builds = gguf.list_builds(repo, token=hf.token_for(cfg), sys=sys)
+        builds = gguf.list_builds(repo, token=hf.token_for(cfg, sys=sys), sys=sys)
     except gguf.Unavailable:
         console.print(
             f"[dim]Couldn't list the quantizations of {escape(repo)} — letting Ollama pick.[/dim]"

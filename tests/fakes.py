@@ -109,19 +109,29 @@ class FakeResponse:
         self.closed = True
 
 
+Answer = Response | BaseException
+
+
 def routes(
-    table: Mapping[str, Response | BaseException],
+    table: Mapping[str, Answer | Sequence[Answer]],
 ) -> Callable[[urllib.request.Request], Response]:
     """An `urls` answer for `FakeSystem`: by the request's full URL.
 
     A value that is an exception is raised (an `HTTPError`, a refused connection);
     a URL the table does not list raises `UnansweredURL`, which no broad except hides.
+    A list answers that URL's successive requests in order, and its last item
+    repeats: a server that is down and then up, or answering and then gone.
     """
+    served: dict[str, int] = {}
 
     def answer(request: urllib.request.Request) -> Response:
         if request.full_url not in table:
             _no_url(request)
         found = table[request.full_url]
+        if isinstance(found, Sequence):
+            index = served.get(request.full_url, 0)
+            served[request.full_url] = index + 1
+            found = found[min(index, len(found) - 1)]
         if isinstance(found, BaseException):
             raise found
         return found
@@ -139,6 +149,8 @@ class FakeSystem:
     a working directory the caller stages is often gone once the call returns.
     `while_running` is handed the argv of each `run` the same way, before it returns:
     a test can leave behind what the real command would have written.
+    `bindable` answers every port probe alike, or, as a callable, per address and
+    port. `signal_errors` is raised, after recording, for a signal sent to that pid.
     """
 
     def __init__(
@@ -153,7 +165,8 @@ class FakeSystem:
         spawn_pid: int = 4242,
         euid: int | None = 1000,
         free: int = 10**12,
-        bindable: bool = True,
+        bindable: bool | Callable[[str, int], bool] = True,
+        signal_errors: dict[int, BaseException] | None = None,
         missing: set[str] | None = None,
         ram_bytes: int | None = 16 * 2**30,
         raises: dict[str, BaseException] | None = None,
@@ -172,6 +185,7 @@ class FakeSystem:
         self.uid = euid
         self.free = free
         self.bindable = bindable
+        self.signal_errors = signal_errors or {}
         self.missing = missing or set()
         self.memory = ram_bytes
         self.raises = raises or {}
@@ -181,6 +195,7 @@ class FakeSystem:
         self.streamed: list[tuple[list[str], dict[str, Any]]] = []
         self.spawned: list[tuple[list[str], Mapping[str, str], Path]] = []
         self.signals: list[tuple[int, int]] = []
+        self.bind_probes: list[tuple[str, int]] = []
         self.slept: list[float] = []
         self.requested: list[urllib.request.Request] = []
         self.request_timeouts: list[float] = []
@@ -269,8 +284,14 @@ class FakeSystem:
 
     def signal(self, pid: int, sig: int) -> None:
         self.signals.append((pid, sig))
+        error = self.signal_errors.get(pid)
+        if error is not None:
+            raise error
 
     def can_bind(self, address: str, port: int) -> bool:
+        self.bind_probes.append((address, port))
+        if callable(self.bindable):
+            return self.bindable(address, port)
         return self.bindable
 
     def open_browser(self, url: str) -> None:

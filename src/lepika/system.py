@@ -15,7 +15,7 @@ import sys
 import time
 import urllib.request
 import webbrowser
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol, Self, runtime_checkable
 
@@ -61,6 +61,28 @@ def _bind_address(address: str, port: int) -> bool:
         except OSError:
             return False
     return True
+
+
+def _spawn_with(
+    popen: Callable[..., Any], cmd: Sequence[str], *, env: Mapping[str, str], log: Path
+) -> int:
+    """Start `cmd` detached through `popen`, its output appended to `log`; its pid."""
+    handle = log.open("ab")
+    try:
+        child = popen(
+            list(cmd),
+            stdout=handle,
+            stderr=handle,
+            env=dict(env),
+            **_detach_kwargs("windows" if os.name == "nt" else "posix"),
+        )
+    except FileNotFoundError as exc:
+        raise CommandNotFound(cmd[0]) from exc
+    finally:
+        # The child holds its own copy of the descriptor; the parent's would
+        # otherwise stay open for as long as LePika runs.
+        handle.close()
+    return int(child.pid)
 
 
 def _global_memory_status() -> tuple[bool, int]:  # pragma: no cover - Windows only
@@ -184,22 +206,8 @@ class RealSystem:
         return proc.stream(cmd, env=env, cwd=cwd)
 
     def spawn(self, cmd: Sequence[str], *, env: Mapping[str, str], log: Path) -> int:
-        handle = log.open("ab")
-        try:
-            child = subprocess.Popen(
-                list(cmd),
-                stdout=handle,
-                stderr=handle,
-                env=dict(env),
-                **_detach_kwargs("windows" if os.name == "nt" else "posix"),
-            )
-        except FileNotFoundError as exc:
-            raise CommandNotFound(cmd[0]) from exc
-        finally:
-            # The child holds its own copy of the descriptor; the parent's would
-            # otherwise stay open for as long as LePika runs.
-            handle.close()
-        return int(child.pid)
+        # Looked up at call time, so a test that patches `subprocess.Popen` reaches it.
+        return _spawn_with(subprocess.Popen, cmd, env=env, log=log)
 
     def which(self, name: str) -> str | None:
         return shutil.which(name)
@@ -244,3 +252,153 @@ class RealSystem:
 
 
 REAL: System = RealSystem()
+
+
+class _Overlay:
+    """`base`, with some effects performed by the loose callables a caller was handed."""
+
+    def __init__(
+        self,
+        base: System,
+        *,
+        run: Callable[..., Any] | None,
+        call: Callable[..., Any] | None,
+        stream: Callable[..., Any] | None,
+        which: Callable[[str], str | None] | None,
+        popen: Callable[..., Any] | None,
+        urlopen: Callable[..., Any] | None,
+        sleep: Callable[[float], None] | None,
+        kill: Callable[[int, int], None] | None,
+        bind: Callable[[str, int], bool] | None,
+        environ: Mapping[str, str] | None,
+    ) -> None:
+        self._base = base
+        self._run = run
+        self._call = call
+        self._stream = stream
+        self._which = which
+        self._popen = popen
+        self._urlopen = urlopen
+        self._sleep = sleep
+        self._kill = kill
+        self._bind = bind
+        self._environ = environ
+
+    @property
+    def environ(self) -> Mapping[str, str]:
+        return self._environ if self._environ is not None else self._base.environ
+
+    def run(
+        self,
+        cmd: Sequence[str],
+        *,
+        check: bool = True,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        log: bool = True,
+        ok: Collection[int] = (0,),
+    ) -> subprocess.CompletedProcess[str]:
+        if self._run is None:
+            return self._base.run(cmd, check=check, env=env, timeout=timeout, log=log, ok=ok)
+        result: subprocess.CompletedProcess[str] = self._run(
+            cmd, check=check, env=env, timeout=timeout, log=log, ok=ok
+        )
+        return result
+
+    def call(self, cmd: Sequence[str]) -> int:
+        if self._call is None:
+            return self._base.call(cmd)
+        return int(self._call(cmd))
+
+    def stream(
+        self,
+        cmd: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> tuple[int, str]:
+        if self._stream is None:
+            return self._base.stream(cmd, env=env, cwd=cwd)
+        code, tail = self._stream(cmd, env=env, cwd=cwd)
+        return code, tail
+
+    def spawn(self, cmd: Sequence[str], *, env: Mapping[str, str], log: Path) -> int:
+        if self._popen is None:
+            return self._base.spawn(cmd, env=env, log=log)
+        return _spawn_with(self._popen, cmd, env=env, log=log)
+
+    def which(self, name: str) -> str | None:
+        return self._base.which(name) if self._which is None else self._which(name)
+
+    def open_url(self, request: urllib.request.Request, *, timeout: float) -> Response:
+        if self._urlopen is None:
+            return self._base.open_url(request, timeout=timeout)
+        response: Response = self._urlopen(request, timeout=timeout)
+        return response
+
+    def sleep(self, seconds: float) -> None:
+        if self._sleep is None:
+            self._base.sleep(seconds)
+        else:
+            self._sleep(seconds)
+
+    def signal(self, pid: int, sig: int) -> None:
+        if self._kill is None:
+            self._base.signal(pid, sig)
+        else:
+            self._kill(pid, sig)
+
+    def can_bind(self, address: str, port: int) -> bool:
+        if self._bind is None:
+            return self._base.can_bind(address, port)
+        return self._bind(address, port)
+
+    def open_browser(self, url: str) -> None:
+        self._base.open_browser(url)
+
+    def euid(self) -> int | None:
+        return self._base.euid()
+
+    def disk_free(self, path: Path) -> int:
+        return self._base.disk_free(path)
+
+    def ram_bytes(self) -> int | None:
+        return self._base.ram_bytes()
+
+
+def overlay(
+    base: System,
+    *,
+    run: Callable[..., Any] | None = None,
+    call: Callable[..., Any] | None = None,
+    stream: Callable[..., Any] | None = None,
+    which: Callable[[str], str | None] | None = None,
+    popen: Callable[..., Any] | None = None,
+    urlopen: Callable[..., Any] | None = None,
+    sleep: Callable[[float], None] | None = None,
+    kill: Callable[[int, int], None] | None = None,
+    bind: Callable[[str, int], bool] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> System:
+    """A System doing each effect with the legacy callable given for it, else with `base`.
+
+    Transitional: it lets a function that still receives loose callables (`run`,
+    `popen`, `sleep`, `kill`, ...) call one that takes a `System`. Each use goes
+    when its caller takes `sys: System` itself and passes that through instead.
+    `popen` is the one callable that is not an effect on its own: the child is
+    started the way `RealSystem.spawn` starts it, with `popen` in place of
+    `subprocess.Popen`. A `None` means "use `base`".
+    """
+    return _Overlay(
+        base,
+        run=run,
+        call=call,
+        stream=stream,
+        which=which,
+        popen=popen,
+        urlopen=urlopen,
+        sleep=sleep,
+        kill=kill,
+        bind=bind,
+        environ=environ,
+    )

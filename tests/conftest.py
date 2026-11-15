@@ -75,12 +75,11 @@ def guard_processes(node: pytest.Item, monkeypatch: pytest.MonkeyPatch) -> None:
 
     Launches are refused in `subprocess.Popen.__init__` on the class itself, which
     `run`, `call` and `check_output` all construct, so a reference to `Popen` captured
-    in a parameter default (`proc.stream`, `ollama.start_ollama`) is refused too.
-    Signals are refused by replacing the name `os.kill`. A builtin cannot be guarded
-    any deeper, so the defaults that captured the real one before this fixture ran
-    (`ollama.stop_ollama`, `ollama.ensure_ollama`) are a gap until that module stops
-    taking a `kill` parameter. `test_no_function_captures_a_real_launcher_or_signal_as_a_default`
-    fails on any new capture.
+    in a parameter default (`proc.stream`) is refused too. Signals are refused by
+    replacing the name `os.kill`. A builtin cannot be guarded any deeper, so a default
+    that captured the real one before this fixture ran would be a gap; none does, and
+    `test_no_function_captures_a_real_launcher_or_signal_as_a_default` fails on any
+    new capture.
 
     A `real_subprocess` test may start a child, and may signal only a child it
     started: `subprocess.run` kills its own child on a timeout. Its registered

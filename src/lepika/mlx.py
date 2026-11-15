@@ -2,21 +2,14 @@
 
 from __future__ import annotations
 
-import os
 import re
 import shlex
-import shutil
-from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
 
-from lepika import log, proc
+from lepika import log
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
-
-RunFn = Callable[..., Any]
-WhichFn = Callable[[str], str | None]
-CallFn = Callable[[list[str]], int]
+from lepika.system import System
 
 MLX_BUNDLE = {
     "linux": "https://ollama.com/download/ollama-linux-amd64-mlx.tar.zst",
@@ -25,13 +18,13 @@ MLX_BUNDLE = {
 _CUDA_VERSION = re.compile(r"CUDA Version:\s*(\d+)")
 
 
-def ollama_install_dir(os_name: str, which: WhichFn = shutil.which) -> Path | None:
+def ollama_install_dir(os_name: str, *, sys: System) -> Path | None:
     """Where Ollama's `lib/ollama` lives: derived from the binary, as install.sh does.
 
     Linux: `/usr/local/bin/ollama` → `/usr/local` (`OLLAMA_INSTALL_DIR=$(dirname $BINDIR)`).
     Windows: `ollama.exe` sits next to `lib\\ollama` in `%LOCALAPPDATA%\\Programs\\Ollama`.
     """
-    exe = which("ollama")
+    exe = sys.which("ollama")
     if exe is None:
         return None
     binary = Path(exe).resolve()
@@ -43,20 +36,16 @@ def ollama_install_dir(os_name: str, which: WhichFn = shutil.which) -> Path | No
 _SERVICE_STORE = Path("/usr/share/ollama/.ollama")
 
 
-def ollama_store(
-    environ: Mapping[str, str] | None = None,
-    exists: Callable[[Path], bool] = lambda p: p.is_dir(),
-) -> Path:
+def ollama_store(*, sys: System) -> Path:
     """Where Ollama keeps the models it serves — the disk an import actually fills.
 
     Not the same disk as `~/.lepika` on a stock Linux service install, which is why
     the import's disk check asks both.
     """
-    env = environ if environ is not None else os.environ
-    configured = env.get("OLLAMA_MODELS", "")
+    configured = sys.environ.get("OLLAMA_MODELS", "")
     if configured:
         return Path(configured)
-    if exists(_SERVICE_STORE):
+    if _SERVICE_STORE.is_dir():
         return _SERVICE_STORE
     return Path.home() / ".ollama"
 
@@ -65,26 +54,20 @@ def mlx_present(install_dir: Path) -> bool:
     return (install_dir / "lib" / "ollama" / "mlx_cuda_v13").is_dir()
 
 
-def cuda_major(run: RunFn = proc.run_logged) -> int:
+def cuda_major(*, sys: System) -> int:
     """The driver's CUDA major from `nvidia-smi`'s header; 0 when there is none."""
     try:
         # Bounded: a wedged driver makes `nvidia-smi` hang forever, and this is the
         # last question asked before a multi-gigabyte download. The timeout comes back
         # as a FriendlyError, which reads here as "no CUDA" — the refusal below.
-        output = str(run(["nvidia-smi"], check=False, log=False, timeout=15).stdout)
+        output = str(sys.run(["nvidia-smi"], check=False, log=False, timeout=15).stdout)
     except FriendlyError:
         return 0
     match = _CUDA_VERSION.search(output)
     return int(match.group(1)) if match else 0
 
 
-def ensure_mlx(
-    info: SystemInfo,
-    which: WhichFn = shutil.which,
-    run: RunFn = proc.run_logged,
-    call: CallFn = proc.call,
-    writable: Callable[[Path], bool] = lambda p: os.access(p, os.W_OK),
-) -> None:
+def ensure_mlx(info: SystemInfo, *, sys: System) -> None:
     """Make sure Ollama can run an imported (safetensors) model on this machine.
 
     macOS arm64 builds carry the MLX runner; Linux and Windows get it from a
@@ -96,7 +79,7 @@ def ensure_mlx(
     if info.os == "macos":
         return
     url = MLX_BUNDLE[info.os]
-    install_dir = ollama_install_dir(info.os, which)
+    install_dir = ollama_install_dir(info.os, sys=sys)
     if install_dir is None:
         # An engine can be answering while `which` still misses it: OllamaSetup.exe
         # puts the binary on the PATH of shells opened after it ran, not this one.
@@ -113,11 +96,11 @@ def ensure_mlx(
             "Ollama install.",
             f"Extract {url} over your Ollama install, then try again.",
         )
-    # Where tar writes, and so what `writable` has to probe below.
+    # Where tar writes, and so what `can_write` has to probe below.
     runners = install_dir / "lib" / "ollama"
     if mlx_present(install_dir):
         return
-    major = cuda_major(run)
+    major = cuda_major(sys=sys)
     if major < 13:
         raise FriendlyError(
             "Ollama's MLX engine needs an NVIDIA driver with CUDA 13 or newer "
@@ -125,7 +108,7 @@ def ensure_mlx(
             "Update the driver from https://www.nvidia.com/drivers, then try again.",
         )
     if info.os == "linux":
-        if which("zstd") is None:
+        if sys.which("zstd") is None:
             raise FriendlyError(
                 "zstd is needed to unpack Ollama's MLX engine bundle.",
                 "Install it (apt-get install zstd · dnf install zstd · pacman -S zstd) "
@@ -133,7 +116,7 @@ def ensure_mlx(
             )
         # The other two ends of the pipeline. A minimal container image has neither,
         # and `sh -c` would report only the exit status of the last stage — tar's.
-        if which("curl") is None or which("tar") is None:
+        if sys.which("curl") is None or sys.which("tar") is None:
             raise FriendlyError(
                 "Installing Ollama's MLX engine bundle needs curl and tar.",
                 "Install them with your package manager (e.g. `sudo apt install curl tar`) "
@@ -141,7 +124,7 @@ def ensure_mlx(
             )
         # `lib/ollama`, not the install root: that is the directory tar writes into,
         # and it is the one whose permissions decide whether sudo is needed.
-        sudo = "" if writable(runners) else "sudo "
+        sudo = "" if sys.can_write(runners) else "sudo "
         # Streamed, not captured: exactly how install.sh is run, so a sudo prompt shows —
         # and so a gigabyte of download can draw a progress bar (`-S` keeps curl's own
         # errors visible behind it).
@@ -167,7 +150,7 @@ def ensure_mlx(
     # Safe to hand a shell: the script and the URL are constants, and the one
     # interpolated value — a path from `which`, never user input — is quoted for the
     # shell it goes to (`shlex.quote` for sh, `'` doubled for PowerShell).
-    code = call(cmd)
+    code = sys.call(cmd)
     logger = log.get_logger()
     if code != 0 or not mlx_present(install_dir):
         logger.warning("engine.mlx_install", dir=str(install_dir), result="failed")

@@ -166,6 +166,10 @@ class System(Protocol):
         """The effective uid, or None where the platform has none (Windows)."""
         ...
 
+    def can_write(self, path: Path) -> bool:
+        """May this process write into `path`? (`os.access` with `W_OK`.)"""
+        ...
+
     def disk_free(self, path: Path) -> int: ...
 
     def ram_bytes(self) -> int | None:
@@ -233,6 +237,9 @@ class RealSystem:
         uid = _effective_uid()
         return None if uid < 0 else uid
 
+    def can_write(self, path: Path) -> bool:
+        return os.access(path, os.W_OK)
+
     def disk_free(self, path: Path) -> int:
         return shutil.disk_usage(path).free
 
@@ -271,6 +278,7 @@ class _Overlay:
         kill: Callable[[int, int], None] | None,
         bind: Callable[[str, int], bool] | None,
         environ: Mapping[str, str] | None,
+        euid: int | None,
     ) -> None:
         self._base = base
         self._run = run
@@ -283,6 +291,7 @@ class _Overlay:
         self._kill = kill
         self._bind = bind
         self._environ = environ
+        self._euid = euid
 
     @property
     def environ(self) -> Mapping[str, str]:
@@ -357,7 +366,10 @@ class _Overlay:
         self._base.open_browser(url)
 
     def euid(self) -> int | None:
-        return self._base.euid()
+        return self._base.euid() if self._euid is None else self._euid
+
+    def can_write(self, path: Path) -> bool:
+        return self._base.can_write(path)
 
     def disk_free(self, path: Path) -> int:
         return self._base.disk_free(path)
@@ -379,6 +391,7 @@ def overlay(
     kill: Callable[[int, int], None] | None = None,
     bind: Callable[[str, int], bool] | None = None,
     environ: Mapping[str, str] | None = None,
+    euid: int | None = None,
 ) -> System:
     """A System doing each effect with the legacy callable given for it, else with `base`.
 
@@ -387,7 +400,8 @@ def overlay(
     when its caller takes `sys: System` itself and passes that through instead.
     `popen` is the one callable that is not an effect on its own: the child is
     started the way `RealSystem.spawn` starts it, with `popen` in place of
-    `subprocess.Popen`. A `None` means "use `base`".
+    `subprocess.Popen`. `euid` is an injected uid, not a callable. A `None` means
+    "use `base`".
     """
     return _Overlay(
         base,
@@ -401,4 +415,5 @@ def overlay(
         kill=kill,
         bind=bind,
         environ=environ,
+        euid=euid,
     )

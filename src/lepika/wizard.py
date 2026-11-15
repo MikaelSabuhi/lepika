@@ -364,7 +364,9 @@ def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> SystemInf
     # which is what `engine_managed` short-circuits before the call.
     if previous == "express" and old_cfg.engine_managed:
         try:
-            if ollama.stop_ollama(info.os, old_cfg.engine_url, key=old_cfg.engine_key):
+            if ollama.stop_ollama(
+                info.os, old_cfg.engine_url, key=old_cfg.engine_key, sys=system.REAL
+            ):
                 console.print("Stopped the Ollama LePika had started.")
                 # True means the API went quiet, not just that a signal was sent: the
                 # snapshot is corrected from what was verified, never re-probed.

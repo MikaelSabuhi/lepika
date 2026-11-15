@@ -20,7 +20,22 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from lepika import acquire, config, detect, engine, express, log, models, paths, server, system
+from lepika import (
+    acquire,
+    config,
+    detect,
+    engine,
+    express,
+    health,
+    log,
+    models,
+    ollama,
+    openwebui,
+    paths,
+    server,
+    serving,
+    system,
+)
 from lepika.backend import UpdateStep
 from lepika.errors import ISSUES_URL, CommandNotFound, FriendlyError
 
@@ -102,7 +117,7 @@ def up() -> None:
         console.print(f"[yellow]{escape(note)}[/yellow]")
     # `info` is the pre-start snapshot: an engine running now is one `start_stack`
     # will adopt, and the context length in config.toml will not reach it.
-    if (note := express.context_note(info, cfg)) is not None:
+    if (note := ollama.context_note(info, cfg)) is not None:
         console.print(f"[yellow]{escape(note)}[/yellow]")
     _ready(cfg, _backend(cfg).start_stack(info, cfg))
 
@@ -128,11 +143,11 @@ def status() -> None:
     table.add_row("Mode", cfg.mode)
     vllm = server.vllm_active(cfg)
     engine_ok = (
-        engine.vllm_up(server.VLLM_URL, sys=system.REAL)
+        health.vllm_up(server.VLLM_URL, sys=system.REAL)
         if vllm
-        else detect.api_up(cfg.engine_url, key=cfg.engine_key)
+        else health.api_up(cfg.engine_url, key=cfg.engine_key)
     )
-    webui_ok = express.webui_up(cfg.webui_port)
+    webui_ok = health.webui_up(cfg.webui_port)
     table.add_row(
         "Engine (vLLM)" if vllm else "Engine",
         "[green]up[/green]" if engine_ok else "[red]down[/red]",
@@ -215,9 +230,9 @@ def _apply_engine_change(cfg: config.Config) -> bool:
         # recreates whatever the new engine URL changed, so it needs no probe.
         server.start_stack(detect.detect(sys=system.REAL), cfg)
         return True
-    if not express.webui_up(cfg.webui_port):
+    if not health.webui_up(cfg.webui_port):
         return False
-    express.restart_openwebui(cfg, detect.detect(sys=system.REAL).os)
+    openwebui.restart_openwebui(cfg, detect.detect(sys=system.REAL).os)
     return True
 
 
@@ -255,7 +270,7 @@ def connect(
             f"This machine is exposed, and the proxy can't relay a keyed engine at {url}.",
             "Run `lepika expose --off` first, then connect again — or connect without --key.",
         )
-    if not detect.api_up(url, key=key):
+    if not health.api_up(url, key=key):
         raise FriendlyError(
             f"No engine answered at {url}.",
             "Check the address and that `lepika expose` is on over there "
@@ -447,10 +462,10 @@ def model_add(
         # would bring up vLLM, leave ollama stopped, and fail the pull.
         server.start_stack(info, dataclasses.replace(cfg, model=model_ref.raw))
     elif cfg.engine_managed:
-        express.ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length)
+        ollama.ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length)
     else:
         # A remote engine is someone else's to run: check it, never install for it.
-        express.check_remote_engine(cfg, api_up=detect.api_up)
+        health.check_remote_engine(cfg, api_up=health.api_up)
     served = acquire.acquire(info, cfg, model_ref, quant=quant)
     if served is None:
         console.print("Nothing added.")
@@ -470,7 +485,7 @@ def model_import(
     quant = _checked_quant(quant)
     info = detect.detect(sys=system.REAL)
     cfg = config.load()
-    if not express.import_allowed(cfg, info):
+    if not serving.import_allowed(cfg, info):
         # Before any engine call: a Server-mode config must not have an Ollama
         # installed or started for a model this machine could never build.
         raise FriendlyError(
@@ -485,7 +500,7 @@ def model_import(
     acquire.check_local(path, name)
     # `import_allowed` already means Express with a managed engine, so there is no
     # container or remote case to branch on the way `model add` has to.
-    express.ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length)
+    ollama.ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length)
     # Resolved from here on: the "Importing … from …" line and the `source=` log field
     # name the folder unambiguously, whatever the shell was sitting in.
     served = acquire.import_local(info, cfg, path.resolve(), name, quant)

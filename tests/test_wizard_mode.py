@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, engine, express, models, server, wizard
+from lepika import cli, config, detect, engine, express, models, ollama, server, wizard
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
@@ -296,7 +296,7 @@ def test_leaving_express_mode_stops_the_ollama_lepika_started(
     config.save(config.Config(mode="express", engine_key="s3cret"))
     seen: list[tuple[str, str, str]] = []
     monkeypatch.setattr(
-        express,
+        ollama,
         "stop_ollama",
         lambda os_name, url, key="", **k: bool(seen.append((os_name, url, key))) or True,
     )
@@ -318,7 +318,7 @@ def test_server_start_sees_the_ollama_as_stopped_after_the_switch(
     monkeypatch.setattr(
         detect, "detect", lambda **k: dataclasses.replace(DOCKER, ollama_running=True)
     )
-    monkeypatch.setattr(express, "stop_ollama", lambda os_name, url, **k: True)
+    monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: True)
     seen: list[detect.SystemInfo] = []
 
     def start(info: detect.SystemInfo, cfg: config.Config, **k: Any) -> str:
@@ -337,7 +337,7 @@ def test_an_ollama_lepika_did_not_start_is_left_alone_and_unannounced(
     switching: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No pid file means Homebrew or systemd owns it: say nothing, stop nothing."""
-    monkeypatch.setattr(express, "stop_ollama", lambda os_name, url, **k: False)
+    monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: False)
     answers = iter(["2", "1"])
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
     result = runner.invoke(cli.app, [])
@@ -351,7 +351,7 @@ def test_leaving_express_mode_never_stops_a_remote_engine(
     """Rule 9: an engine someone else runs is never started or stopped by us."""
     config.save(config.Config(mode="express", engine_managed=False))
     monkeypatch.setattr(
-        express, "stop_ollama", lambda *a, **k: pytest.fail("must not touch a remote engine")
+        ollama, "stop_ollama", lambda *a, **k: pytest.fail("must not touch a remote engine")
     )
     answers = iter(["2", "1"])
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
@@ -364,7 +364,7 @@ def test_leaving_server_mode_does_not_stop_a_native_ollama(
     """The stack we are leaving is the containers; a native Ollama was never ours here."""
     config.save(config.Config(mode="server"))
     monkeypatch.setattr(
-        express, "stop_ollama", lambda *a, **k: pytest.fail("Server mode started no native Ollama")
+        ollama, "stop_ollama", lambda *a, **k: pytest.fail("Server mode started no native Ollama")
     )
     answers = iter(["1", "1"])  # Express, then the model
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
@@ -380,7 +380,7 @@ def test_the_mode_is_saved_only_once_the_engine_is_up(
         raise FriendlyError("Ollama is already running natively on port 11434.", "Stop it.")
 
     config.save(config.Config(mode="express", model="previous:model"))
-    monkeypatch.setattr(express, "stop_ollama", lambda os_name, url, **k: False)
+    monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: False)
     monkeypatch.setattr(server, "start_stack", refuse)
     answers = iter(["2", "1"])  # Server, then the model
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
@@ -421,7 +421,7 @@ def test_a_ui_that_will_not_stop_still_lets_the_engine_stop(
         raise FriendlyError("OpenWebUI on port 3000 is still answering.", "Stop it yourself.")
 
     monkeypatch.setattr(express, "stop", boom)
-    monkeypatch.setattr(express, "stop_ollama", lambda os_name, url, **k: True)
+    monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: True)
     answers = iter(["2", "1"])  # Server, then the model
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
     result = runner.invoke(cli.app, [])
@@ -438,7 +438,7 @@ def test_an_engine_that_will_not_stop_still_reports_the_ui_stop(
     def boom(os_name: str, url: str, **k: Any) -> bool:
         raise FriendlyError(f"Ollama at {url} is still answering.", "Stop it yourself.")
 
-    monkeypatch.setattr(express, "stop_ollama", boom)
+    monkeypatch.setattr(ollama, "stop_ollama", boom)
     answers = iter(["2", "1"])  # Server, then the model
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
     result = runner.invoke(cli.app, [])

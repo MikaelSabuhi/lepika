@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, express, paths
+from lepika import cli, config, detect, health, ollama, openwebui, paths
 
 runner = CliRunner()
 
@@ -25,17 +25,17 @@ def quiet_stack(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     counts = {"ensure_ollama": 0, "ensure_openwebui": 0, "browser": 0, "stop": 0}
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     monkeypatch.setattr(
-        express,
+        ollama,
         "ensure_ollama",
         lambda info, **k: counts.__setitem__("ensure_ollama", counts["ensure_ollama"] + 1),
     )
     monkeypatch.setattr(
-        express,
+        openwebui,
         "ensure_openwebui",
         lambda cfg, **k: counts.__setitem__("ensure_openwebui", counts["ensure_openwebui"] + 1),
     )
     monkeypatch.setattr(
-        express,
+        openwebui,
         "stop_openwebui",
         lambda os_name, **k: counts.__setitem__("stop", counts["stop"] + 1) or True,
     )
@@ -83,15 +83,15 @@ def test_down_stops_webui(quiet_stack: dict[str, int]) -> None:
 
 def test_down_says_so_when_nothing_was_running(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
-    monkeypatch.setattr(express, "stop_openwebui", lambda os_name, **k: False)
+    monkeypatch.setattr(openwebui, "stop_openwebui", lambda os_name, **k: False)
     result = runner.invoke(cli.app, ["down"])
     assert result.exit_code == 0
     assert "Nothing was running." in result.output
 
 
 def test_status_reports_services(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> None:
-    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
-    monkeypatch.setattr(express, "webui_up", lambda port, **k: False)
+    monkeypatch.setattr(health, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(health, "webui_up", lambda port, **k: False)
     config.save(config.Config(model="qwen3:8b"))
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0
@@ -103,8 +103,8 @@ def test_status_probes_the_configured_engine_url(
 ) -> None:
     """`engine_url` is a real setting, not decoration: status must honour it."""
     probed: list[str] = []
-    monkeypatch.setattr(detect, "api_up", lambda url, **k: bool(probed.append(url)))
-    monkeypatch.setattr(express, "webui_up", lambda port, **k: False)
+    monkeypatch.setattr(health, "api_up", lambda url, **k: bool(probed.append(url)))
+    monkeypatch.setattr(health, "webui_up", lambda port, **k: False)
     config.save(config.Config(engine_url="http://gpu-box.local:11434"))
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0
@@ -115,8 +115,8 @@ def test_status_shows_the_engine_url_and_says_when_it_is_remote(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     """With a remote engine, "Engine: up" alone hides which machine answered."""
-    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
-    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    monkeypatch.setattr(health, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(health, "webui_up", lambda port, **k: True)
     config.save(config.Config(engine_managed=False, engine_url="http://gpu-box:11435"))
     result = runner.invoke(cli.app, ["status"])
     assert result.exit_code == 0
@@ -129,8 +129,8 @@ def test_status_probes_a_keyed_engine_with_its_key(
 ) -> None:
     """A keyed engine rejects an unauthenticated probe, so status would call it down."""
     seen: list[str] = []
-    monkeypatch.setattr(detect, "api_up", lambda url, key="", **k: bool(seen.append(key)) or True)
-    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    monkeypatch.setattr(health, "api_up", lambda url, key="", **k: bool(seen.append(key)) or True)
+    monkeypatch.setattr(health, "webui_up", lambda port, **k: True)
     config.save(
         config.Config(engine_managed=False, engine_url="http://gpu-box:11435", engine_key="k")
     )
@@ -143,8 +143,8 @@ def test_up_points_the_engine_check_at_the_configured_url(
 ) -> None:
     urls: list[str | None] = []
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
-    monkeypatch.setattr(express, "ensure_ollama", lambda info, url=None, **k: urls.append(url))
-    monkeypatch.setattr(express, "ensure_openwebui", lambda cfg, **k: None)
+    monkeypatch.setattr(ollama, "ensure_ollama", lambda info, url=None, **k: urls.append(url))
+    monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
     config.save(config.Config(engine_url="http://gpu-box.local:11434"))
     result = runner.invoke(cli.app, ["up"])
@@ -177,8 +177,8 @@ def test_logs_rejects_a_nonpositive_line_count(isolated_home: Path) -> None:
 def test_status_shows_exposure_in_server_mode(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
-    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
-    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    monkeypatch.setattr(health, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(health, "webui_up", lambda port, **k: True)
     config.save(config.Config(mode="server", exposed=True, api_port=12345))
     out = runner.invoke(cli.app, ["status"]).output
     assert "Exposed" in out
@@ -193,8 +193,8 @@ def test_status_has_no_exposure_row_in_express_mode(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     """Exposure is a Server-mode feature; a row that can only ever say no is noise."""
-    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
-    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    monkeypatch.setattr(health, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(health, "webui_up", lambda port, **k: True)
     config.save(config.Config(mode="express"))
     assert "Exposed" not in runner.invoke(cli.app, ["status"]).output
 
@@ -202,7 +202,7 @@ def test_status_has_no_exposure_row_in_express_mode(
 def test_up_says_how_to_set_the_context_length_on_an_adopted_engine(
     quiet_stack: dict[str, int], isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(express, "context_note", lambda info, cfg, **k: "set it in Settings")
+    monkeypatch.setattr(ollama, "context_note", lambda info, cfg, **k: "set it in Settings")
     result = runner.invoke(cli.app, ["up"])
     assert result.exit_code == 0
     assert "set it in Settings" in result.output
@@ -211,7 +211,7 @@ def test_up_says_how_to_set_the_context_length_on_an_adopted_engine(
 def test_up_stays_quiet_about_context_length_when_there_is_nothing_to_say(
     quiet_stack: dict[str, int], isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(express, "context_note", lambda info, cfg, **k: None)
+    monkeypatch.setattr(ollama, "context_note", lambda info, cfg, **k: None)
     result = runner.invoke(cli.app, ["up"])
     assert result.exit_code == 0
     assert "context" not in result.output.lower()

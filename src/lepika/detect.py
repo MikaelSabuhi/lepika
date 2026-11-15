@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 import platform as _platform
-import urllib.request
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
-from lepika import config
+from lepika import config, health
 from lepika.errors import ISSUES_URL, FriendlyError
 from lepika.system import System
 
 OsName = Literal["macos", "linux", "windows"]
 Gpu = Literal["apple", "nvidia", "none"]
-UrlOpenFn = Callable[..., Any]
 
 
 @dataclass(frozen=True)
@@ -112,23 +109,6 @@ def detect_ram_gb(*, sys: System) -> float:
     return float(total_bytes) / 2**30
 
 
-def api_up(
-    url: str,
-    timeout: float = 1.0,
-    urlopen: UrlOpenFn | None = None,
-    key: str = "",
-) -> bool:
-    opener: UrlOpenFn = urlopen if urlopen is not None else urllib.request.urlopen
-    request = urllib.request.Request(f"{url}/api/version")
-    if key:
-        request.add_header("Authorization", f"Bearer {key}")
-    try:
-        opener(request, timeout=timeout)
-    except Exception:
-        return False
-    return True
-
-
 def detect(*, sys: System) -> SystemInfo:
     """The machine as LePika needs it, read without starting a process (rule 6)."""
     os_name = detect_os()
@@ -140,7 +120,7 @@ def detect(*, sys: System) -> SystemInfo:
         ram_gb=detect_ram_gb(sys=sys),
         has_docker=sys.which("docker") is not None,
         has_ollama=sys.which("ollama") is not None,
-        ollama_running=api_up(config.DEFAULT_ENGINE_URL, urlopen=sys.open_url),
+        ollama_running=health.api_up(config.DEFAULT_ENGINE_URL, urlopen=sys.open_url),
     )
 
 

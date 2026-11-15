@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Confirm
 
-from lepika import config, engine, express, gguf, hf, models, paths, prompts, system
+from lepika import config, engine, gguf, hf, mlx, models, paths, prompts, serving, system
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
@@ -107,7 +107,7 @@ def import_repo(
     store_bytes = pre.download_bytes if method is not None else pre.download_bytes // 4
     need = int((pre.download_bytes + store_bytes) * 1.1)
     disks = {paths.lepika_home()}  # created on access, so it is always there
-    store = express.ollama_store()
+    store = mlx.ollama_store()
     if store.exists():
         disks.add(store)
     free = min(shutil.disk_usage(disk).free for disk in disks)
@@ -127,7 +127,7 @@ def import_repo(
         return None
     if info.os != "macos":
         console.print("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
-    express.ensure_mlx(info)
+    mlx.ensure_mlx(info)
     hf.download(repo, dest, token, sys=system.REAL)
     engine.import_model(
         cfg.engine_url,
@@ -200,7 +200,7 @@ def import_local(info: SystemInfo, cfg: config.Config, source: Path, name: str, 
     quantized = raw_bytes if method is not None else raw_bytes // 4
     # Only Ollama's store is at stake: the weights are already on disk and stay there,
     # so the copy Ollama writes is the one thing that needs room.
-    store = express.ollama_store()
+    store = mlx.ollama_store()
     free = shutil.disk_usage(store if store.exists() else paths.lepika_home()).free
     if free < quantized:
         raise FriendlyError(
@@ -218,7 +218,7 @@ def import_local(info: SystemInfo, cfg: config.Config, source: Path, name: str, 
     console.print(f"Importing {escape(name)} from {escape(str(source))} {how}…")
     if info.os != "macos":
         console.print("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
-    express.ensure_mlx(info)
+    mlx.ensure_mlx(info)
     engine.import_model(
         cfg.engine_url,
         name,
@@ -248,7 +248,7 @@ def acquire(
             cfg.engine_url, ref, key=cfg.engine_key, managed=cfg.engine_managed, sys=system.REAL
         )
     except engine.NotGGUF:
-        if ref.kind != "hf_gguf" or not express.import_allowed(cfg, info):
+        if ref.kind != "hf_gguf" or not serving.import_allowed(cfg, info):
             raise
         # `hf.co/<org>/<repo>:tag` — the tag is Ollama's, not part of the repo id.
         repo, _tag = gguf.split_tag(ref.raw)

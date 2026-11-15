@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from fakes import FakeSystem
 
-from lepika import config, detect
+from lepika import config, detect, health
 from lepika.errors import FriendlyError
 
 _NVIDIA_SMI = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
@@ -99,8 +99,8 @@ def test_api_up_true_and_false() -> None:
     def boom(req: Any, timeout: float = 0) -> Any:
         raise OSError("refused")
 
-    assert detect.api_up("http://x", urlopen=ok) is True
-    assert detect.api_up("http://x", urlopen=boom) is False
+    assert health.api_up("http://x", urlopen=ok) is True
+    assert health.api_up("http://x", urlopen=boom) is False
 
 
 def test_api_up_sends_bearer_key_when_given() -> None:
@@ -110,7 +110,7 @@ def test_api_up_sends_bearer_key_when_given() -> None:
         seen.append(req)
         return object()
 
-    assert detect.api_up("http://x", urlopen=opener, key="s3cret") is True
+    assert health.api_up("http://x", urlopen=opener, key="s3cret") is True
     request = seen[0]
     assert request.full_url == "http://x/api/version"
     assert request.get_header("Authorization") == "Bearer s3cret"
@@ -123,7 +123,7 @@ def test_api_up_without_key_sends_no_authorization_header() -> None:
         seen.append(req)
         return object()
 
-    assert detect.api_up("http://x", urlopen=opener) is True
+    assert health.api_up("http://x", urlopen=opener) is True
     assert seen[0].get_header("Authorization") is None
 
 

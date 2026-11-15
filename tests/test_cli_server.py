@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, express, server
+from lepika import cli, config, detect, express, health, server
 
 runner = CliRunner()
 DOCKER = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
@@ -48,8 +48,8 @@ def test_down_status_logs_update_use_server_backend(
     assert runner.invoke(cli.app, ["update"]).exit_code == 0
     assert server_mode == ["stop", "update"]
     assert "ready" in runner.invoke(cli.app, ["logs"]).output
-    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
-    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    monkeypatch.setattr(health, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(health, "webui_up", lambda port, **k: True)
     out = runner.invoke(cli.app, ["status"]).output
     assert "server" in out
 

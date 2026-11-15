@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from conftest import REAL_URLOPEN, RealNetworkCall, guard_network
 
-from lepika import detect, express, system
+from lepika import detect, health, system
 
 
 def test_real_urlopen_is_replaced_for_every_test() -> None:
@@ -28,7 +28,7 @@ def test_the_guard_also_catches_a_keyword_url() -> None:
 def test_the_guard_is_not_swallowed_by_except_exception() -> None:
     # webui_up catches Exception and returns False; the guard must still fail the test.
     with pytest.raises(RealNetworkCall):
-        express.webui_up(3000)
+        health.webui_up(3000)
 
 
 def test_dockers_memory_is_never_asked_of_the_real_docker(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from lepika import acquire, cli, config, detect, engine, express, gguf, hf
+from lepika import acquire, cli, config, detect, engine, gguf, health, hf, mlx, ollama
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
 
@@ -53,7 +53,7 @@ def offline_hub(monkeypatch: pytest.MonkeyPatch) -> None:
 def fake_engine(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     pulled: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
-    monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
+    monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: None)
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: pulled.append(ref.raw))
     monkeypatch.setattr(engine, "show", lambda url, name, **k: None)
     return pulled
@@ -159,7 +159,7 @@ def test_model_add_never_rebuilds_on_a_remote_engine(
     monkeypatch.setattr(
         engine, "show", lambda url, name, **k: pytest.fail("a remote engine is not probed")
     )
-    monkeypatch.setattr(express, "check_remote_engine", lambda cfg, **k: None)
+    monkeypatch.setattr(health, "check_remote_engine", lambda cfg, **k: None)
     assert runner.invoke(cli.app, ["model", "add", "hf.co/o/r-GGUF:Q4_K_M"]).exit_code == 0
 
 
@@ -196,9 +196,9 @@ def fake_import(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> dict[st
         "quants": [],
     }
     monkeypatch.setattr(detect, "detect", lambda **k: MAC)
-    monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
+    monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: None)
     monkeypatch.setattr(
-        express, "ensure_mlx", lambda info, **k: seen.setdefault("mlx", []).append(info.os)
+        mlx, "ensure_mlx", lambda info, **k: seen.setdefault("mlx", []).append(info.os)
     )
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: seen["pulled"].append(ref.raw))
     monkeypatch.setattr(engine, "list_models", lambda url, **k: [])
@@ -260,7 +260,7 @@ def test_model_add_ensures_the_mlx_engine_before_downloading(
     # Linux + NVIDIA: the one platform where the bundle is really installed, and the
     # engine has to be ready before a 55 GB download, never after it.
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
-    monkeypatch.setattr(express, "ensure_mlx", lambda info, **k: order.append("mlx"))
+    monkeypatch.setattr(mlx, "ensure_mlx", lambda info, **k: order.append("mlx"))
     monkeypatch.setattr(
         hf,
         "download",
@@ -380,7 +380,7 @@ def test_model_add_not_gguf_refusal_stays_an_error_where_imports_cannot_run(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     monkeypatch.setattr(detect, "detect", lambda **k: CPU)
-    monkeypatch.setattr(express, "ensure_ollama", lambda info, **k: None)
+    monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: None)
 
     def refuse(url: str, ref: ModelRef, **k: Any) -> None:
         raise engine.NotGGUF("'hf.co/Qwen/Qwen3.5-2B' ships full weights.", "Use a GGUF build.")
@@ -450,7 +450,7 @@ def test_model_add_measures_ollamas_store_not_just_lepika_home(
 
     store = tmp_path / "usr" / "share" / "ollama" / ".ollama"
     store.mkdir(parents=True)
-    monkeypatch.setattr(express, "ollama_store", lambda **k: store)
+    monkeypatch.setattr(mlx, "ollama_store", lambda **k: store)
     free = {isolated_home: 500 * 2**30, store: 1_000_000}
     monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=free[Path(path)]))
     result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
@@ -482,8 +482,8 @@ def test_model_add_never_installs_an_engine_someone_else_runs(
 ) -> None:
     config.save(config.Config(engine_managed=False, engine_url="http://gpu-box:11435"))
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
-    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
-    monkeypatch.setattr(express, "ensure_ollama", lambda *a, **k: pytest.fail("must not install"))
+    monkeypatch.setattr(health, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(ollama, "ensure_ollama", lambda *a, **k: pytest.fail("must not install"))
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: None)
     result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
     assert result.exit_code == 0
@@ -643,7 +643,7 @@ def test_model_add_in_server_mode_brings_the_engine_container_up_first(
     events: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: events.append("stack") or "")
-    monkeypatch.setattr(express, "ensure_ollama", lambda *a, **k: pytest.fail("no native install"))
+    monkeypatch.setattr(ollama, "ensure_ollama", lambda *a, **k: pytest.fail("no native install"))
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: events.append("pull"))
     result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
     assert result.exit_code == 0, result.output
@@ -657,7 +657,7 @@ def test_model_add_in_server_mode_still_only_checks_a_remote_engine(
 
     config.save(config.Config(mode="server", engine_managed=False, engine_url="http://gpu-box:1"))
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
-    monkeypatch.setattr(detect, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(health, "api_up", lambda url, **k: True)
     monkeypatch.setattr(server, "start_stack", lambda *a, **k: pytest.fail("not ours to start"))
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: None)
     result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
@@ -766,12 +766,10 @@ def fake_local(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> dict[str
     """Every effect of `model import`, recorded — and no disk, engine or bundle touched."""
     seen: dict[str, Any] = {"imported": [], "ensured": []}
     monkeypatch.setattr(detect, "detect", lambda **k: MAC)
-    monkeypatch.setattr(
-        express, "ensure_ollama", lambda info, **k: seen["ensured"].append("ollama")
-    )
-    monkeypatch.setattr(express, "ensure_mlx", lambda info, **k: seen["ensured"].append("mlx"))
+    monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: seen["ensured"].append("ollama"))
+    monkeypatch.setattr(mlx, "ensure_mlx", lambda info, **k: seen["ensured"].append("mlx"))
     # Not a directory, so the disk check falls back to ~/.lepika (the isolated one).
-    monkeypatch.setattr(express, "ollama_store", lambda **k: isolated_home / "no-ollama-here")
+    monkeypatch.setattr(mlx, "ollama_store", lambda **k: isolated_home / "no-ollama-here")
     monkeypatch.setattr(engine, "list_models", lambda url, **k: [])
     monkeypatch.setattr(
         shutil, "disk_usage", lambda p: SimpleNamespace(total=0, used=0, free=10**12)
@@ -964,7 +962,7 @@ def test_model_add_starts_the_engine_with_the_configured_context_length(
     config.save(config.Config(context_length=8192))
     seen: list[Any] = []
     monkeypatch.setattr(
-        express, "ensure_ollama", lambda info, **k: seen.append(k.get("context_length"))
+        ollama, "ensure_ollama", lambda info, **k: seen.append(k.get("context_length"))
     )
     result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
     assert result.exit_code == 0, result.output
@@ -977,7 +975,7 @@ def test_model_import_starts_the_engine_with_the_configured_context_length(
     config.save(config.Config(context_length=8192))
     seen: list[Any] = []
     monkeypatch.setattr(
-        express, "ensure_ollama", lambda info, **k: seen.append(k.get("context_length"))
+        ollama, "ensure_ollama", lambda info, **k: seen.append(k.get("context_length"))
     )
     result = runner.invoke(cli.app, ["model", "import", str(weights)])
     assert result.exit_code == 0, result.output

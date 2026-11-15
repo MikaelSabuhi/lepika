@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from lepika import config, detect, express, proc, server
+from lepika import config, health, proc, server
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 
@@ -43,9 +43,9 @@ def _answers(run: Callable[..., Any], cmd: list[str]) -> bool:
 def run_checks(
     info: SystemInfo,
     which: Callable[[str], str | None] = shutil.which,
-    api_up: Callable[..., bool] = detect.api_up,
+    api_up: Callable[..., bool] = health.api_up,
     vllm_up: Callable[..., bool] | None = None,
-    webui_up: Callable[..., bool] = express.webui_up,
+    webui_up: Callable[..., bool] = health.webui_up,
     run: Callable[..., Any] = proc.run_logged,
 ) -> list[CheckResult]:
     vllm_probe = vllm_up if vllm_up is not None else server._real_vllm_up

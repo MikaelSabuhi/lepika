@@ -554,8 +554,9 @@ def _fail(problem: str, fix: str) -> None:
 def _unexpected(exc: Exception) -> NoReturn:
     """A bug: the traceback goes to the log, the user gets where to find it."""
     fix = f"Please report it: {ISSUES_URL}"
-    # The log itself may be the broken part (a read-only home, a full disk): then the
-    # user still gets the two lines, just without a file to look in.
+    # The log itself may be the broken part (a read-only home, a full disk, no home
+    # directory at all): then the user still gets the two lines, without a file to
+    # look in. The path lookup sits inside the guard for the same reason.
     with contextlib.suppress(Exception):
         log.get_logger().error("cli.crash", error=repr(exc), traceback=traceback.format_exc())
         fix = f"Details are in {_home_path() / 'logs' / log.LOG_FILE}. {fix}"
@@ -577,11 +578,16 @@ def run() -> None:
         _fail(exc.problem, exc.fix)
         raise SystemExit(1) from exc
     except OSError as exc:
-        if exc.filename is None:
+        # Only an error that really describes a file: an HTTPError is an OSError too,
+        # with a URL for a filename and no strerror.
+        if exc.strerror is None or not isinstance(exc.filename, (str, bytes, os.PathLike)):
             _unexpected(exc)
+        # A read or a write, in LePika's home or the user's own folder (`model
+        # import <dir>`): name the file and the folder it is in, nothing assumed.
+        path = os.fsdecode(exc.filename)
         _fail(
-            f"Could not write {exc.filename}: {exc.strerror}",
-            f"Check that {_home_path()} is writable and the disk is not full.",
+            f"Could not access {path}: {exc.strerror}",
+            f"Check the permissions on {Path(path).parent} and that the disk is not full.",
         )
         raise SystemExit(1) from exc
     except Exception as exc:

@@ -136,7 +136,9 @@ def _memory_error() -> FriendlyError:
     # the curated list down to nothing, and a raw ValueError is a traceback.
     return FriendlyError(
         "Could not detect system memory.",
-        "Re-run `lepika`; if this persists, file an issue with `lepika doctor` output.",
+        # Not `lepika doctor`: it detects memory as well, and would fail the same way.
+        "Re-run the command; if it keeps happening, report it at "
+        "https://github.com/MikaelSabuhi/lepika/issues.",
     )
 
 

@@ -85,7 +85,11 @@ def test_windows_ram_raises_when_the_memory_api_fails() -> None:
     with pytest.raises(FriendlyError) as exc:
         detect._windows_ram_gb(status=lambda: (False, 0))
     assert "memory" in exc.value.problem
-    assert "lepika doctor" in exc.value.fix
+    # Not `lepika doctor`: it detects memory too, and would fail the same way.
+    assert exc.value.fix == (
+        "Re-run the command; if it keeps happening, report it at "
+        "https://github.com/MikaelSabuhi/lepika/issues."
+    )
 
 
 def test_api_up_true_and_false() -> None:

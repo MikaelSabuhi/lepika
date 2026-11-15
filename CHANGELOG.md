@@ -18,8 +18,8 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead of reading the CLI's error text.
 - `lepika` without a terminal (CI, cron, `< /dev/null`) no longer fails with a
   traceback: a question with a default takes it and says so, and the model question,
-  which has none, explains itself in two lines. An unexpected error, a home that
-  cannot be written, or a garbled memory reading is now two lines too (the
+  which has none, explains itself in two lines. An unexpected error, a file that
+  cannot be read or written, or a garbled memory reading is now two lines too (the
   traceback goes to `lepika.log`). The mode question also accepts `express` or
   `server` by name. `install.sh` starts the wizard only when there is a terminal
   to run it in.

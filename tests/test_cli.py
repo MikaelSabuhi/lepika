@@ -4,6 +4,8 @@ import importlib.metadata
 import io
 import json
 import sys
+import urllib.error
+from email.message import Message
 from pathlib import Path
 from typing import Any
 
@@ -139,20 +141,40 @@ def test_crash_handler_survives_an_unwritable_log(
     assert "Traceback" not in err
 
 
-def test_run_reports_an_unwritable_file_by_name(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_run_reports_an_unreadable_file_by_name_and_folder(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], isolated_home: Path
 ) -> None:
-    # A short home keeps the fix on one console line; the handler must not create it.
-    monkeypatch.setenv("LEPIKA_HOME", "/x/home")
-    error = PermissionError(13, "Permission denied", "/x/config.toml")
+    """Reads fail too, and the file may be the user's own: name it and its folder."""
+    error = PermissionError(13, "Permission denied", "/data/models/config.json")
     monkeypatch.setattr(cli, "app", _raise(error))
     with pytest.raises(SystemExit) as exit_info:
         cli.run()
     assert exit_info.value.code == 1
     err = _flat(capsys.readouterr().err)
-    assert "✗ Could not write /x/config.toml: Permission denied" in err
-    home = Path("/x/home")
-    assert f"→ Check that {home} is writable and the disk is not full." in err
+    assert "✗ Could not access /data/models/config.json: Permission denied" in err
+    folder = Path("/data/models")
+    assert f"→ Check the permissions on {folder} and that the disk is not full." in err
+    assert str(isolated_home) not in err
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("boom"),
+        urllib.error.HTTPError("https://example.invalid/x", 500, "Server Error", Message(), None),
+    ],
+)
+def test_run_treats_an_os_error_without_a_file_as_unexpected(
+    error: OSError, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "app", _raise(error))
+    with pytest.raises(SystemExit) as exit_info:
+        cli.run()
+    assert exit_info.value.code == 1
+    err = _flat(capsys.readouterr().err)
+    assert "unexpected error" in err
+    assert "Could not access" not in err
     assert "Traceback" not in err
 
 

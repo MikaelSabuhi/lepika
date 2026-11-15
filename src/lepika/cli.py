@@ -21,6 +21,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from lepika import acquire, config, detect, engine, express, log, models, paths, server
+from lepika.backend import UpdateStep
 from lepika.errors import FriendlyError
 
 app = typer.Typer(
@@ -190,8 +191,15 @@ def update() -> None:
     """Upgrade the engine and OpenWebUI to their latest versions."""
     console.print("Upgrading…")
     cfg = config.load()
-    _backend(cfg).update(detect.detect(), cfg)
-    console.print("[green]✓ Everything is up to date and running.[/green]")
+    steps: list[UpdateStep] = _backend(cfg).update(detect.detect(), cfg)
+    for step in steps:
+        detail = escape(step.detail)
+        if step.outcome == "stale":
+            console.print(f"[yellow]! {step.component}: {detail}[/yellow]")
+            continue
+        suffix = f" ({detail})" if detail else ""
+        verb = "upgraded" if step.outcome == "upgraded" else "is up to date"
+        console.print(f"[green]✓ {step.component} {verb}{suffix}[/green]")
 
 
 def _apply_engine_change(cfg: config.Config) -> bool:

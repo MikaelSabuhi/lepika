@@ -17,6 +17,7 @@ from urllib.parse import urlsplit, urlunsplit
 from rich.console import Console
 
 from lepika import detect, engine, express, log, models, proc, prompts
+from lepika.backend import UpdateStep
 from lepika.config import Config
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
@@ -489,14 +490,34 @@ def update(
     cfg: Config,
     run: RunFn = proc.run_logged,
     call: CallFn = subprocess.call,
-) -> None:
+) -> list[UpdateStep]:
     """`lepika update` in Server mode: pull newer images, then reconcile."""
     ensure_docker(info, run=run, retry="lepika update")
     stack = install_stack()
     log.get_logger().info("stack.update")
-    if call([*compose_cmd(stack, profiles(cfg), gpu_overlay=False), "pull"]) != 0:
+    base = compose_cmd(stack, profiles(cfg), gpu_overlay=False)
+    before = _image_ids(base, run)
+    if call([*base, "pull"]) != 0:
         raise _compose_failed("pull")
+    after = _image_ids(base, run)
     start_stack(info, cfg, run=run, call=call)
+    return [UpdateStep("Container images", "current" if before == after else "upgraded")]
+
+
+def _image_ids(base: list[str], run: RunFn) -> str:
+    """The local image ids behind the stack's images: what a pull that changed nothing keeps.
+
+    Compared as a whole rather than parsed: an image not pulled yet makes `inspect`
+    fail on that name, and that too changes once the pull has fetched it.
+    """
+    listed = run([*base, "config", "--images"], check=False, log=False)
+    images = str(listed.stdout or "").split()
+    if not images:
+        return ""
+    ids = run(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", *images], check=False, log=False
+    )
+    return f"{ids.returncode}\n{ids.stdout or ''}"
 
 
 def logs(lines: int, run: RunFn = proc.run_logged) -> list[tuple[str, str]]:

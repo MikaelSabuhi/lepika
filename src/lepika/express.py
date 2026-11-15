@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from lepika import detect, log, proc
+from lepika.backend import UpdateStep
 from lepika.config import DEFAULT_CONTEXT_LENGTH, Config, config_path
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
@@ -38,6 +39,17 @@ _WINDOWS_DETACH_FLAGS = 0x00000208
 # installed one. On a box whose default is newer than OpenWebUI's dependencies
 # (pyarrow has no 3.14 wheel) that means a source build that never finishes.
 OPENWEBUI_PYTHON = "3.11"
+
+# The official Linux installer, which both installs and upgrades in place.
+OLLAMA_INSTALL_SCRIPT = "curl -fsSL https://ollama.com/install.sh | sh"
+
+# winget's APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE ("No applicable update found"):
+# `winget upgrade` exits with it when Ollama is already the latest version. Python
+# reports it unsigned on Windows; the signed 32-bit form is accepted as well.
+_WINGET_NO_UPDATE = (0x8A15002B, 0x8A15002B - 2**32)
+
+_OLLAMA_VERSION = re.compile(r"version is (\S+)")
+_OPENWEBUI_VERSION = re.compile(r"^open-webui v(\S+)", re.MULTILINE)
 
 
 def _detach_kwargs(os_name: str) -> dict[str, Any]:
@@ -63,7 +75,7 @@ def install_ollama(
     elif info.os == "linux":
         # Streamed, not captured: the official script may prompt for sudo, and a
         # password prompt hidden behind captured output looks like a hang.
-        code = call(["sh", "-c", "curl -fsSL https://ollama.com/install.sh | sh"])
+        code = call(["sh", "-c", OLLAMA_INSTALL_SCRIPT])
         # The binary on PATH, not the exit code, is what says the install worked.
         # The script runs under `set -e`, and everything past the point where the
         # engine lands — its own comment calls it optional — is the systemd setup
@@ -923,40 +935,225 @@ def stop(info: SystemInfo, cfg: Config) -> bool:
     return stopped
 
 
+def ollama_binary_version(run: RunFn = proc.run_logged) -> str | None:
+    """The version of the `ollama` binary on PATH, whether or not an engine is running.
+
+    With an engine up it prints `ollama version is X`; without one, a warning ending
+    `client version is X`. Both name the binary, which is the one this asks about.
+    """
+    try:
+        result = run(["ollama", "--version"], check=False, log=False)
+    except FriendlyError:
+        return None
+    found = _OLLAMA_VERSION.findall(f"{result.stdout or ''}\n{result.stderr or ''}")
+    return str(found[-1]) if found else None
+
+
+def openwebui_version(run: RunFn = proc.run_logged) -> str | None:
+    """The installed OpenWebUI, as `uv tool list` names it."""
+    try:
+        result = run(["uv", "tool", "list"], check=False, log=False)
+    except FriendlyError:
+        return None
+    found = _OPENWEBUI_VERSION.search(str(result.stdout or ""))
+    return found.group(1) if found else None
+
+
+def _unit_state(run: RunFn, which: WhichFn) -> tuple[bool, bool] | None:
+    """(enabled, active) of `ollama.service`, or None on a machine without systemd."""
+    if which("systemctl") is None:
+        return None
+    unit = "ollama.service"
+    enabled = run(["systemctl", "is-enabled", "--quiet", unit], check=False, log=False)
+    active = run(["systemctl", "is-active", "--quiet", unit], check=False, log=False)
+    return enabled.returncode == 0, active.returncode == 0
+
+
+def _restore_unit(state: tuple[bool, bool] | None, call: CallFn) -> None:
+    """Put `ollama.service` back the way it was before the install script touched it.
+
+    The script enables and starts the unit every time it runs. A unit the user ran
+    before LePika stays exactly as they had it; one LePika disabled is disabled again.
+    """
+    if state is None:
+        return
+    enabled, active = state
+    if enabled and active:
+        return
+    if enabled:
+        verb = ["stop"]
+    elif active:
+        verb = ["disable"]
+    else:
+        # `--now` is the stop: one verb, so one sudo prompt.
+        verb = ["disable", "--now"]
+    # Streamed, like the script: sudo may prompt. Unchecked, as in `install_ollama`:
+    # a unit left running is a nuisance, not a broken engine.
+    call(["sudo", "systemctl", *verb, "ollama.service"])
+
+
+def upgrade_ollama(info: SystemInfo, *, run: RunFn, which: WhichFn, call: CallFn) -> None:
+    """Upgrade the native Ollama in place, each OS through its own package manager."""
+    if info.os == "macos":
+        # No Homebrew means the Ollama.app installer, which updates itself.
+        if which("brew") is None:
+            return
+        # Asked first, so the upgrade itself can be checked: `outdated` exits 0
+        # either way and names the formula only when there is something to do.
+        outdated = run(["brew", "outdated", "--quiet", "ollama"], check=False, log=False)
+        if "ollama" in str(outdated.stdout or "").split():
+            run(["brew", "upgrade", "ollama"], check=True)
+    elif info.os == "linux":
+        # Recorded first: the script re-enables and starts the systemd unit, which
+        # must not be how an upgrade changes a service the user already ran.
+        state = _unit_state(run, which)
+        try:
+            # Streamed, not captured: the script may prompt for sudo.
+            if call(["sh", "-c", OLLAMA_INSTALL_SCRIPT]) != 0:
+                raise FriendlyError(
+                    "Ollama upgrade failed.",
+                    "See https://ollama.com/download/linux for manual install steps.",
+                )
+        finally:
+            _restore_unit(state, call)
+    else:  # windows
+        result = run(
+            [
+                "winget",
+                "upgrade",
+                "--id",
+                "Ollama.Ollama",
+                "-e",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+            ],
+            check=False,
+        )
+        if result.returncode != 0 and result.returncode not in _WINGET_NO_UPDATE:
+            raise FriendlyError(
+                "Ollama upgrade failed.",
+                "Run `winget upgrade --id Ollama.Ollama -e` to see why, then `lepika update`.",
+            )
+
+
+def _changed(before: str | None, after: str | None) -> str:
+    return f"{before} → {after}" if before and after else after or ""
+
+
 def update(
     info: SystemInfo,
     cfg: Config,
     run: RunFn | None = None,
     which: WhichFn | None = None,
-) -> None:
+    call: CallFn | None = None,
+    popen: PopenFn | None = None,
+    api_up: Callable[..., bool] | None = None,
+    sleep: SleepFn | None = None,
+    kill: Callable[[int, int], None] | None = None,
+    running_version: Callable[..., str] | None = None,
+) -> list[UpdateStep]:
     """`lepika update` in Express mode: upgrade the engine (if ours) and OpenWebUI.
 
     Resolved at call time, not bound as defaults, so the injected callables stay
-    patchable from the module — the same reason `install_ollama` is called by name.
+    patchable from the module — the same reason the helpers are called by name.
     """
     run_fn = run if run is not None else proc.run_logged
-    which_fn = which if which is not None else shutil.which
+    popen_fn = popen if popen is not None else subprocess.Popen
+    sleep_fn = sleep if sleep is not None else time.sleep
+    kill_fn = kill if kill is not None else os.kill
+    steps: list[UpdateStep] = []
     if cfg.engine_managed:
-        if info.os == "macos":
-            # No Homebrew means the Ollama.app installer, which updates itself.
-            if which_fn("brew") is not None:
-                # check=False: brew exits nonzero when ollama is already up to date.
-                run_fn(["brew", "upgrade", "ollama"], check=False)
-        elif info.os == "linux":
-            # Re-running the official script upgrades in place. Reused rather than
-            # restated: it must stream, because it may prompt for sudo.
-            install_ollama(info)
-        else:
-            # check=False: winget exits nonzero when no upgrade is available.
-            run_fn(["winget", "upgrade", "--id", "Ollama.Ollama", "-e"], check=False)
+        steps.append(
+            _update_ollama(
+                info,
+                cfg,
+                run=run_fn,
+                which=which if which is not None else shutil.which,
+                call=call if call is not None else subprocess.call,
+                popen=popen_fn,
+                api_up=api_up if api_up is not None else detect.api_up,
+                sleep=sleep_fn,
+                kill=kill_fn,
+                running_version=running_version,
+            )
+        )
+    before = openwebui_version(run_fn)
     # Pinned like the install and the run: an upgrade that resolved a different
     # interpreter would move the tool env out from under `uv tool run --python`,
-    # which then builds an ephemeral one instead of reusing it.
-    # check=False: uv exits nonzero when open-webui is already the latest version.
-    run_fn(["uv", "tool", "upgrade", "--python", OPENWEBUI_PYTHON, "open-webui"], check=False)
+    # which then builds an ephemeral one instead of reusing it. check=True: uv exits
+    # 0 with "Nothing to upgrade" when current, so a nonzero exit is a real failure.
+    run_fn(["uv", "tool", "upgrade", "--python", OPENWEBUI_PYTHON, "open-webui"], check=True)
+    after = openwebui_version(run_fn)
+    if before is not None and before == after:
+        # Unchanged: a running UI is not interrupted for nothing.
+        steps.append(UpdateStep("OpenWebUI", "current", after))
+        return steps
     # A restart, not a stop-then-probe: the upgraded build only takes effect once
-    # the old server is really gone.
-    restart_openwebui(cfg, info.os)
+    # the old server is really gone. An unknown version restarts too.
+    restart_openwebui(cfg, info.os, run=run_fn, popen=popen_fn, sleep=sleep_fn, kill=kill_fn)
+    steps.append(UpdateStep("OpenWebUI", "upgraded", _changed(before, after)))
+    return steps
+
+
+def _update_ollama(
+    info: SystemInfo,
+    cfg: Config,
+    *,
+    run: RunFn,
+    which: WhichFn,
+    call: CallFn,
+    popen: PopenFn,
+    api_up: Callable[..., bool],
+    sleep: SleepFn,
+    kill: Callable[[int, int], None],
+    running_version: Callable[..., str] | None,
+) -> UpdateStep:
+    before = ollama_binary_version(run)
+    failure: FriendlyError | None = None
+    try:
+        upgrade_ollama(info, run=run, which=which, call=call)
+    except FriendlyError as exc:
+        failure = exc
+    after = ollama_binary_version(run)
+    if failure is not None:
+        # On Linux the binary, not the script's exit code, says whether the upgrade
+        # happened: the script aborts on its optional systemd steps with the new
+        # engine already in place — the same rule `install_ollama` follows.
+        if info.os != "linux" or after == before:
+            raise failure
+        log.get_logger().warning("ollama.update.optional_step_failed")
+    running: str | None = None
+    if api_up(cfg.engine_url, key=cfg.engine_key):
+        if running_version is None:
+            # Imported here: engine.py is the HTTP layer, and express has no other
+            # reason to depend on it.
+            from lepika import engine
+
+            running_version = engine.version
+        running = running_version(cfg.engine_url, key=cfg.engine_key)
+    if running and after and running != after and _ours(info.os, run):
+        # The old binary keeps serving until its process is replaced.
+        log.get_logger().info("engine.restart", reason="update", running=running, wanted=after)
+        stop_ollama(
+            info.os,
+            cfg.engine_url,
+            run=run,
+            kill=kill,
+            api_up=api_up,
+            sleep=sleep,
+            rerun="lepika update",
+        )
+        start_ollama(info.os, popen=popen, context_length=cfg.context_length)
+        wait_for(lambda: api_up(cfg.engine_url), 30, "Ollama API", sleep=sleep)
+        running = after
+    if running and after and running != after:
+        # Not ours to restart: the service, tray app or shell that started it is.
+        return UpdateStep(
+            "Ollama", "stale", f"running {running}, installed {after} — restart Ollama to load it"
+        )
+    if before != after:
+        return UpdateStep("Ollama", "upgraded", _changed(before, after))
+    return UpdateStep("Ollama", "current", after or "")
 
 
 def logs(lines: int) -> list[tuple[str, str]]:

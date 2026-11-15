@@ -500,6 +500,15 @@ def update(
         raise _compose_failed("pull")
     after = _image_ids(base, run)
     start_stack(info, cfg, run=run, call=call)
+    if not before or not after:
+        # Nothing to compare: "up to date" would be a claim nobody checked.
+        return [
+            UpdateStep(
+                "Container images",
+                "note",
+                "pulled the latest images; could not tell whether anything changed",
+            )
+        ]
     return [UpdateStep("Container images", "current" if before == after else "upgraded")]
 
 
@@ -507,7 +516,8 @@ def _image_ids(base: list[str], run: RunFn) -> str:
     """The local image ids behind the stack's images: what a pull that changed nothing keeps.
 
     Compared as a whole rather than parsed: an image not pulled yet makes `inspect`
-    fail on that name, and that too changes once the pull has fetched it.
+    fail on that name, and that too changes once the pull has fetched it. Empty when
+    there is nothing to compare — no images listed, or no id read for any of them.
     """
     listed = run([*base, "config", "--images"], check=False, log=False)
     images = str(listed.stdout or "").split()
@@ -516,7 +526,9 @@ def _image_ids(base: list[str], run: RunFn) -> str:
     ids = run(
         ["docker", "image", "inspect", "--format", "{{.Id}}", *images], check=False, log=False
     )
-    return f"{ids.returncode}\n{ids.stdout or ''}"
+    if not str(ids.stdout or "").strip():
+        return ""
+    return f"{ids.returncode}\n{ids.stdout}"
 
 
 def logs(lines: int, run: RunFn = proc.run_logged) -> list[tuple[str, str]]:

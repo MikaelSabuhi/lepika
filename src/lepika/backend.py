@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from typing import Literal
 
 # "stale": the newer build is installed but the running process still serves the old
-# one, and it is not LePika's to restart.
-Outcome = Literal["upgraded", "current", "stale"]
+# one, and it is not LePika's to restart. "note": something the user should read that
+# is not a version mismatch.
+Outcome = Literal["upgraded", "current", "stale", "note"]
 
 
 @dataclass(frozen=True)

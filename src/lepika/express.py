@@ -1164,7 +1164,7 @@ def update(
             steps.append(
                 UpdateStep(
                     "Ollama service",
-                    "stale",
+                    "note",
                     "could not read ollama.service's state, so it was left as the installer "
                     "set it — if Ollama misbehaves, run "
                     "`sudo systemctl disable --now ollama.service`",
@@ -1174,7 +1174,7 @@ def update(
             steps.append(
                 UpdateStep(
                     "Ollama service",
-                    "stale",
+                    "note",
                     "could not put ollama.service back as it was — if Ollama misbehaves, "
                     "run `sudo systemctl disable --now ollama.service`",
                 )

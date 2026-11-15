@@ -186,7 +186,7 @@ class NoSudo(Caller):
 
 _RESTORE_FAILED = UpdateStep(
     "Ollama service",
-    "stale",
+    "note",
     "could not put ollama.service back as it was — if Ollama misbehaves, run "
     "`sudo systemctl disable --now ollama.service`",
 )
@@ -346,7 +346,7 @@ def test_update_restores_nothing_when_is_enabled_fails_without_a_state(
     steps = _update(_info("linux"), _linux_run(1, 3, state=""), call=call, running="0.34.0")
     assert any("install.sh" in " ".join(c) for c in call.calls)
     assert not any("systemctl" in c for c in call.calls)
-    assert _service_warning(steps).outcome == "stale"
+    assert _service_warning(steps).outcome == "note"
 
 
 def test_update_never_starts_an_adopted_engine_the_upgrade_stopped(restarts: list[str]) -> None:
@@ -374,7 +374,7 @@ def test_update_restores_nothing_when_systemd_does_not_answer(
     warning = _service_warning(steps)
     assert warning == UpdateStep(
         "Ollama service",
-        "stale",
+        "note",
         "could not read ollama.service's state, so it was left as the installer set it — "
         "if Ollama misbehaves, run `sudo systemctl disable --now ollama.service`",
     )
@@ -519,4 +519,4 @@ def test_update_reports_an_unread_unit_even_when_the_script_failed_after_install
     run = _linux_run(1, 1, ["0.33.2", "0.34.0"])
     steps = _update(_info("linux"), run, call=Caller(code=1), running=None)
     assert steps[0] == UpdateStep("Ollama", "upgraded", "0.33.2 → 0.34.0")
-    assert _service_warning(steps).outcome == "stale"
+    assert _service_warning(steps).outcome == "note"

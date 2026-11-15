@@ -194,7 +194,7 @@ def update() -> None:
     steps: list[UpdateStep] = _backend(cfg).update(detect.detect(), cfg)
     for step in steps:
         detail = escape(step.detail)
-        if step.outcome == "stale":
+        if step.outcome in ("stale", "note"):
             console.print(f"[yellow]! {step.component}: {detail}[/yellow]")
             continue
         suffix = f" ({detail})" if detail else ""

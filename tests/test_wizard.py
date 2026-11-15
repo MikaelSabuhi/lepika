@@ -342,7 +342,6 @@ def test_choose_quant_sends_the_saved_token(monkeypatch: pytest.MonkeyPatch) -> 
         return BUILDS
 
     monkeypatch.setattr(gguf, "list_builds", fake)
-    monkeypatch.delenv("HF_TOKEN", raising=False)
     cfg = config.Config()
     cfg.hf_token = "hf_saved"
     wizard.choose_quant(GGUF_REF, cfg, INFO, ask=lambda *a, **k: "", sys=FakeSystem())

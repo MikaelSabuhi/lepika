@@ -471,6 +471,19 @@ def test_fake_system_hands_a_streaming_command_its_working_directory(tmp_path: P
     assert seen == [(["ollama", "create", "m"], tmp_path, "FROM .\n")]
 
 
+def test_fake_system_runs_its_hook_while_a_command_runs() -> None:
+    fake: FakeSystem
+    seen: list[tuple[list[str], int]] = []
+
+    def hook(cmd: list[str]) -> None:
+        # Recorded already, not returned yet.
+        seen.append((cmd, len(fake.ran)))
+
+    fake = FakeSystem(stdout={"hf": "ok"}, while_running=hook)
+    assert fake.run(["hf", "download", "x"]).stdout == "ok"
+    assert seen == [(["hf", "download", "x"], 1)]
+
+
 def test_fake_system_records_the_timeout_of_each_request() -> None:
     fake = FakeSystem(urls=lambda request: FakeResponse(b""))
     fake.open_url(urllib.request.Request("http://x/1"), timeout=5)

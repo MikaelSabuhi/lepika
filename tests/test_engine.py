@@ -153,6 +153,7 @@ def test_pull_sends_stream_true_and_timeout_is_generous() -> None:
     engine.pull_model("http://x", ModelRef(raw="q:1b", kind="ollama"), sys=sys)
     seen = sys.requested
     assert json.loads(seen[0].data) == {"model": "q:1b", "stream": True}
+    assert sys.request_timeouts == [engine._PULL_IDLE_TIMEOUT]
 
 
 def test_pull_that_dies_mid_stream_is_friendly() -> None:

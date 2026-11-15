@@ -152,9 +152,11 @@ def test_quant_method_reads_the_quantization_config() -> None:
 
 
 def test_fetch_config_downloads_only_the_config_into_the_staging_dir(tmp_path: Path) -> None:
-    # What `hf download … config.json --local-dir` leaves behind; the fake runs nothing.
-    (tmp_path / "config.json").write_text('{"quantization_config": {"quant_method": "awq"}}')
-    sys = FakeSystem()
+    def download(cmd: list[str]) -> None:
+        # Written while `hf download` runs, so a read before it would find nothing.
+        (tmp_path / "config.json").write_text('{"quantization_config": {"quant_method": "awq"}}')
+
+    sys = FakeSystem(while_running=download)
     cfg = hf.fetch_config("org/repo", tmp_path, sys=sys)
     assert hf.quant_method(cfg) == "awq"
     assert "config.json" in sys.ran[0]

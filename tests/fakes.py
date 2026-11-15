@@ -137,6 +137,8 @@ class FakeSystem:
     A program named in `missing` is not installed for every launcher alike.
     `while_streaming` is handed the argv and cwd of each `stream` while it "runs":
     a working directory the caller stages is often gone once the call returns.
+    `while_running` is handed the argv of each `run` the same way, before it returns:
+    a test can leave behind what the real command would have written.
     """
 
     def __init__(
@@ -156,9 +158,11 @@ class FakeSystem:
         ram_bytes: int | None = 16 * 2**30,
         raises: dict[str, BaseException] | None = None,
         while_streaming: Callable[[list[str], Path | None], None] | None = None,
+        while_running: Callable[[list[str]], None] | None = None,
     ) -> None:
         self.stdout = stdout or {}
         self.while_streaming = while_streaming
+        self.while_running = while_running
         self.codes = codes or {}
         self.paths = which or {}
         self.environ: Mapping[str, str] = environ if environ is not None else {}
@@ -214,6 +218,8 @@ class FakeSystem:
             }
         )
         self._start(cmd)
+        if self.while_running is not None:
+            self.while_running(list(cmd))
         code = _leading(self.codes, cmd, 0)
         if check and code not in ok:
             # The same error `proc.run_logged` raises for an unexpected exit code.

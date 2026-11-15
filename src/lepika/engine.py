@@ -6,7 +6,7 @@ import contextlib
 import importlib.resources
 import json
 import re
-import sys
+import sys as _sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -269,7 +269,7 @@ def _bar(ref: ModelRef, progress: ProgressFn | None) -> Iterator[ProgressFn]:
         _SpeedColumn(),
         # Piped or redirected, a live bar renders as one frozen "0/549 bytes" line
         # that never updates. The JSON log already records the pull.
-        disable=not sys.stdout.isatty(),
+        disable=not _sys.stdout.isatty(),
     )
     bar.start()
     task = bar.add_task(ref.raw, total=None)

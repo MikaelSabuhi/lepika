@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import importlib.resources
 import json
 import os
@@ -26,6 +27,11 @@ RunFn = Callable[..., Any]
 CallFn = Callable[[list[str]], int]
 SleepFn = Callable[[float], None]
 AskFn = Callable[..., str]
+
+# The default probes, bound once at import as the bare functions used to be: a test
+# that patches `health.api_up` or `health.webui_up` does not reach a default.
+_REAL_API_UP = functools.partial(health.api_up, sys=system.REAL)
+_REAL_WEBUI_UP = functools.partial(health.webui_up, sys=system.REAL)
 
 console = Console()
 
@@ -394,9 +400,9 @@ def start_stack(
     after_engine: Callable[[], None] | None = None,
     run: RunFn = proc.run_logged,
     call: CallFn = proc.call,
-    api_up: Callable[..., bool] = health.api_up,
+    api_up: Callable[..., bool] = _REAL_API_UP,
     vllm_up: Callable[..., bool] | None = None,
-    up: Callable[..., bool] = health.webui_up,
+    up: Callable[..., bool] = _REAL_WEBUI_UP,
     sleep: SleepFn = time.sleep,
 ) -> str:
     """Reconcile the stack with config and return the URL to open.
@@ -405,6 +411,7 @@ def start_stack(
     changed, and is what makes `connect`/`expose` edits take effect.
     """
     vllm_probe = vllm_up if vllm_up is not None else _real_vllm_up
+    waits = system.overlay(system.REAL, sleep=sleep)
     ensure_docker(info, run=run)
     stack = install_stack()
     if cfg.engine_managed and info.ollama_running and not _our_ollama(stack, run):
@@ -460,14 +467,15 @@ def start_stack(
             "vLLM is loading the model — the first time this downloads the full "
             "weights; watch with `lepika logs`."
         )
-        health.wait_for(lambda: vllm_probe(VLLM_URL), _VLLM_READY_SECONDS, "vLLM", sleep=sleep)
+        health.wait_for(lambda: vllm_probe(VLLM_URL), _VLLM_READY_SECONDS, "vLLM", sys=waits)
     elif cfg.engine_managed:
-        health.wait_for(lambda: api_up(cfg.engine_url), 120, "Ollama (container)", sleep=sleep)
-    else:
-        health.check_remote_engine(cfg, api_up=api_up)
+        health.wait_for(lambda: api_up(cfg.engine_url), 120, "Ollama (container)", sys=waits)
+    elif not api_up(cfg.engine_url, key=cfg.engine_key):
+        # The injected probe stands in for `health.check_remote_engine`'s own.
+        raise health.engine_unreachable(cfg)
     if after_engine is not None:
         after_engine()
-    health.wait_for(lambda: up(cfg.webui_port), 180, "OpenWebUI", sleep=sleep)
+    health.wait_for(lambda: up(cfg.webui_port), 180, "OpenWebUI", sys=waits)
     return health.webui_url(cfg.webui_port)
 
 

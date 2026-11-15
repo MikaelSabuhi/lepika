@@ -57,12 +57,17 @@ def test_real_and_fake_system_match_the_protocol_signatures() -> None:
     } | set(System.__annotations__)
     assert declared == {*_METHODS, "environ"}
     assert isinstance(vars(System)["environ"], property)
+    # The migration adapter is a System too, and drifts no more than the other two.
+    overlaid = type(system.overlay(REAL))
     for name in _METHODS:
         expected = _shape(getattr(System, name))
         assert _shape(getattr(RealSystem, name)) == expected, name
         assert _shape(getattr(FakeSystem, name)) == expected, name
+        assert _shape(getattr(overlaid, name)) == expected, name
+    assert isinstance(vars(overlaid)["environ"], property)
     assert isinstance(REAL, System)
     assert isinstance(FakeSystem(), System)
+    assert isinstance(system.overlay(REAL), System)
 
 
 def test_real_system_run_call_and_stream_go_through_proc(
@@ -170,6 +175,123 @@ def test_spawn_reports_a_missing_program_as_command_not_found(
     assert exc.value.fix == "Install ollama or run `lepika doctor` for setup help."
     # The handle is closed on the failure path too.
     assert popen.calls[0][1]["stdout"].closed
+
+
+def test_overlay_uses_the_given_callable_and_the_base_for_the_rest(tmp_path: Path) -> None:
+    seen: list[tuple[str, Any, Any]] = []
+    done = subprocess.CompletedProcess(["x"], 0, stdout="legacy", stderr="")
+
+    def record(name: str, answer: Any = None) -> Any:
+        def legacy(*args: Any, **kwargs: Any) -> Any:
+            seen.append((name, args, kwargs))
+            return answer
+
+        return legacy
+
+    base = FakeSystem(
+        environ={"FROM": "base"},
+        which={"ollama": "/base/ollama"},
+        urls=lambda request: FakeResponse(b"base"),
+        stream=(5, "base"),
+        bindable=False,
+    )
+    request = urllib.request.Request("http://x/api/version")
+    overlaid = system.overlay(
+        base,
+        run=record("run", done),
+        call=record("call", 7),
+        stream=record("stream", (1, "legacy")),
+        which=record("which", "/legacy/ollama"),
+        urlopen=record("urlopen", "legacy response"),
+        sleep=record("sleep"),
+        kill=record("kill"),
+        bind=record("bind", True),
+        environ={"FROM": "legacy"},
+    )
+    assert overlaid.run(["ps"], check=False, log=False) is done
+    assert overlaid.call(["sudo", "true"]) == 7
+    assert overlaid.stream(["hf"], env={"A": "1"}, cwd=tmp_path) == (1, "legacy")
+    assert overlaid.which("ollama") == "/legacy/ollama"
+    assert overlaid.open_url(request, timeout=2.0) == "legacy response"
+    overlaid.sleep(0.5)
+    overlaid.signal(42, 15)
+    assert overlaid.can_bind("0.0.0.0", 3000) is True
+    assert overlaid.environ == {"FROM": "legacy"}
+    assert seen == [
+        (
+            "run",
+            (["ps"],),
+            {"check": False, "env": None, "timeout": None, "log": False, "ok": (0,)},
+        ),
+        ("call", (["sudo", "true"],), {}),
+        ("stream", (["hf"],), {"env": {"A": "1"}, "cwd": tmp_path}),
+        ("which", ("ollama",), {}),
+        ("urlopen", (request,), {"timeout": 2.0}),
+        ("sleep", (0.5,), {}),
+        ("kill", (42, 15), {}),
+        ("bind", ("0.0.0.0", 3000), {}),
+    ]
+    # Nothing reached the base.
+    assert (base.ran, base.called, base.streamed, base.slept, base.signals) == ([], [], [], [], [])
+    assert (base.requested, base.bind_probes) == ([], [])
+
+    # With nothing given, every effect is the base's.
+    plain = system.overlay(base)
+    assert plain.run(["ollama", "--version"]).returncode == 0
+    assert plain.call(["true"]) == 0
+    assert plain.stream(["hf"]) == (5, "base")
+    assert plain.which("ollama") == "/base/ollama"
+    assert plain.open_url(request, timeout=1.0).read() == b"base"
+    plain.sleep(1.0)
+    plain.signal(9, 15)
+    assert plain.can_bind("0.0.0.0", 3000) is False
+    assert plain.environ == {"FROM": "base"}
+    assert plain.spawn(["f"], env={}, log=tmp_path / "f.log") == 4242
+    plain.open_browser("http://localhost:3000")
+    assert (plain.euid(), plain.disk_free(tmp_path), plain.ram_bytes()) == (
+        1000,
+        10**12,
+        16 * 2**30,
+    )
+    assert base.ran == [["ollama", "--version"]]
+    assert base.called == [["true"]]
+    assert [cmd for cmd, _ in base.streamed] == [["hf"]]
+    assert base.requested == [request]
+    assert base.slept == [1.0]
+    assert base.signals == [(9, 15)]
+    assert base.bind_probes == [("0.0.0.0", 3000)]
+    assert base.spawned == [(["f"], {}, tmp_path / "f.log")]
+    assert base.browsed == ["http://localhost:3000"]
+
+
+def test_overlay_spawn_launches_through_the_given_popen(tmp_path: Path) -> None:
+    log = tmp_path / "openwebui.log"
+    log.write_bytes(b"earlier run\n")
+    popen = FakePopen(pid=777)
+    base = FakeSystem()
+
+    pid = system.overlay(base, popen=popen).spawn(["uv", "tool", "run"], env={"K": "v"}, log=log)
+
+    assert pid == 777
+    assert base.spawned == []
+    cmd, kwargs = popen.calls[0]
+    assert cmd == ["uv", "tool", "run"]
+    assert kwargs["env"] == {"K": "v"}
+    handle = kwargs["stdout"]
+    assert kwargs["stderr"] is handle
+    assert Path(handle.name) == log
+    assert handle.mode == "ab"
+    assert handle.closed
+    detach = _current_detach()
+    assert {k: kwargs[k] for k in detach} == detach
+    assert set(kwargs) == {"stdout", "stderr", "env", *detach}
+    assert log.read_bytes() == b"earlier run\n"
+
+    missing = FakePopen(error=FileNotFoundError(2, "No such file or directory", "uv"))
+    with pytest.raises(CommandNotFound) as exc:
+        system.overlay(base, popen=missing).spawn(["uv", "tool", "run"], env={}, log=log)
+    assert exc.value.problem == "Command not found: uv"
+    assert missing.calls[0][1]["stdout"].closed
 
 
 def test_detach_flags_for_windows_and_posix() -> None:
@@ -490,3 +612,35 @@ def test_fake_system_records_the_timeout_of_each_request() -> None:
     fake.open_url(urllib.request.Request("http://x/2"), timeout=300.0)
     assert [r.full_url for r in fake.requested] == ["http://x/1", "http://x/2"]
     assert fake.request_timeouts == [5, 300.0]
+
+
+def test_routes_answers_a_list_in_order_and_repeats_the_last() -> None:
+    up = FakeResponse(b"")
+    other = FakeResponse(b"other")
+    answer = routes({"http://x/health": [OSError("refused"), up], "http://x/other": [other]})
+    request = urllib.request.Request("http://x/health")
+    with pytest.raises(OSError, match="refused"):
+        answer(request)
+    assert answer(request) is up
+    assert answer(request) is up
+    # Each URL keeps its own place in its own list.
+    assert answer(urllib.request.Request("http://x/other")) is other
+
+
+def test_fake_system_answers_bind_probes_per_address() -> None:
+    fake = FakeSystem(bindable=lambda address, port: address != "0.0.0.0")
+    assert fake.can_bind("0.0.0.0", 3000) is False
+    assert fake.can_bind("127.0.0.1", 3000) is True
+    assert fake.bind_probes == [("0.0.0.0", 3000), ("127.0.0.1", 3000)]
+    fixed = FakeSystem(bindable=False)
+    assert fixed.can_bind("127.0.0.1", 1) is False
+    assert fixed.bind_probes == [("127.0.0.1", 1)]
+
+
+def test_fake_system_signal_can_be_told_to_raise() -> None:
+    fake = FakeSystem(signal_errors={900: ProcessLookupError(3, "No such process")})
+    with pytest.raises(ProcessLookupError):
+        fake.signal(900, 15)
+    fake.signal(901, 15)
+    # Recorded either way: the attempt is what the caller made.
+    assert fake.signals == [(900, 15), (901, 15)]

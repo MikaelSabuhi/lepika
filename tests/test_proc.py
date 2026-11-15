@@ -13,6 +13,7 @@ from lepika import paths, proc
 from lepika.errors import CommandNotFound, FriendlyError
 
 
+@pytest.mark.real_subprocess
 def test_run_logged_captures_output_and_appends_log(isolated_home: Path) -> None:
     result = proc.run_logged([sys.executable, "-c", "print('hello')"])
     assert result.returncode == 0
@@ -21,6 +22,7 @@ def test_run_logged_captures_output_and_appends_log(isolated_home: Path) -> None
     assert "proc.run" in log_text
 
 
+@pytest.mark.real_subprocess
 def test_run_logged_records_a_structured_entry(isolated_home: Path) -> None:
     proc.run_logged([sys.executable, "-c", "print('hello')"])
     lines = (paths.logs_dir() / "lepika.log").read_text().splitlines()
@@ -31,6 +33,7 @@ def test_run_logged_records_a_structured_entry(isolated_home: Path) -> None:
     assert "output" not in entry
 
 
+@pytest.mark.real_subprocess
 def test_run_logged_keeps_output_only_for_failures(isolated_home: Path) -> None:
     proc.run_logged([sys.executable, "-c", "print('boom'); raise SystemExit(2)"], check=False)
     entry = json.loads((paths.logs_dir() / "lepika.log").read_text().splitlines()[-1])
@@ -38,6 +41,7 @@ def test_run_logged_keeps_output_only_for_failures(isolated_home: Path) -> None:
     assert "boom" in entry["output"]
 
 
+@pytest.mark.real_subprocess
 def test_run_logged_with_log_false_records_nothing_for_a_read(isolated_home: Path) -> None:
     """Read-only commands (`sysctl -n hw.memsize`) change nothing, so they earn no log line."""
     proc.run_logged([sys.executable, "-c", "print('hello')"], log=False)
@@ -45,6 +49,7 @@ def test_run_logged_with_log_false_records_nothing_for_a_read(isolated_home: Pat
     assert not log_path.exists() or log_path.read_text() == ""
 
 
+@pytest.mark.real_subprocess
 def test_run_logged_with_log_false_still_records_failures(isolated_home: Path) -> None:
     """`log=False` silences the success line only — a failure is always worth a line."""
     proc.run_logged(
@@ -56,17 +61,20 @@ def test_run_logged_with_log_false_still_records_failures(isolated_home: Path) -
     assert "boom" in entry["output"]
 
 
+@pytest.mark.real_subprocess
 def test_run_logged_raises_friendly_error_on_failure(isolated_home: Path) -> None:
     with pytest.raises(FriendlyError) as exc:
         proc.run_logged([sys.executable, "-c", "raise SystemExit(3)"])
     assert "lepika.log" in exc.value.fix
 
 
+@pytest.mark.real_subprocess
 def test_run_logged_check_false_returns_result(isolated_home: Path) -> None:
     result = proc.run_logged([sys.executable, "-c", "raise SystemExit(3)"], check=False)
     assert result.returncode == 3
 
 
+@pytest.mark.real_subprocess
 def test_run_logged_missing_executable_is_friendly(isolated_home: Path) -> None:
     with pytest.raises(FriendlyError) as exc:
         proc.run_logged(["lepika-no-such-binary", "--help"])
@@ -75,6 +83,7 @@ def test_run_logged_missing_executable_is_friendly(isolated_home: Path) -> None:
     assert isinstance(exc.value, CommandNotFound)
 
 
+@pytest.mark.real_subprocess
 def test_run_logged_timeout_is_friendly(isolated_home: Path) -> None:
     with pytest.raises(FriendlyError) as exc:
         proc.run_logged([sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.2)
@@ -87,6 +96,7 @@ def _log_entries() -> list[dict[str, Any]]:
     return [json.loads(line) for line in log_path.read_text().splitlines()]
 
 
+@pytest.mark.real_subprocess
 def test_call_returns_the_exit_code(isolated_home: Path) -> None:
     assert proc.call([sys.executable, "-c", "pass"]) == 0
     assert proc.call([sys.executable, "-c", "raise SystemExit(3)"]) == 3
@@ -97,6 +107,7 @@ def test_call_returns_the_exit_code(isolated_home: Path) -> None:
     assert "output" not in ok and "output" not in failed
 
 
+@pytest.mark.real_subprocess
 def test_call_turns_a_missing_binary_into_a_friendly_error(isolated_home: Path) -> None:
     with pytest.raises(FriendlyError) as exc:
         proc.call(["lepika-no-such-binary", "--help"])
@@ -181,6 +192,7 @@ def test_stream_missing_binary_is_friendly() -> None:
     assert isinstance(exc.value, CommandNotFound)
 
 
+@pytest.mark.real_subprocess
 def test_an_expected_exit_code_is_not_logged_as_a_failure(isolated_home: Path) -> None:
     """A code the caller named is an answer (`systemctl is-active` → 3), not a failure."""
     exit_3 = [sys.executable, "-c", "raise SystemExit(3)"]
@@ -194,11 +206,13 @@ def test_an_expected_exit_code_is_not_logged_as_a_failure(isolated_home: Path) -
     assert "output" not in entry
 
 
+@pytest.mark.real_subprocess
 def test_an_expected_exit_code_passes_check(isolated_home: Path) -> None:
     result = proc.run_logged([sys.executable, "-c", "raise SystemExit(3)"], ok=(0, 3))
     assert result.returncode == 3
 
 
+@pytest.mark.real_subprocess
 def test_an_unexpected_exit_code_still_fails_check(isolated_home: Path) -> None:
     with pytest.raises(FriendlyError):
         proc.run_logged([sys.executable, "-c", "raise SystemExit(2)"], ok=(0, 3))

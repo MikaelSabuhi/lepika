@@ -3,26 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import secrets
 import signal
-import subprocess
-import time
-from collections.abc import Callable, Mapping
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
 
-from lepika import fsio, health, ports, proc
+from lepika import fsio, health, ports
 from lepika.config import Config, config_path
-from lepika.errors import FriendlyError
+from lepika.errors import CommandNotFound, FriendlyError
 from lepika.paths import logs_dir, openwebui_data_dir, pid_file
-from lepika.system import _detach_kwargs
-
-RunFn = Callable[..., Any]
-PopenFn = Callable[..., Any]
-SleepFn = Callable[[float], None]
+from lepika.system import System
 
 # The interpreter OpenWebUI is installed on AND run on — both, or `uv tool run`
 # builds an ephemeral environment on the system Python instead of reusing the
@@ -34,10 +25,10 @@ OPENWEBUI_PYTHON = "3.11"
 _OPENWEBUI_VERSION = re.compile(r"^open-webui v(\S+)", re.MULTILINE)
 
 
-def install_openwebui(run: RunFn = proc.run_logged) -> None:
+def install_openwebui(*, sys: System) -> None:
     # `uv tool install` is idempotent: with open-webui already installed it is a
     # no-op that does NOT upgrade — upgrading is `lepika update`'s job.
-    run(["uv", "tool", "install", "--python", OPENWEBUI_PYTHON, "open-webui"])
+    sys.run(["uv", "tool", "install", "--python", OPENWEBUI_PYTHON, "open-webui"])
 
 
 def _webui_secret(data_dir: Path) -> str:
@@ -61,14 +52,8 @@ def _webui_secret(data_dir: Path) -> str:
     return secret
 
 
-def start_openwebui(
-    port: int,
-    engine_url: str,
-    popen: PopenFn = subprocess.Popen,
-    environ: Mapping[str, str] | None = None,
-    engine_key: str = "",
-) -> int:
-    env = dict(environ if environ is not None else os.environ)
+def start_openwebui(port: int, engine_url: str, engine_key: str = "", *, sys: System) -> int:
+    env = dict(sys.environ)
     env["OLLAMA_BASE_URL"] = engine_url
     # LePika owns the wiring: OpenWebUI otherwise persists whatever its admin panel
     # saved on first run and ignores the env from then on, so `lepika connect` would
@@ -84,9 +69,8 @@ def start_openwebui(
     env["DATA_DIR"] = str(data_dir)
     # Never logged, never in argv.
     env["WEBUI_SECRET_KEY"] = _webui_secret(data_dir)
-    log_file = (logs_dir() / "openwebui.log").open("ab")
     try:
-        proc_handle = popen(
+        pid = sys.spawn(
             [
                 "uv",
                 "tool",
@@ -107,22 +91,18 @@ def start_openwebui(
                 str(port),
             ],
             env=env,
-            stdout=log_file,
-            stderr=log_file,
-            **_detach_kwargs("windows" if os.name == "nt" else "posix"),
+            log=logs_dir() / "openwebui.log",
         )
-    except FileNotFoundError as exc:
-        log_file.close()
+    except CommandNotFound as exc:
         raise FriendlyError(
             "uv is required to run OpenWebUI but was not found.",
             "Install uv: https://docs.astral.sh/uv/getting-started/installation/",
         ) from exc
-    pid = int(proc_handle.pid)
     pid_file("openwebui").write_text(str(pid))
     return pid
 
 
-def _is_webui_process(pid: int, os_name: str, run: RunFn) -> bool:
+def _is_webui_process(pid: int, os_name: str, *, sys: System) -> bool:
     """Is this pid an OpenWebUI of ours that has merely stopped answering?
 
     The port probe alone cannot tell a wedged UI from a recycled pid, and the two
@@ -134,11 +114,11 @@ def _is_webui_process(pid: int, os_name: str, run: RunFn) -> bool:
     if os_name == "windows":
         return False
     # log=False: a pure read, and a pid that is simply gone is not a failure.
-    listed = run(["ps", "-o", "args=", "-p", str(pid)], check=False, log=False)
+    listed = sys.run(["ps", "-o", "args=", "-p", str(pid)], check=False, log=False)
     return "open-webui" in str(listed.stdout)
 
 
-def _find_openwebui(port: int, os_name: str, run: RunFn) -> list[int]:
+def _find_openwebui(port: int, os_name: str, *, sys: System) -> list[int]:
     """Every pid whose command line says it is an OpenWebUI of ours serving `port`.
 
     The counterpart to `_is_webui_process`, for when there is no recorded pid to
@@ -154,7 +134,7 @@ def _find_openwebui(port: int, os_name: str, run: RunFn) -> list[int]:
     if os_name == "windows":
         return []
     # log=False: a pure read, and a machine that runs no OpenWebUI is not a failure.
-    listed = run(["ps", "-eo", "pid=,args="], check=False, log=False)
+    listed = sys.run(["ps", "-eo", "pid=,args="], check=False, log=False)
     found: list[int] = []
     for line in str(listed.stdout).splitlines():
         pid_text, _, args = line.strip().partition(" ")
@@ -174,13 +154,7 @@ def _find_openwebui(port: int, os_name: str, run: RunFn) -> list[int]:
     return found
 
 
-def _stop_recorded_openwebui(
-    os_name: str,
-    run: RunFn,
-    kill: Callable[[int, int], None],
-    port: int | None,
-    up: Callable[..., bool] | None,
-) -> bool:
+def _stop_recorded_openwebui(os_name: str, port: int | None, *, sys: System) -> bool:
     """Stop the OpenWebUI named by the pid file, if that pid is vouched for."""
     pf = pid_file("openwebui")
     if not pf.exists():
@@ -196,20 +170,22 @@ def _stop_recorded_openwebui(
         # signal a group too — neither is ever what a stale pid file meant.
         pf.unlink(missing_ok=True)
         return False
-    if port is not None:
-        up_fn = up if up is not None else health.webui_up
-        if not up_fn(port) and not _is_webui_process(pid, os_name, run):
-            # Nothing answers on our port and no process by that pid names an
-            # open-webui, so the recorded pid is not our UI — after a reboot the OS
-            # will have handed that number to an unrelated process. A stale pid file
-            # is never a licence to signal it (rule 7).
-            pf.unlink(missing_ok=True)
-            return False
+    if (
+        port is not None
+        and not health.webui_up(port, sys=sys)
+        and not _is_webui_process(pid, os_name, sys=sys)
+    ):
+        # Nothing answers on our port and no process by that pid names an
+        # open-webui, so the recorded pid is not our UI — after a reboot the OS
+        # will have handed that number to an unrelated process. A stale pid file
+        # is never a licence to signal it (rule 7).
+        pf.unlink(missing_ok=True)
+        return False
     try:
         if os_name == "windows":
-            run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
+            sys.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
         else:
-            kill(pid, signal.SIGTERM)
+            sys.signal(pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         # Gone, or recycled into a process we don't own (a truncated pid can
         # parse to a live foreign pid) — either way, drop the stale file.
@@ -218,13 +194,7 @@ def _stop_recorded_openwebui(
     return True
 
 
-def stop_openwebui(
-    os_name: str,
-    run: RunFn = proc.run_logged,
-    kill: Callable[[int, int], None] = os.kill,
-    port: int | None = None,
-    up: Callable[..., bool] | None = None,
-) -> bool:
+def stop_openwebui(os_name: str, port: int | None = None, *, sys: System) -> bool:
     """Stop our OpenWebUI, by pid file first and by command line second.
 
     The pid file is the cheap answer and stays the preferred one — it costs no
@@ -235,15 +205,15 @@ def stop_openwebui(
     it, a UI nothing recorded can never be stopped again, and every `down` says
     "Nothing was running" while the port keeps serving.
     """
-    if _stop_recorded_openwebui(os_name, run, kill, port, up):
+    if _stop_recorded_openwebui(os_name, port, sys=sys):
         return True
     if port is None:
         # No port, no command line to match: the pid file was the only handle there is.
         return False
     stopped = False
-    for pid in _find_openwebui(port, os_name, run):
+    for pid in _find_openwebui(port, os_name, sys=sys):
         try:
-            kill(pid, signal.SIGTERM)
+            sys.signal(pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             # Listed a moment ago, but gone — or another user's — by the time we
             # signalled it. Neither is a process this run managed to stop.
@@ -252,38 +222,25 @@ def stop_openwebui(
     return stopped
 
 
-def ensure_openwebui(
-    cfg: Config,
-    run: RunFn = proc.run_logged,
-    popen: PopenFn = subprocess.Popen,
-    up: Callable[..., bool] = health.webui_up,
-    sleep: SleepFn = time.sleep,
-    bind_check: Callable[[int], bool] | None = None,
-) -> None:
+def ensure_openwebui(cfg: Config, *, sys: System) -> None:
     # Probe first: an already-healthy OpenWebUI must cost nothing — no resolver
     # round-trip, and `lepika` keeps working offline.
-    if up(cfg.webui_port):
+    if health.webui_up(cfg.webui_port, sys=sys):
         return
     # The port is not answering /health, but something else may still own it.
     # Caught here it is one clear sentence; caught later it is a 180s wait that
     # ends in "OpenWebUI did not become ready".
-    free = bind_check if bind_check is not None else ports.port_free
-    if not free(cfg.webui_port):
+    if not ports.port_free(cfg.webui_port, sys=sys):
         raise FriendlyError(
             f"Port {cfg.webui_port} is in use by another application.",
             f"Change webui_port in {config_path()} and run `lepika up` again.",
         )
-    install_openwebui(run=run)
-    start_openwebui(cfg.webui_port, cfg.engine_url, popen=popen, engine_key=cfg.engine_key)
-    health.wait_for(lambda: up(cfg.webui_port), 180, "OpenWebUI", sleep=sleep)
+    install_openwebui(sys=sys)
+    start_openwebui(cfg.webui_port, cfg.engine_url, engine_key=cfg.engine_key, sys=sys)
+    health.wait_for(lambda: health.webui_up(cfg.webui_port, sys=sys), 180, "OpenWebUI", sys=sys)
 
 
-def wait_until_down(
-    port: int,
-    up: Callable[..., bool],
-    attempts: int = 30,
-    sleep: SleepFn = time.sleep,
-) -> None:
+def wait_until_down(port: int, attempts: int = 30, *, sys: System) -> None:
     """Block until nothing answers on `port`.
 
     A SIGTERMed OpenWebUI keeps serving /health for a moment while it shuts down.
@@ -294,9 +251,9 @@ def wait_until_down(
     timeout, so a run of 30 is up to about a minute of wall time rather than 30s.
     """
     for _ in range(attempts):
-        if not up(port):
+        if not health.webui_up(port, sys=sys):
             return
-        sleep(1)
+        sys.sleep(1)
     raise FriendlyError(
         f"OpenWebUI on port {port} is still answering after {attempts} shutdown checks.",
         # `lepika connect` restarts the UI too, so the hint names no single caller.
@@ -304,27 +261,17 @@ def wait_until_down(
     )
 
 
-def restart_openwebui(
-    cfg: Config,
-    os_name: str,
-    run: RunFn = proc.run_logged,
-    popen: PopenFn = subprocess.Popen,
-    up: Callable[..., bool] | None = None,
-    sleep: SleepFn = time.sleep,
-    kill: Callable[[int, int], None] = os.kill,
-    bind_check: Callable[[int], bool] | None = None,
-) -> None:
+def restart_openwebui(cfg: Config, os_name: str, *, sys: System) -> None:
     """Stop OpenWebUI, wait for it to really be gone, then start it again."""
-    up_fn = up if up is not None else health.webui_up
-    stop_openwebui(os_name, run=run, kill=kill, port=cfg.webui_port, up=up_fn)
-    wait_until_down(cfg.webui_port, up=up_fn, sleep=sleep)
-    ensure_openwebui(cfg, run=run, popen=popen, up=up_fn, sleep=sleep, bind_check=bind_check)
+    stop_openwebui(os_name, port=cfg.webui_port, sys=sys)
+    wait_until_down(cfg.webui_port, sys=sys)
+    ensure_openwebui(cfg, sys=sys)
 
 
-def openwebui_version(run: RunFn = proc.run_logged) -> str | None:
+def openwebui_version(*, sys: System) -> str | None:
     """The installed OpenWebUI, as `uv tool list` names it."""
     try:
-        result = run(["uv", "tool", "list"], check=False, log=False)
+        result = sys.run(["uv", "tool", "list"], check=False, log=False)
     except FriendlyError:
         return None
     found = _OPENWEBUI_VERSION.search(str(result.stdout or ""))

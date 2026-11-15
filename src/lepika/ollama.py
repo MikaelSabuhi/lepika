@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shutil
@@ -12,7 +13,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from lepika import health, log, proc
+from lepika import health, log, proc, system
 from lepika.config import DEFAULT_CONTEXT_LENGTH, DEFAULT_ENGINE_URL, Config
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
@@ -24,6 +25,10 @@ WhichFn = Callable[[str], str | None]
 PopenFn = Callable[..., Any]
 SleepFn = Callable[[float], None]
 CallFn = Callable[[list[str]], int]
+
+# The default probe, bound once at import as the bare function used to be: a test
+# that patches `health.api_up` does not reach a default, and still must not.
+_REAL_API_UP = functools.partial(health.api_up, sys=system.REAL)
 
 # The official Linux installer, which both installs and upgrades in place.
 OLLAMA_INSTALL_SCRIPT = "curl -fsSL https://ollama.com/install.sh | sh"
@@ -205,7 +210,7 @@ def stop_ollama(
     url: str,
     run: RunFn = proc.run_logged,
     kill: Callable[[int, int], None] = os.kill,
-    api_up: Callable[..., bool] = health.api_up,
+    api_up: Callable[..., bool] = _REAL_API_UP,
     key: str = "",
     attempts: int = 30,
     sleep: SleepFn = time.sleep,
@@ -273,7 +278,7 @@ def ensure_ollama(
     run: RunFn = proc.run_logged,
     which: WhichFn = shutil.which,
     popen: PopenFn = subprocess.Popen,
-    api_up: Callable[..., bool] = health.api_up,
+    api_up: Callable[..., bool] = _REAL_API_UP,
     sleep: SleepFn = time.sleep,
     call: CallFn = proc.call,
     url: str = DEFAULT_ENGINE_URL,
@@ -292,7 +297,9 @@ def ensure_ollama(
         log.get_logger().info("engine.restart", reason="context_length", wanted=wanted)
         stop_ollama(info.os, url, run=run, kill=kill, api_up=api_up, sleep=sleep, rerun="lepika up")
     start_ollama(info.os, popen=popen, context_length=context_length, environ=environ)
-    health.wait_for(lambda: api_up(url), 30, "Ollama API", sleep=sleep)
+    health.wait_for(
+        lambda: api_up(url), 30, "Ollama API", sys=system.overlay(system.REAL, sleep=sleep)
+    )
 
 
 def _launched_context() -> str | None:

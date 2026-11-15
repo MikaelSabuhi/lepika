@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,15 @@ class RealNetworkCall(BaseException):
     A BaseException on purpose: every opener in `src/` sits under an
     `except Exception` that turns failures into `False` or a fallback, which is
     exactly how an un-faked probe used to pass silently (docs/architecture.md rule 3).
+    """
+
+
+class RealProcessCall(BaseException):
+    """A test started or signalled a real process.
+
+    A BaseException for the same reason as `RealNetworkCall`: production code reads
+    an `OSError` or any `Exception` from a launch or a signal as "not there" and
+    carries on, which is how a real `ps` or a real SIGTERM went unnoticed.
     """
 
 
@@ -56,6 +67,55 @@ def guard_network(node: pytest.Item, monkeypatch: pytest.MonkeyPatch) -> None:
 def no_real_network(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail any test that lets production code call the real `urlopen`."""
     guard_network(request.node, monkeypatch)
+
+
+def guard_processes(node: pytest.Item, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refuse a real child process and a real `os.kill`, except in a `canary` test,
+    which is opted out by marker exactly as from the network guard.
+
+    Launches are refused in `subprocess.Popen.__init__` on the class itself, which
+    `run`, `call` and `check_output` all construct, so a reference to `Popen` captured
+    in a parameter default (`proc.stream`, `ollama.start_ollama`) is refused too.
+    Signals are refused by replacing the name `os.kill`. A builtin cannot be guarded
+    any deeper, so the defaults that captured the real one before this fixture ran
+    (`ollama.stop_ollama`, `ollama.ensure_ollama`) are a gap until that module stops
+    taking a `kill` parameter. `test_no_function_captures_a_real_launcher_or_signal_as_a_default`
+    fails on any new capture.
+
+    A `real_subprocess` test may start a child, and may signal only a child it
+    started: `subprocess.run` kills its own child on a timeout. Its registered
+    description limits it to the test interpreter, but that is a convention: the
+    guard does not check the program. A test that exercises `RealSystem` patches
+    `subprocess.Popen` or `os.kill` with its own double; its `monkeypatch.setattr`
+    runs after this autouse fixture and wins.
+    """
+    if node.get_closest_marker("canary") is not None:
+        return
+    children: set[int] = set()
+    real_kill = os.kill
+    real_init = vars(subprocess.Popen)["__init__"]
+    marked = node.get_closest_marker("real_subprocess") is not None
+
+    def guarded_init(self: subprocess.Popen[Any], *args: Any, **kwargs: Any) -> None:
+        if not marked:
+            argv = args[0] if args else kwargs.get("args", "<unknown>")
+            raise RealProcessCall(f"test started a real process: {argv}")
+        real_init(self, *args, **kwargs)
+        children.add(self.pid)
+
+    def guarded_kill(pid: int, sig: int) -> None:
+        if pid not in children:
+            raise RealProcessCall(f"test sent a real signal {sig} to pid {pid}")
+        real_kill(pid, sig)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", guarded_init)
+    monkeypatch.setattr(os, "kill", guarded_kill)
+
+
+@pytest.fixture(autouse=True)
+def no_real_processes(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail any test that lets production code start or signal a real process."""
+    guard_processes(request.node, monkeypatch)
 
 
 @pytest.fixture(autouse=True)

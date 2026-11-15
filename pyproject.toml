@@ -76,6 +76,7 @@ files = ["src"]
 testpaths = ["tests"]
 markers = [
   "canary: talks to real upstreams (Ollama, Hugging Face); run on a schedule, never in the default suite",
+  "real_subprocess: starts a real child process on purpose (the test interpreter only); everything else in the suite must not",
 ]
 # `uv run pytest -m canary tests/canary` runs it: a later `-m` wins.
 addopts = "-m 'not canary'"

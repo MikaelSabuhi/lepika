@@ -109,6 +109,8 @@ def test_wizard_in_server_mode_uses_the_server_backend(
     monkeypatch.setattr(server, "start_stack", fake_server_start)
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: events.append("pull"))
     monkeypatch.setattr(express, "start_stack", lambda *a, **k: pytest.fail("wrong backend"))
+    # Leaving Express stops its stack: nothing of it runs here.
+    monkeypatch.setattr(express, "stop", lambda info, cfg, **k: False)
     monkeypatch.setattr(cli, "_open_browser", lambda url: events.append("browser"))
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
@@ -122,6 +124,8 @@ def test_mode_flag_skips_the_question(monkeypatch: pytest.MonkeyPatch, isolated_
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "1")  # only the model question
     monkeypatch.setattr(server, "start_stack", started)
+    # Leaving Express stops its stack: nothing of it runs here.
+    monkeypatch.setattr(express, "stop", lambda info, cfg, **k: False)
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: None)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
     result = runner.invoke(cli.app, ["--mode", "server"])

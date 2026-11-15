@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import Runner
+from fakes import FakeSystem, Runner
 
 from lepika import config, health, mlx, ollama, paths, serving
 from lepika.detect import SystemInfo
@@ -478,7 +478,7 @@ def test_ensure_ollama_probes_the_url_it_is_given() -> None:
 
 def test_wait_for_raises_after_timeout() -> None:
     with pytest.raises(FriendlyError):
-        health.wait_for(lambda: False, seconds=3, what="Ollama API", sleep=lambda s: None)
+        health.wait_for(lambda: False, seconds=3, what="Ollama API", sys=FakeSystem())
 
 
 def _info(os_name: str, arch: str, gpu: str) -> SystemInfo:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -39,20 +40,20 @@ def start_stack(
         ollama.ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length)
     else:
         # Someone else runs this engine: never install or start anything for it.
-        health.check_remote_engine(cfg, api_up=health.api_up)
+        health.check_remote_engine(cfg, sys=system.REAL)
     # Logged once the engine is really up, like Server: a pre-flight that refused
     # started no stack, and a `stack.up` above its own failure line reads as one that did.
     log.get_logger().info("stack.up", mode="express", engine_managed=cfg.engine_managed)
     if after_engine is not None:
         after_engine()
-    openwebui.ensure_openwebui(cfg)
+    openwebui.ensure_openwebui(cfg, sys=system.REAL)
     return health.webui_url(cfg.webui_port)
 
 
 def stop(info: SystemInfo, cfg: Config) -> bool:
     """`lepika down` in Express mode: stop OpenWebUI; Ollama stays as a shared service."""
     # The port is what proves the recorded pid is still our OpenWebUI.
-    stopped = openwebui.stop_openwebui(info.os, port=cfg.webui_port)
+    stopped = openwebui.stop_openwebui(info.os, port=cfg.webui_port, sys=system.REAL)
     log.get_logger().info("stack.down", mode="express", stopped=stopped)
     return stopped
 
@@ -96,7 +97,9 @@ def update(
             which=which_fn,
             call=call if call is not None else proc.call,
             popen=popen_fn,
-            api_up=api_up if api_up is not None else health.api_up,
+            api_up=(
+                api_up if api_up is not None else functools.partial(health.api_up, sys=system.REAL)
+            ),
             sleep=sleep_fn,
             kill=kill_fn,
             running_version=running_version,
@@ -126,7 +129,10 @@ def update(
                     "run `systemctl disable --now ollama.service` as root",
                 )
             )
-    before = openwebui.openwebui_version(run_fn)
+    # OpenWebUI takes a System; the callables this function was handed reach it
+    # through the transitional adapter.
+    legacy = system.overlay(system.REAL, run=run_fn, popen=popen_fn, sleep=sleep_fn, kill=kill_fn)
+    before = openwebui.openwebui_version(sys=legacy)
     # Pinned like the install and the run: an upgrade that resolved a different
     # interpreter would move the tool env out from under `uv tool run --python`,
     # which then builds an ephemeral one instead of reusing it. check=True: uv exits
@@ -134,16 +140,14 @@ def update(
     run_fn(
         ["uv", "tool", "upgrade", "--python", openwebui.OPENWEBUI_PYTHON, "open-webui"], check=True
     )
-    after = openwebui.openwebui_version(run_fn)
+    after = openwebui.openwebui_version(sys=legacy)
     if before is not None and before == after:
         # Unchanged: a running UI is not interrupted for nothing.
         steps.append(UpdateStep("OpenWebUI", "current", after))
         return steps
     # A restart, not a stop-then-probe: the upgraded build only takes effect once
     # the old server is really gone. An unknown version restarts too.
-    openwebui.restart_openwebui(
-        cfg, info.os, run=run_fn, popen=popen_fn, sleep=sleep_fn, kill=kill_fn
-    )
+    openwebui.restart_openwebui(cfg, info.os, sys=legacy)
     steps.append(UpdateStep("OpenWebUI", "upgraded", _changed(before, after)))
     return steps
 
@@ -249,7 +253,10 @@ def _update_ollama(
         if start:
             ollama.start_ollama(info.os, popen=popen, context_length=cfg.context_length)
             health.wait_for(
-                lambda: api_up(cfg.engine_url, key=cfg.engine_key), 30, "Ollama API", sleep=sleep
+                lambda: api_up(cfg.engine_url, key=cfg.engine_key),
+                30,
+                "Ollama API",
+                sys=system.overlay(system.REAL, sleep=sleep),
             )
     serving = running()
     if serving and after and serving != after:

@@ -5,7 +5,7 @@ import urllib.request
 from typing import Any
 
 import pytest
-from fakes import FakeSystem
+from fakes import FakeResponse, FakeSystem, routes
 
 from lepika import config, detect, health
 from lepika.errors import FriendlyError
@@ -89,42 +89,24 @@ def test_detect_probes_the_default_engine_url() -> None:
 
 
 def test_api_up_true_and_false() -> None:
-    def ok(req: Any, timeout: float = 0) -> Any:
-        class R:
-            def read(self) -> bytes:
-                return b"{}"
-
-        return R()
-
-    def boom(req: Any, timeout: float = 0) -> Any:
-        raise OSError("refused")
-
-    assert health.api_up("http://x", urlopen=ok) is True
-    assert health.api_up("http://x", urlopen=boom) is False
+    ok = FakeSystem(urls=routes({"http://x/api/version": FakeResponse(b"{}")}))
+    refused = FakeSystem(urls=routes({"http://x/api/version": OSError("refused")}))
+    assert health.api_up("http://x", sys=ok) is True
+    assert health.api_up("http://x", sys=refused) is False
 
 
 def test_api_up_sends_bearer_key_when_given() -> None:
-    seen: list[Any] = []
-
-    def opener(req: Any, timeout: float = 0) -> Any:
-        seen.append(req)
-        return object()
-
-    assert health.api_up("http://x", urlopen=opener, key="s3cret") is True
-    request = seen[0]
+    sys = FakeSystem(urls=routes({"http://x/api/version": FakeResponse(b"{}")}))
+    assert health.api_up("http://x", key="s3cret", sys=sys) is True
+    request = sys.requested[0]
     assert request.full_url == "http://x/api/version"
     assert request.get_header("Authorization") == "Bearer s3cret"
 
 
 def test_api_up_without_key_sends_no_authorization_header() -> None:
-    seen: list[Any] = []
-
-    def opener(req: Any, timeout: float = 0) -> Any:
-        seen.append(req)
-        return object()
-
-    assert health.api_up("http://x", urlopen=opener) is True
-    assert seen[0].get_header("Authorization") is None
+    sys = FakeSystem(urls=routes({"http://x/api/version": FakeResponse(b"{}")}))
+    assert health.api_up("http://x", sys=sys) is True
+    assert sys.requested[0].get_header("Authorization") is None
 
 
 def test_plan_sentence_mentions_gpu_and_mode() -> None:

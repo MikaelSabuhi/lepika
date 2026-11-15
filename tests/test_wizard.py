@@ -46,8 +46,7 @@ def test_choose_model_free_form_survives_an_offline_hub(capsys: pytest.CaptureFi
         config.Config(),
         ask=lambda *a, **k: "hf.co/unsloth/gemma-3-4b-it-GGUF",
         curated=CURATED,
-        urlopen=_offline,
-        sys=FakeSystem(),
+        sys=FakeSystem(urls=_offline),
     )
     assert ref == models.ModelRef(raw="hf.co/unsloth/gemma-3-4b-it-GGUF", kind="hf_gguf")
     # Collapsed: rich wraps the notice at 80 columns, between "Ollama" and "pick".
@@ -286,7 +285,7 @@ GGUF_REF = models.ModelRef(raw="hf.co/unsloth/Qwen3.8-27B-GGUF", kind="hf_gguf")
 def _listing(builds: list[gguf.Build]) -> Any:
     calls: list[str] = []
 
-    def fake(repo: str, token: str = "", urlopen: Any = None) -> list[gguf.Build]:
+    def fake(repo: str, token: str = "", *, sys: Any) -> list[gguf.Build]:
         calls.append(repo)
         return builds
 
@@ -338,12 +337,11 @@ def test_choose_quant_reprompts_once_then_takes_the_recommendation(
 def test_choose_quant_sends_the_saved_token(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, str] = {}
 
-    def fake(repo: str, token: str = "", urlopen: Any = None) -> list[gguf.Build]:
+    def fake(repo: str, token: str = "", *, sys: Any) -> list[gguf.Build]:
         seen["token"] = token
         return BUILDS
 
     monkeypatch.setattr(gguf, "list_builds", fake)
-    monkeypatch.delenv("HF_TOKEN", raising=False)
     cfg = config.Config()
     cfg.hf_token = "hf_saved"
     wizard.choose_quant(GGUF_REF, cfg, INFO, ask=lambda *a, **k: "", sys=FakeSystem())
@@ -460,7 +458,7 @@ def test_choose_quant_says_a_remote_engine_is_sized_against_this_machine(
 def test_choose_quant_never_probes_the_gpu_when_the_listing_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def unavailable(repo: str, token: str = "", urlopen: Any = None) -> list[gguf.Build]:
+    def unavailable(repo: str, token: str = "", *, sys: Any) -> list[gguf.Build]:
         raise gguf.Unavailable("offline")
 
     monkeypatch.setattr(gguf, "list_builds", unavailable)

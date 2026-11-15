@@ -5,13 +5,12 @@ from __future__ import annotations
 import contextlib
 import importlib.resources
 import json
-import os
 import re
-import sys
+import sys as _sys
 import tempfile
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -25,13 +24,12 @@ from rich.progress import (
 )
 from rich.text import Text
 
-from lepika import log, proc
+from lepika import log
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
+from lepika.system import System
 
-UrlOpenFn = Callable[..., Any]
 ProgressFn = Callable[[int, int], None]
-StreamFn = Callable[..., tuple[int, str]]
 
 _TAGS_TIMEOUT = 5.0
 _HEALTH_TIMEOUT = 1.0
@@ -65,10 +63,6 @@ def _request(
     if key:
         request.add_header("Authorization", f"Bearer {key}")
     return request
-
-
-def _opener(urlopen: UrlOpenFn | None) -> UrlOpenFn:
-    return urlopen if urlopen is not None else urllib.request.urlopen
 
 
 def _unreachable(url: str, managed: bool = True) -> FriendlyError:
@@ -122,23 +116,23 @@ def same_model(a: str, b: str) -> bool:
     return _canonical(a) == _canonical(b)
 
 
-def vllm_up(url: str, urlopen: UrlOpenFn | None = None) -> bool:
+def vllm_up(url: str, *, sys: System) -> bool:
     """Is the vLLM server answering? `GET /health` — a probe, so nothing is logged."""
     try:
-        _opener(urlopen)(urllib.request.Request(f"{url}/health"), timeout=_HEALTH_TIMEOUT)
+        sys.open_url(urllib.request.Request(f"{url}/health"), timeout=_HEALTH_TIMEOUT)
     except Exception:
         return False
     return True
 
 
 def list_models(
-    url: str, key: str = "", managed: bool = True, urlopen: UrlOpenFn | None = None
+    url: str, key: str = "", managed: bool = True, *, sys: System
 ) -> list[tuple[str, int]]:
     """Every installed model as `(name, size_bytes)`, from `GET /api/tags`."""
     # Parsing sits inside the guard on purpose: something that answers on the port
     # without speaking Ollama is a failure to reach the engine, not a traceback.
     try:
-        with _opener(urlopen)(_request(url, "/api/tags", key), timeout=_TAGS_TIMEOUT) as response:
+        with sys.open_url(_request(url, "/api/tags", key), timeout=_TAGS_TIMEOUT) as response:
             payload = json.loads(response.read().decode("utf-8"))
         return [(str(m["name"]), int(m.get("size", 0))) for m in payload["models"]]
     except urllib.error.HTTPError as exc:
@@ -149,13 +143,11 @@ def list_models(
         raise _unreachable(url, managed) from exc
 
 
-def delete_model(
-    url: str, name: str, key: str = "", managed: bool = True, urlopen: UrlOpenFn | None = None
-) -> None:
+def delete_model(url: str, name: str, key: str = "", managed: bool = True, *, sys: System) -> None:
     """Remove one model from the engine via `DELETE /api/delete`."""
     request = _request(url, "/api/delete", key, "DELETE", {"model": name})
     try:
-        with _opener(urlopen)(request, timeout=_DELETE_TIMEOUT):
+        with sys.open_url(request, timeout=_DELETE_TIMEOUT):
             pass
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -201,15 +193,16 @@ def pull_model(
     ref: ModelRef,
     key: str = "",
     managed: bool = True,
-    urlopen: UrlOpenFn | None = None,
     progress: ProgressFn | None = None,
+    *,
+    sys: System,
 ) -> None:
     """Stream `POST /api/pull`, showing Ollama's per-layer progress as one bar."""
     logger = log.get_logger()
     logger.info("engine.pull", model=ref.raw, url=url)
     request = _request(url, "/api/pull", key, "POST", {"model": ref.raw, "stream": True})
     try:
-        response = _opener(urlopen)(request, timeout=_PULL_IDLE_TIMEOUT)
+        response = sys.open_url(request, timeout=_PULL_IDLE_TIMEOUT)
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             raise _rejected(url) from exc
@@ -276,7 +269,7 @@ def _bar(ref: ModelRef, progress: ProgressFn | None) -> Iterator[ProgressFn]:
         _SpeedColumn(),
         # Piped or redirected, a live bar renders as one frozen "0/549 bytes" line
         # that never updates. The JSON log already records the pull.
-        disable=not sys.stdout.isatty(),
+        disable=not _sys.stdout.isatty(),
     )
     bar.start()
     task = bar.add_task(ref.raw, total=None)
@@ -290,18 +283,16 @@ def _bar(ref: ModelRef, progress: ProgressFn | None) -> Iterator[ProgressFn]:
         bar.stop()
 
 
-def version(url: str, key: str = "", urlopen: UrlOpenFn | None = None) -> str:
+def version(url: str, key: str = "", *, sys: System) -> str:
     """`GET /api/version` — a probe, so nothing is logged."""
     try:
-        with _opener(urlopen)(_request(url, "/api/version", key), timeout=_TAGS_TIMEOUT) as r:
+        with sys.open_url(_request(url, "/api/version", key), timeout=_TAGS_TIMEOUT) as r:
             return str(json.loads(r.read().decode("utf-8"))["version"])
     except Exception as exc:
         raise _unreachable(url, True) from exc
 
 
-def show(
-    url: str, name: str, key: str = "", urlopen: UrlOpenFn | None = None
-) -> tuple[list[str], str] | None:
+def show(url: str, name: str, key: str = "", *, sys: System) -> tuple[list[str], str] | None:
     """The model's capabilities and chat template, or None when the engine won't say.
 
     A diagnostic read after a successful pull: its failure must never fail the pull,
@@ -309,7 +300,7 @@ def show(
     """
     request = _request(url, "/api/show", key, "POST", {"model": name})
     try:
-        with _opener(urlopen)(request, timeout=_TAGS_TIMEOUT) as response:
+        with sys.open_url(request, timeout=_TAGS_TIMEOUT) as response:
             payload = json.loads(response.read().decode("utf-8"))
         caps = payload.get("capabilities") or []
         return [str(c) for c in caps], str(payload.get("template") or "")
@@ -342,8 +333,8 @@ def retemplate(
     name: str,
     template: str,
     key: str = "",  # nosec B107 — empty means "no key", not a credential
-    stream: StreamFn = proc.stream,
-    environ: Mapping[str, str] | None = None,
+    *,
+    sys: System,
 ) -> None:
     """Rebuild `name` in place with a different chat template; the weights are shared.
 
@@ -351,12 +342,12 @@ def retemplate(
     bytes, not a re-download. CLI-based like `import_model`, and for the same reason
     it never runs against a remote engine: the CLI cannot send that engine's key.
     """
-    env = dict(environ if environ is not None else os.environ)
+    env = dict(sys.environ)
     env["OLLAMA_HOST"] = url
     with tempfile.TemporaryDirectory(prefix="lepika-retemplate-") as tmp:
         modelfile = Path(tmp) / "Modelfile"
         modelfile.write_text(f'FROM {name}\nTEMPLATE """{template}"""\n', encoding="utf-8")
-        code, tail = stream(["ollama", "create", name], env=env, cwd=Path(tmp))
+        code, tail = sys.stream(["ollama", "create", name], env=env, cwd=Path(tmp))
     logger = log.get_logger()
     if code != 0:
         logger.warning("engine.retemplate", model=name, result=tail)
@@ -385,7 +376,7 @@ def _runner_failed(name: str, detail: str) -> FriendlyError:
     )
 
 
-def load_model(url: str, name: str, key: str = "", urlopen: UrlOpenFn | None = None) -> None:
+def load_model(url: str, name: str, key: str = "", *, sys: System) -> None:
     """Load a model once so an import is only reported as ✓ when it actually runs.
 
     An empty prompt makes Ollama load the weights and return; a missing MLX runner
@@ -393,7 +384,7 @@ def load_model(url: str, name: str, key: str = "", urlopen: UrlOpenFn | None = N
     """
     request = _request(url, "/api/generate", key, "POST", {"model": name, "prompt": ""})
     try:
-        with _opener(urlopen)(request, timeout=_LOAD_TIMEOUT):
+        with sys.open_url(request, timeout=_LOAD_TIMEOUT):
             pass
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
@@ -452,9 +443,8 @@ def import_model(
     key: str = "",
     quant: str | None = IMPORT_QUANT,
     owned: bool = True,
-    stream: StreamFn = proc.stream,
-    urlopen: UrlOpenFn | None = None,
-    environ: Mapping[str, str] | None = None,
+    *,
+    sys: System,
 ) -> None:
     """`ollama create <name> --experimental -q <quant>` from a safetensors directory.
 
@@ -466,25 +456,25 @@ def import_model(
     what it stores, which is why `same_model` compares case-insensitively. `owned` says
     whose directory `source` is — LePika's staged download, or a folder the user pointed at.
     """
-    have = version(url, key, urlopen)
+    have = version(url, key, sys=sys)
     if _version_tuple(have) < IMPORT_MIN_VERSION:
         raise FriendlyError(
             f"Importing full-weight repos needs Ollama 0.32 or newer (you have {have}).",
             "Run `lepika update`.",
         )
-    env = dict(environ if environ is not None else os.environ)
+    env = dict(sys.environ)
     env["OLLAMA_HOST"] = url  # the CLI talks to the engine LePika manages, not a default
     logger = log.get_logger()
     argv = ["ollama", "create", name, "--experimental"]
     if quant is not None:
         argv += ["-q", quant]
     with _staged(source, owned) as cwd:
-        code, tail = stream(argv, env=env, cwd=cwd)
+        code, tail = sys.stream(argv, env=env, cwd=cwd)
     if code != 0:
         logger.warning("engine.import", model=name, quant=quant, source=str(source), result=tail)
         raise _import_failed(name, tail, owned)
     try:
-        load_model(url, name, key, urlopen)
+        load_model(url, name, key, sys=sys)
     except FriendlyError as exc:
         # The build worked and the weights are on disk, but nothing can run them —
         # an attempt that leaves no line would look like it never happened.

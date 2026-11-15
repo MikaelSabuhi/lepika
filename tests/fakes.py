@@ -1,10 +1,11 @@
-"""Shared test doubles: `FakeSystem`, and the injected subprocess callables."""
+"""Shared test doubles: `FakeSystem`, its HTTP answers, and the injected subprocess callables."""
 
 from __future__ import annotations
 
+import io
 import subprocess
 import urllib.request
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -71,12 +72,73 @@ def _no_url(request: urllib.request.Request) -> Response:
     raise UnansweredURL(f"FakeSystem was not given an answer for {url}")
 
 
+class FakeResponse:
+    """What `open_url` hands back: a body read whole or line by line, and a status.
+
+    `body` as bytes is split after each newline when iterated, as an HTTP response
+    is; as a list, each item is one line. `fails` is raised once the lines run out —
+    a read timeout or a dropped connection, long after the request succeeded.
+    """
+
+    def __init__(
+        self,
+        body: bytes | Sequence[bytes] = b"",
+        *,
+        status: int = 200,
+        fails: BaseException | None = None,
+    ) -> None:
+        self.lines = list(io.BytesIO(body)) if isinstance(body, bytes) else list(body)
+        self.status = status
+        self.fails = fails
+        self.closed = False
+
+    def read(self) -> bytes:
+        if self.fails is not None:
+            raise self.fails
+        return b"".join(self.lines)
+
+    def __iter__(self) -> Iterator[bytes]:
+        yield from self.lines
+        if self.fails is not None:
+            raise self.fails
+
+    def __enter__(self) -> FakeResponse:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.closed = True
+
+
+def routes(
+    table: Mapping[str, Response | BaseException],
+) -> Callable[[urllib.request.Request], Response]:
+    """An `urls` answer for `FakeSystem`: by the request's full URL.
+
+    A value that is an exception is raised (an `HTTPError`, a refused connection);
+    a URL the table does not list raises `UnansweredURL`, which no broad except hides.
+    """
+
+    def answer(request: urllib.request.Request) -> Response:
+        if request.full_url not in table:
+            _no_url(request)
+        found = table[request.full_url]
+        if isinstance(found, BaseException):
+            raise found
+        return found
+
+    return answer
+
+
 class FakeSystem:
     """Implements `lepika.system.System` without touching the machine; records every call.
 
     `stdout`, `codes` and `raises` answer by the leading words of the argv: a
     matching `run`, `call` or `stream` is recorded, then raises (a timeout, say).
     A program named in `missing` is not installed for every launcher alike.
+    `while_streaming` is handed the argv and cwd of each `stream` while it "runs":
+    a working directory the caller stages is often gone once the call returns.
+    `while_running` is handed the argv of each `run` the same way, before it returns:
+    a test can leave behind what the real command would have written.
     """
 
     def __init__(
@@ -95,8 +157,12 @@ class FakeSystem:
         missing: set[str] | None = None,
         ram_bytes: int | None = 16 * 2**30,
         raises: dict[str, BaseException] | None = None,
+        while_streaming: Callable[[list[str], Path | None], None] | None = None,
+        while_running: Callable[[list[str]], None] | None = None,
     ) -> None:
         self.stdout = stdout or {}
+        self.while_streaming = while_streaming
+        self.while_running = while_running
         self.codes = codes or {}
         self.paths = which or {}
         self.environ: Mapping[str, str] = environ if environ is not None else {}
@@ -117,6 +183,7 @@ class FakeSystem:
         self.signals: list[tuple[int, int]] = []
         self.slept: list[float] = []
         self.requested: list[urllib.request.Request] = []
+        self.request_timeouts: list[float] = []
         self.browsed: list[str] = []
 
     def _launch(self, cmd: Sequence[str]) -> None:
@@ -151,6 +218,8 @@ class FakeSystem:
             }
         )
         self._start(cmd)
+        if self.while_running is not None:
+            self.while_running(list(cmd))
         code = _leading(self.codes, cmd, 0)
         if check and code not in ok:
             # The same error `proc.run_logged` raises for an unexpected exit code.
@@ -178,6 +247,8 @@ class FakeSystem:
             (list(cmd), {"env": dict(env) if env is not None else None, "cwd": cwd})
         )
         self._start(cmd)
+        if self.while_streaming is not None:
+            self.while_streaming(list(cmd), cwd)
         return self.stream_answer
 
     def spawn(self, cmd: Sequence[str], *, env: Mapping[str, str], log: Path) -> int:
@@ -190,6 +261,7 @@ class FakeSystem:
 
     def open_url(self, request: urllib.request.Request, *, timeout: float) -> Response:
         self.requested.append(request)
+        self.request_timeouts.append(timeout)
         return self.urls(request)
 
     def sleep(self, seconds: float) -> None:

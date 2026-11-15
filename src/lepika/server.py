@@ -15,7 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from rich.console import Console
 
-from lepika import detect, engine, express, fsio, log, models, proc, prompts
+from lepika import detect, engine, express, fsio, log, models, proc, prompts, system
 from lepika.backend import UpdateStep
 from lepika.config import Config
 from lepika.detect import SystemInfo
@@ -384,6 +384,10 @@ def gpu_note(info: SystemInfo, run: RunFn = proc.run_logged) -> str | None:
     return None
 
 
+def _real_vllm_up(url: str) -> bool:
+    return engine.vllm_up(url, sys=system.REAL)
+
+
 def start_stack(
     info: SystemInfo,
     cfg: Config,
@@ -391,7 +395,7 @@ def start_stack(
     run: RunFn = proc.run_logged,
     call: CallFn = proc.call,
     api_up: Callable[..., bool] = detect.api_up,
-    vllm_up: Callable[..., bool] = engine.vllm_up,
+    vllm_up: Callable[..., bool] | None = None,
     up: Callable[..., bool] = express.webui_up,
     sleep: SleepFn = time.sleep,
 ) -> str:
@@ -400,6 +404,7 @@ def start_stack(
     Always runs `compose up -d`: it is idempotent, takes about a second when nothing
     changed, and is what makes `connect`/`expose` edits take effect.
     """
+    vllm_probe = vllm_up if vllm_up is not None else _real_vllm_up
     ensure_docker(info, run=run)
     stack = install_stack()
     if cfg.engine_managed and info.ollama_running and not _our_ollama(stack, run):
@@ -455,7 +460,7 @@ def start_stack(
             "vLLM is loading the model — the first time this downloads the full "
             "weights; watch with `lepika logs`."
         )
-        express.wait_for(lambda: vllm_up(VLLM_URL), _VLLM_READY_SECONDS, "vLLM", sleep=sleep)
+        express.wait_for(lambda: vllm_probe(VLLM_URL), _VLLM_READY_SECONDS, "vLLM", sleep=sleep)
     elif cfg.engine_managed:
         express.wait_for(lambda: api_up(cfg.engine_url), 120, "Ollama (container)", sleep=sleep)
     else:

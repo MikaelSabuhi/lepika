@@ -17,7 +17,7 @@ from itertools import pairwise
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from lepika import detect, fsio, log, proc
+from lepika import detect, fsio, log, proc, system
 from lepika.backend import UpdateStep
 from lepika.config import DEFAULT_CONTEXT_LENGTH, DEFAULT_ENGINE_URL, Config, config_path
 from lepika.detect import SystemInfo
@@ -1173,7 +1173,9 @@ def _update_ollama(
         # reason to depend on it.
         from lepika import engine
 
-        running_version = engine.version
+        def running_version(url: str, key: str = "") -> str:
+            return engine.version(url, key, sys=system.REAL)
+
     version_of = running_version
 
     def running() -> str | None:

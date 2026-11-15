@@ -6,12 +6,12 @@ import dataclasses
 import importlib.resources
 import tomllib
 import urllib.request
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from lepika.errors import FriendlyError
+from lepika.system import System
 
 ModelKind = Literal["ollama", "hf_gguf", "hf_repo"]
 
@@ -121,14 +121,11 @@ def _parse_curated(text: str, *, lenient: bool) -> list[CuratedModel]:
     return curated
 
 
-def load_curated(
-    fetch_remote: bool = True,
-    urlopen: Callable[..., Any] | None = None,
-) -> list[CuratedModel]:
+def load_curated(fetch_remote: bool = True, *, sys: System) -> list[CuratedModel]:
     if fetch_remote:
-        opener: Callable[..., Any] = urlopen if urlopen is not None else urllib.request.urlopen
+        request = urllib.request.Request(CURATED_MODELS_URL)
         try:
-            text = opener(CURATED_MODELS_URL, timeout=3).read().decode("utf-8")
+            text = sys.open_url(request, timeout=3).read().decode("utf-8")
             remote = _parse_curated(text, lenient=True)
         except Exception:
             # Unreachable, or served something unusable: the bundled list still works.

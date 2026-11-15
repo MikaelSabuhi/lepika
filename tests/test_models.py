@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import tomllib
-from collections.abc import Callable
 from typing import Any
 
 import pytest
+from fakes import FakeResponse, FakeSystem, routes
 
 from lepika import models
 from lepika.errors import FriendlyError
@@ -44,47 +44,31 @@ def test_a_model_ref_with_a_control_character_is_refused() -> None:
 
 
 def test_load_curated_falls_back_to_bundled_on_network_error(isolated_home: Any) -> None:
-    def boom(url: str, timeout: float = 0) -> Any:
-        raise OSError("no network")
-
-    curated = models.load_curated(urlopen=boom)
+    boom = FakeSystem(urls=routes({models.CURATED_MODELS_URL: OSError("no network")}))
+    curated = models.load_curated(sys=boom)
     assert len(curated) >= 5
     assert all(m.min_ram_gb > 0 for m in curated)
 
 
 def test_load_curated_skips_network_when_disabled() -> None:
-    def fail_if_called(url: str, timeout: float = 0) -> Any:
-        raise AssertionError("network should not be used")
-
-    curated = models.load_curated(fetch_remote=False, urlopen=fail_if_called)
+    # No URL is answered: a request would raise past the fallback's broad except.
+    curated = models.load_curated(fetch_remote=False, sys=FakeSystem())
     assert curated
 
 
-class _FakeResponse:
-    def __init__(self, text: str) -> None:
-        self._text = text
-
-    def read(self) -> bytes:
-        return self._text.encode("utf-8")
-
-
-def _serving(text: str) -> Callable[..., Any]:
-    """A urlopen stand-in that serves `text` as the remote models.toml."""
-
-    def opener(url: str, timeout: float = 0) -> Any:
-        return _FakeResponse(text)
-
-    return opener
+def _serving(text: str) -> FakeSystem:
+    """A system that serves `text` as the remote models.toml."""
+    return FakeSystem(urls=routes({models.CURATED_MODELS_URL: FakeResponse(text.encode("utf-8"))}))
 
 
 def test_load_curated_falls_back_to_bundled_on_invalid_remote_toml() -> None:
-    curated = models.load_curated(urlopen=_serving("this is [not valid toml"))
+    curated = models.load_curated(sys=_serving("this is [not valid toml"))
     assert len(curated) >= 5
     assert any(m.ref == "qwen3:8b" for m in curated)
 
 
 def test_load_curated_falls_back_to_bundled_when_remote_has_no_models() -> None:
-    curated = models.load_curated(urlopen=_serving("schema = 1\n"))
+    curated = models.load_curated(sys=_serving("schema = 1\n"))
     assert len(curated) >= 5
     assert any(m.ref == "qwen3:8b" for m in curated)
 
@@ -101,7 +85,7 @@ def test_load_curated_ignores_unknown_keys_in_remote_entries() -> None:
         "context_window = 128000\n"
         'tags = ["experimental"]\n'
     )
-    curated = models.load_curated(urlopen=_serving(remote))
+    curated = models.load_curated(sys=_serving(remote))
     assert curated == [
         models.CuratedModel(
             name="Future model", ref="future:1b", min_ram_gb=4, notes="from the future"
@@ -121,7 +105,7 @@ def test_load_curated_skips_remote_entries_missing_required_fields() -> None:
         'name = "Broken — no ref"\n'
         "min_ram_gb = 8\n"
     )
-    curated = models.load_curated(urlopen=_serving(remote))
+    curated = models.load_curated(sys=_serving(remote))
     assert [m.ref for m in curated] == ["good:1b"]
 
 
@@ -149,7 +133,7 @@ def test_load_curated_skips_remote_entries_with_wrong_field_types() -> None:
         'ref = "bool:1b"\n'
         "min_ram_gb = true\n"
     )
-    curated = models.load_curated(urlopen=_serving(remote))
+    curated = models.load_curated(sys=_serving(remote))
     assert [m.ref for m in curated] == ["good:1b"]
     assert models.fitting(curated, ram_gb=16.0) == curated
 
@@ -157,7 +141,7 @@ def test_load_curated_skips_remote_entries_with_wrong_field_types() -> None:
 @pytest.mark.parametrize("header", ["schema = 2\n", ""])
 def test_remote_list_with_another_schema_falls_back_to_bundled(header: str) -> None:
     remote = header + '[[models]]\nname = "Other"\nref = "other:1b"\nmin_ram_gb = 4\n'
-    curated = models.load_curated(urlopen=_serving(remote))
+    curated = models.load_curated(sys=_serving(remote))
     assert all(m.ref != "other:1b" for m in curated)
     assert any(m.ref == "qwen3:8b" for m in curated)
 

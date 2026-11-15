@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import urllib.request
 from typing import Any
 
 import pytest
+from fakes import FakeResponse, FakeSystem, routes
 
 from lepika import gguf
 
@@ -118,36 +118,20 @@ def test_build_size_and_quantized() -> None:
     assert gguf.Build("F32", 1).quantized is False
 
 
-class _Response:
-    def __init__(self, body: bytes) -> None:
-        self._body = body
-
-    def read(self) -> bytes:
-        return self._body
-
-    def __enter__(self) -> _Response:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        return None
+_BLOBS = "https://huggingface.co/api/models/{}?blobs=true"
 
 
-def _serving(payload: Any) -> Any:
-    seen: list[urllib.request.Request] = []
-
-    def opener(request: urllib.request.Request, timeout: float = 0) -> _Response:
-        seen.append(request)
-        return _Response(json.dumps(payload).encode())
-
-    opener.seen = seen  # type: ignore[attr-defined]
-    return opener
+def _serving(repo: str, payload: Any) -> FakeSystem:
+    """A Hub that answers the blob listing of `repo` with `payload`, and nothing else."""
+    body = json.dumps(payload).encode()
+    return FakeSystem(urls=routes({_BLOBS.format(repo): FakeResponse(body)}))
 
 
 def test_list_builds_asks_the_hub_for_blob_sizes_without_a_token() -> None:
-    opener = _serving(UNSLOTH)
-    builds = gguf.list_builds("unsloth/Qwen3.8-27B-GGUF", urlopen=opener)
+    sys = _serving("unsloth/Qwen3.8-27B-GGUF", UNSLOTH)
+    builds = gguf.list_builds("unsloth/Qwen3.8-27B-GGUF", sys=sys)
     assert quants(builds)[0] == "UD-IQ4_XS"
-    request = opener.seen[0]
+    request = sys.requested[0]
     assert (
         request.full_url == "https://huggingface.co/api/models/unsloth/Qwen3.8-27B-GGUF?blobs=true"
     )
@@ -155,32 +139,29 @@ def test_list_builds_asks_the_hub_for_blob_sizes_without_a_token() -> None:
 
 
 def test_list_builds_sends_the_token_as_a_bearer_header() -> None:
-    opener = _serving(UNSLOTH)
-    gguf.list_builds("unsloth/x-GGUF", token="hf_secret", urlopen=opener)
-    assert opener.seen[0].get_header("Authorization") == "Bearer hf_secret"
+    sys = _serving("unsloth/x-GGUF", UNSLOTH)
+    gguf.list_builds("unsloth/x-GGUF", token="hf_secret", sys=sys)
+    assert sys.requested[0].get_header("Authorization") == "Bearer hf_secret"
     # Unredirected: the token must not follow a 30x to another host.
-    assert "Authorization" not in opener.seen[0].headers
+    assert "Authorization" not in sys.requested[0].headers
 
 
 def test_list_builds_is_unavailable_when_the_hub_does_not_answer() -> None:
-    def offline(request: Any, timeout: float = 0) -> Any:
-        raise OSError("no network")
-
+    sys = FakeSystem(urls=routes({_BLOBS.format("unsloth/x-GGUF"): OSError("no network")}))
     with pytest.raises(gguf.Unavailable):
-        gguf.list_builds("unsloth/x-GGUF", urlopen=offline)
+        gguf.list_builds("unsloth/x-GGUF", sys=sys)
 
 
 def test_list_builds_is_unavailable_on_a_body_that_is_not_json() -> None:
-    def html(request: Any, timeout: float = 0) -> _Response:
-        return _Response(b"<html>rate limited</html>")
-
+    html = FakeResponse(b"<html>rate limited</html>")
+    sys = FakeSystem(urls=routes({_BLOBS.format("unsloth/x-GGUF"): html}))
     with pytest.raises(gguf.Unavailable):
-        gguf.list_builds("unsloth/x-GGUF", urlopen=html)
+        gguf.list_builds("unsloth/x-GGUF", sys=sys)
 
 
 def test_list_builds_returns_nothing_for_a_repo_without_gguf_files() -> None:
     payload = {"siblings": [{"rfilename": "model.safetensors", "size": 5}]}
-    assert gguf.list_builds("Qwen/Qwen3.5-2B", urlopen=_serving(payload)) == []
+    assert gguf.list_builds("Qwen/Qwen3.5-2B", sys=_serving("Qwen/Qwen3.5-2B", payload)) == []
 
 
 @pytest.mark.parametrize(

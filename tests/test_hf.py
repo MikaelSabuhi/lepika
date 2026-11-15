@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import http.client
 import json
-import subprocess
 import urllib.error
-import urllib.request
 from email.message import Message
 from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import Runner, Streamer
+from fakes import FakeResponse, FakeSystem, routes
 
 from lepika import config, hf, paths
 from lepika.errors import FriendlyError
+from lepika.system import Response
 
 LISTING = json.dumps(
     [
@@ -56,9 +55,11 @@ def test_preflight_reads_a_listing_with_cached_files(tmp_path: Path) -> None:
     )
     pre = hf.preflight(
         "Qwen/Qwen3.5-2B",
-        run=Runner(stdout={"uv tool run": cached}),
-        # An empty cache: nothing to stat, so a `-` stays 0 rather than guessing.
-        environ={"HF_HUB_CACHE": str(tmp_path / "empty-hub")},
+        sys=FakeSystem(
+            stdout={"uv tool run": cached},
+            # An empty cache: nothing to stat, so a `-` stays 0 rather than guessing.
+            environ={"HF_HUB_CACHE": str(tmp_path / "empty-hub")},
+        ),
     )
     assert pre.has_safetensors is True
     assert "model.safetensors" in pre.files
@@ -84,7 +85,7 @@ def test_preflight_never_stats_outside_the_hub_cache(tmp_path: Path) -> None:
     (tmp_path / "secret").write_bytes(b"\0" * 999)
     listing = json.dumps([{"file": "../../../secret", "size": "-"}])
     pre = hf.preflight(
-        "org/repo", run=Runner(stdout={"uv": listing}), environ={"HF_HUB_CACHE": str(cache)}
+        "org/repo", sys=FakeSystem(stdout={"uv": listing}, environ={"HF_HUB_CACHE": str(cache)})
     )
     assert pre.download_bytes == 0
 
@@ -108,8 +109,7 @@ def test_preflight_sizes_a_cached_file_from_the_hub_cache(tmp_path: Path) -> Non
     )
     pre = hf.preflight(
         "Qwen/Qwen3.5-2B",
-        run=Runner(stdout={"uv": listing}),
-        environ={"HF_HUB_CACHE": str(cache)},
+        sys=FakeSystem(stdout={"uv": listing}, environ={"HF_HUB_CACHE": str(cache)}),
     )
     assert pre.total_bytes == 4096 + 8192 + 2_900
     assert pre.download_bytes == 4096 + 2_900
@@ -129,7 +129,7 @@ def test_preflight_reads_the_cached_size_through_the_snapshot_symlink(tmp_path: 
     (snapshot / "model.safetensors").symlink_to(blob)
     listing = json.dumps([{"file": "model.safetensors", "size": "-"}])
     pre = hf.preflight(
-        "org/repo", run=Runner(stdout={"uv": listing}), environ={"HF_HUB_CACHE": str(cache)}
+        "org/repo", sys=FakeSystem(stdout={"uv": listing}, environ={"HF_HUB_CACHE": str(cache)})
     )
     assert pre.download_bytes == 2048
 
@@ -152,35 +152,29 @@ def test_quant_method_reads_the_quantization_config() -> None:
 
 
 def test_fetch_config_downloads_only_the_config_into_the_staging_dir(tmp_path: Path) -> None:
-    calls: list[list[str]] = []
-
-    def run(cmd: list[str], **k: Any) -> subprocess.CompletedProcess[str]:
-        calls.append(list(cmd))
+    def download(cmd: list[str]) -> None:
+        # Written while `hf download` runs, so a read before it would find nothing.
         (tmp_path / "config.json").write_text('{"quantization_config": {"quant_method": "awq"}}')
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    cfg = hf.fetch_config("org/repo", tmp_path, run=run, environ={})
+    sys = FakeSystem(while_running=download)
+    cfg = hf.fetch_config("org/repo", tmp_path, sys=sys)
     assert hf.quant_method(cfg) == "awq"
-    assert "config.json" in calls[0]
-    assert "--dry-run" not in calls[0]  # a real (single-file) download, not a listing
+    assert "config.json" in sys.ran[0]
+    assert "--dry-run" not in sys.ran[0]  # a real (single-file) download, not a listing
 
 
 def test_fetch_config_failure_reads_as_no_config(tmp_path: Path) -> None:
     """The Hub not answering must degrade to today's behavior, never block an import."""
-
-    def run(cmd: list[str], **k: Any) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
-
-    assert hf.fetch_config("org/repo", tmp_path, run=run, environ={}) == {}
+    assert hf.fetch_config("org/repo", tmp_path, sys=FakeSystem(codes={"uv": 1})) == {}
 
 
 def test_preflight_lists_files_and_sums_sizes() -> None:
-    run = Runner(stdout={"uv tool run": "Warning: unauthenticated\n" + LISTING})
-    pre = hf.preflight("Qwen/Qwen3.5-2B", run=run, environ={})
+    sys = FakeSystem(stdout={"uv tool run": "Warning: unauthenticated\n" + LISTING})
+    pre = hf.preflight("Qwen/Qwen3.5-2B", sys=sys)
     assert pre.has_safetensors is True
     assert pre.has_gguf is False
     assert pre.total_bytes == 2_900 + 4_500_000_000 + 1_200_000_000 + 390
-    cmd = run.calls[0]
+    cmd = sys.ran[0]
     assert cmd[:6] == ["uv", "tool", "run", "--python", hf.HF_PYTHON, "--from"]
     assert cmd[6:] == [
         "huggingface_hub",
@@ -193,13 +187,9 @@ def test_preflight_lists_files_and_sums_sizes() -> None:
 
 
 def test_preflight_is_a_pure_read_with_the_token_in_the_environment_only() -> None:
-    seen: list[dict[str, Any]] = []
-
-    def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        seen.append(kwargs)
-        return subprocess.CompletedProcess(cmd, 0, stdout=LISTING, stderr="")
-
-    hf.preflight("Qwen/Qwen3.5-2B", token="hf_secret", run=run, environ={"PATH": "/bin"})
+    sys = FakeSystem(stdout={"uv": LISTING}, environ={"PATH": "/bin"})
+    hf.preflight("Qwen/Qwen3.5-2B", token="hf_secret", sys=sys)
+    seen = sys.ran_kwargs
     assert seen[0]["log"] is False
     assert seen[0]["check"] is False
     assert seen[0]["env"] == {"PATH": "/bin", "HF_TOKEN": "hf_secret"}
@@ -208,7 +198,7 @@ def test_preflight_is_a_pure_read_with_the_token_in_the_environment_only() -> No
 
 def test_preflight_sees_a_gguf_only_repo() -> None:
     listing = json.dumps([{"file": "model-Q4_K_M.gguf", "size": "4.9G"}])
-    pre = hf.preflight("unsloth/x-GGUF", run=Runner(stdout={"uv": listing}), environ={})
+    pre = hf.preflight("unsloth/x-GGUF", sys=FakeSystem(stdout={"uv": listing}))
     assert pre.has_gguf is True
     assert pre.has_safetensors is False
 
@@ -217,34 +207,26 @@ def test_preflight_sees_a_gguf_only_repo() -> None:
 GATED_CLI_OUTPUT = "Error: Access denied. Model 'meta-llama/Llama-3.2-1B' requires approval."
 
 
-class _HubAnswer:
-    def __init__(self, body: bytes, status: int = 200) -> None:
-        self._body = body
-        self.status = status
-
-    def read(self) -> bytes:
-        return self._body
-
-    def __enter__(self) -> _HubAnswer:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        return None
+_HUB_MODEL = "https://huggingface.co/api/models/meta-llama/Llama-3.2-1B"
 
 
-class _Hub:
-    """Stands in for urlopen: one canned answer (a body, or an exception to raise)."""
-
-    def __init__(self, answer: Any = None, *, raises: BaseException | None = None) -> None:
-        self.answer = answer
-        self.raises = raises
-        self.seen: list[tuple[urllib.request.Request, float]] = []
-
-    def __call__(self, request: urllib.request.Request, timeout: float = 0) -> _HubAnswer:
-        self.seen.append((request, timeout))
-        if self.raises is not None:
-            raise self.raises
-        return _HubAnswer(json.dumps(self.answer).encode())
+def _hub(
+    answer: Any = None,
+    *,
+    raises: BaseException | None = None,
+    reply: Response | None = None,
+    output: str = GATED_CLI_OUTPUT,
+) -> FakeSystem:
+    """`hf` fails to list the repo, printing `output`; the Hub's model API answers
+    `answer` as JSON — or `reply` as it is, or raises `raises`."""
+    found: Response | BaseException
+    if raises is not None:
+        found = raises
+    elif reply is not None:
+        found = reply
+    else:
+        found = FakeResponse(json.dumps(answer).encode())
+    return FakeSystem(stdout={"uv": output}, codes={"uv": 1}, urls=routes({_HUB_MODEL: found}))
 
 
 def _http_error(code: int) -> urllib.error.HTTPError:
@@ -252,36 +234,30 @@ def _http_error(code: int) -> urllib.error.HTTPError:
     return urllib.error.HTTPError(url, code, "error", Message(), None)
 
 
-def _failing_preflight(hub: _Hub, output: str = GATED_CLI_OUTPUT, token: str = "") -> None:
-    hf.preflight(
-        "meta-llama/Llama-3.2-1B",
-        token=token,
-        run=Runner(stdout={"uv": output}, code=1),
-        environ={},
-        urlopen=hub,
-    )
+def _failing_preflight(sys: FakeSystem, token: str = "") -> None:
+    hf.preflight("meta-llama/Llama-3.2-1B", token=token, sys=sys)
 
 
 def test_a_gated_repo_is_recognised_whatever_the_cli_says() -> None:
-    hub = _Hub({"id": "meta-llama/Llama-3.2-1B", "gated": "manual"})
+    hub = _hub({"id": "meta-llama/Llama-3.2-1B", "gated": "manual"})
     with pytest.raises(hf.GatedRepo) as exc:
         _failing_preflight(hub)
     assert "gated" in exc.value.problem
-    request, timeout = hub.seen[0]
+    request, timeout = hub.requested[0], hub.request_timeouts[0]
     assert request.full_url == "https://huggingface.co/api/models/meta-llama/Llama-3.2-1B"
     assert timeout == 5
 
 
 def test_a_gated_repo_is_recognised_for_auto_approval() -> None:
     with pytest.raises(hf.GatedRepo):
-        _failing_preflight(_Hub({"gated": "auto"}))
+        _failing_preflight(_hub({"gated": "auto"}))
 
 
 @pytest.mark.parametrize("code", [401, 404])
 def test_a_missing_repo_is_not_found_on_401_and_404(code: int) -> None:
     """The Hub answers a repo that does not exist with a 401 — still a typo, not a licence."""
     with pytest.raises(FriendlyError) as exc:
-        _failing_preflight(_Hub(raises=_http_error(code)))
+        _failing_preflight(_hub(raises=_http_error(code)))
     assert not isinstance(exc.value, hf.GatedRepo)
     assert "not on Hugging Face" in exc.value.problem
     assert "HF_TOKEN" in exc.value.fix
@@ -289,12 +265,12 @@ def test_a_missing_repo_is_not_found_on_401_and_404(code: int) -> None:
 
 def test_a_forbidden_repo_is_gated() -> None:
     with pytest.raises(hf.GatedRepo):
-        _failing_preflight(_Hub(raises=_http_error(403)))
+        _failing_preflight(_hub(raises=_http_error(403)))
 
 
 def test_a_public_repo_that_failed_to_list_is_a_generic_failure() -> None:
     with pytest.raises(FriendlyError) as exc:
-        _failing_preflight(_Hub({"gated": False}), output="ConnectionError: boom")
+        _failing_preflight(_hub({"gated": False}, output="ConnectionError: boom"))
     assert not isinstance(exc.value, hf.GatedRepo)
     assert "Could not list" in exc.value.problem
 
@@ -310,33 +286,30 @@ def test_a_public_repo_that_failed_to_list_is_a_generic_failure() -> None:
 )
 def test_an_unreachable_hub_is_a_generic_failure(failure: BaseException) -> None:
     with pytest.raises(FriendlyError) as exc:
-        _failing_preflight(_Hub(raises=failure))
+        _failing_preflight(_hub(raises=failure))
     assert not isinstance(exc.value, hf.GatedRepo)
     assert "Could not list" in exc.value.problem
 
 
 def test_an_unreadable_hub_answer_is_a_generic_failure() -> None:
-    class Garbled(_Hub):
-        def __call__(self, request: urllib.request.Request, timeout: float = 0) -> _HubAnswer:
-            return _HubAnswer(b"<html>rate limited</html>")
-
+    garbled = _hub(reply=FakeResponse(b"<html>rate limited</html>"))
     with pytest.raises(FriendlyError) as exc:
-        _failing_preflight(Garbled())
+        _failing_preflight(garbled)
     assert "Could not list" in exc.value.problem
 
 
 def test_cli_wording_alone_never_classifies() -> None:
     with pytest.raises(FriendlyError) as exc:
-        _failing_preflight(_Hub({"gated": False}), output="404 not found gated 401")
+        _failing_preflight(_hub({"gated": False}, output="404 not found gated 401"))
     assert not isinstance(exc.value, hf.GatedRepo)
     assert "Could not list" in exc.value.problem
 
 
 def test_the_token_travels_as_a_header_only() -> None:
-    hub = _Hub({"gated": "manual"})
+    hub = _hub({"gated": "manual"})
     with pytest.raises(hf.GatedRepo):
         _failing_preflight(hub, token="hf_secret")
-    request, _timeout = hub.seen[0]
+    request = hub.requested[0]
     assert request.get_header("Authorization") == "Bearer hf_secret"
     assert "hf_secret" not in request.full_url
     # Unredirected: urllib copies `headers` onto a 30x hop, wherever it points.
@@ -345,17 +318,18 @@ def test_the_token_travels_as_a_header_only() -> None:
 
 
 def test_no_token_sends_no_authorization_header() -> None:
-    hub = _Hub({"gated": "manual"})
+    hub = _hub({"gated": "manual"})
     with pytest.raises(hf.GatedRepo):
         _failing_preflight(hub, token="")
-    request, _timeout = hub.seen[0]
+    request = hub.requested[0]
     assert request.get_header("Authorization") is None
 
 
 def test_a_successful_listing_never_asks_the_hub() -> None:
-    hub = _Hub(raises=AssertionError("the Hub was asked"))
-    hf.preflight("Qwen/Qwen3.5-2B", run=Runner(stdout={"uv": LISTING}), environ={}, urlopen=hub)
-    assert hub.seen == []
+    # No URL is answered: asking the Hub would raise past every except.
+    hub = FakeSystem(stdout={"uv": LISTING})
+    hf.preflight("Qwen/Qwen3.5-2B", sys=hub)
+    assert hub.requested == []
 
 
 MIXED_LISTING = json.dumps(
@@ -373,7 +347,7 @@ def test_preflight_sizes_only_the_files_download_actually_fetches() -> None:
     excludes the GGUF/PyTorch twins — so the byte count PR B shows the user and checks
     against free disk must be the post-exclude one, or a repo shipping both is doubled.
     """
-    pre = hf.preflight("org/repo", run=Runner(stdout={"uv": MIXED_LISTING}), environ={})
+    pre = hf.preflight("org/repo", sys=FakeSystem(stdout={"uv": MIXED_LISTING}))
     assert pre.total_bytes == 1_000 + 2_000_000_000 + 4_000_000_000 + 3_000_000_000
     # The .gguf and the original/*.pth are excluded; the safetensors and config are not.
     assert pre.download_bytes == 1_000 + 2_000_000_000
@@ -397,15 +371,15 @@ def test_download_dir_refuses_a_bad_repo_id_without_touching_disk(
 
 @pytest.mark.parametrize("repo", ["../../x", "a/..", "noslash", "a/b/c", "a b/c", "/x"])
 def test_preflight_refuses_a_bad_repo_id_before_running_anything(repo: str) -> None:
-    run = Runner(stdout={"uv": LISTING})
+    sys = FakeSystem(stdout={"uv": LISTING})
     with pytest.raises(FriendlyError):
-        hf.preflight(repo, run=run, environ={})
-    assert run.calls == []
+        hf.preflight(repo, sys=sys)
+    assert sys.ran == []
 
 
 def test_preflight_garbled_listing_is_friendly() -> None:
     with pytest.raises(FriendlyError):
-        hf.preflight("org/repo", run=Runner(stdout={"uv": "not json"}), environ={})
+        hf.preflight("org/repo", sys=FakeSystem(stdout={"uv": "not json"}))
 
 
 def test_download_dir_nests_org_and_repo_under_lepika_home(isolated_home: Path) -> None:
@@ -414,9 +388,9 @@ def test_download_dir_nests_org_and_repo_under_lepika_home(isolated_home: Path) 
 
 def test_download_streams_hf_with_excludes_and_the_token_in_env(isolated_home: Path) -> None:
     dest = isolated_home / "hf" / "org" / "repo"
-    stream = Streamer()
-    hf.download("org/repo", dest, token="hf_secret", stream=stream, environ={})
-    cmd, kwargs = stream.calls[0]
+    sys = FakeSystem()
+    hf.download("org/repo", dest, token="hf_secret", sys=sys)
+    cmd, kwargs = sys.streamed[0]
     assert cmd[: len(hf.HF_CMD)] == list(hf.HF_CMD)
     assert cmd[len(hf.HF_CMD) :][:4] == ["download", "org/repo", "--local-dir", str(dest)]
     assert cmd.count("--exclude") == len(hf.EXCLUDES)
@@ -430,9 +404,7 @@ def test_download_streams_hf_with_excludes_and_the_token_in_env(isolated_home: P
 
 def test_download_failure_hints_that_a_retry_resumes(isolated_home: Path) -> None:
     with pytest.raises(FriendlyError) as exc:
-        hf.download(
-            "org/repo", isolated_home / "x", stream=Streamer(code=1, tail="boom"), environ={}
-        )
+        hf.download("org/repo", isolated_home / "x", sys=FakeSystem(stream=(1, "boom")))
     assert "resumes" in exc.value.fix
     entry = json.loads((paths.logs_dir() / "lepika.log").read_text().splitlines()[-1])
     assert entry["event"] == "hf.download"
@@ -441,9 +413,9 @@ def test_download_failure_hints_that_a_retry_resumes(isolated_home: Path) -> Non
 
 def test_token_for_prefers_the_environment_then_the_config() -> None:
     cfg = config.Config(hf_token="from-config")
-    assert hf.token_for(cfg, environ={"HF_TOKEN": "from-env"}) == "from-env"
-    assert hf.token_for(cfg, environ={}) == "from-config"
-    assert hf.token_for(config.Config(), environ={}) == ""
+    assert hf.token_for(cfg, sys=FakeSystem(environ={"HF_TOKEN": "from-env"})) == "from-env"
+    assert hf.token_for(cfg, sys=FakeSystem(environ={})) == "from-config"
+    assert hf.token_for(config.Config(), sys=FakeSystem()) == ""
 
 
 def test_ask_token_saves_a_non_empty_answer_privately(isolated_home: Path) -> None:

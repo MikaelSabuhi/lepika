@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from lepika import config, detect, engine, express, proc, server
+from lepika import config, detect, express, proc, server
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 
@@ -44,10 +44,11 @@ def run_checks(
     info: SystemInfo,
     which: Callable[[str], str | None] = shutil.which,
     api_up: Callable[..., bool] = detect.api_up,
-    vllm_up: Callable[..., bool] = engine.vllm_up,
+    vllm_up: Callable[..., bool] | None = None,
     webui_up: Callable[..., bool] = express.webui_up,
     run: Callable[..., Any] = proc.run_logged,
 ) -> list[CheckResult]:
+    vllm_probe = vllm_up if vllm_up is not None else server._real_vllm_up
     cfg = config.load()
     checks: list[CheckResult] = []
     if cfg.mode == "server":
@@ -100,7 +101,7 @@ def run_checks(
     checks += [
         CheckResult(
             "Engine (vLLM) responding" if vllm else "Engine responding",
-            vllm_up(server.VLLM_URL) if vllm else api_up(cfg.engine_url, key=cfg.engine_key),
+            vllm_probe(server.VLLM_URL) if vllm else api_up(cfg.engine_url, key=cfg.engine_key),
             "Run `lepika up` to start it; logs: `lepika logs`"
             if cfg.engine_managed
             # A rotated key and a dead box look identical from here, so name both.

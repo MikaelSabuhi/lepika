@@ -8,6 +8,9 @@ import pytest
 
 from lepika import detect, proc
 
+# Saved before any fixture patches it, so the guard's own test can tell the two apart.
+REAL_URLOPEN = urllib.request.urlopen
+
 
 class RealNetworkCall(BaseException):
     """A test reached the real `urllib.request.urlopen`.
@@ -32,15 +35,26 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
-@pytest.fixture(autouse=True)
-def no_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fail any test that lets production code call the real `urlopen`."""
+def guard_network(node: pytest.Item, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace the real `urlopen` for every test except a `canary` one.
+
+    The canary exists to talk to the real upstreams; it is opted out by marker only,
+    and the default run deselects it (`addopts` in pyproject.toml).
+    """
+    if node.get_closest_marker("canary") is not None:
+        return
 
     def refuse(*args: Any, **kwargs: Any) -> Any:
         target = args[0] if args else kwargs.get("url", "<unknown>")
         raise RealNetworkCall(f"test reached the network: {getattr(target, 'full_url', target)}")
 
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
+
+
+@pytest.fixture(autouse=True)
+def no_real_network(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail any test that lets production code call the real `urlopen`."""
+    guard_network(request.node, monkeypatch)
 
 
 @pytest.fixture(autouse=True)

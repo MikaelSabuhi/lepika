@@ -74,6 +74,11 @@ files = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "canary: talks to real upstreams (Ollama, Hugging Face); run on a schedule, never in the default suite",
+]
+# `uv run pytest -m canary tests/canary` runs it: a later `-m` wins.
+addopts = "-m 'not canary'"
 
 [tool.bandit]
 # LePika's job is orchestrating trusted local CLIs (ollama, uv, brew, winget).

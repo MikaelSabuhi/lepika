@@ -158,6 +158,22 @@ def test_run_reports_an_unreadable_file_by_name_and_folder(
     assert "Traceback" not in err
 
 
+def test_run_reports_a_missing_command_as_such(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A bare name is a program that is not installed, not a file with bad permissions."""
+    monkeypatch.setattr(
+        cli, "app", _raise(FileNotFoundError(2, "No such file or directory", "sudo"))
+    )
+    with pytest.raises(SystemExit) as exit_info:
+        cli.run()
+    assert exit_info.value.code == 1
+    err = _flat(capsys.readouterr().err)
+    assert "✗ Command not found: sudo" in err
+    assert "→ Install sudo or run `lepika doctor` for setup help." in err
+    assert "Could not access" not in err
+
+
 @pytest.mark.parametrize(
     "error",
     [

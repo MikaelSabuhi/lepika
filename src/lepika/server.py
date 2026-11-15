@@ -7,7 +7,6 @@ import json
 import os
 import secrets
 import socket
-import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -398,7 +397,7 @@ def start_stack(
     cfg: Config,
     after_engine: Callable[[], None] | None = None,
     run: RunFn = proc.run_logged,
-    call: CallFn = subprocess.call,
+    call: CallFn = proc.call,
     api_up: Callable[..., bool] = detect.api_up,
     vllm_up: Callable[..., bool] = engine.vllm_up,
     up: Callable[..., bool] = express.webui_up,
@@ -489,7 +488,7 @@ def update(
     info: SystemInfo,
     cfg: Config,
     run: RunFn = proc.run_logged,
-    call: CallFn = subprocess.call,
+    call: CallFn = proc.call,
 ) -> list[UpdateStep]:
     """`lepika update` in Server mode: pull newer images, then reconcile."""
     ensure_docker(info, run=run, retry="lepika update")

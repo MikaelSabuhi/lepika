@@ -21,7 +21,7 @@ class Runner:
 
 
 class Caller:
-    """Stands in for subprocess.call: records the argv, returns a canned exit code."""
+    """Stands in for proc.call: records the argv, returns a canned exit code."""
 
     def __init__(self, code: int = 0) -> None:
         self.calls: list[list[str]] = []

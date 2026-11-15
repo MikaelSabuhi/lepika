@@ -19,6 +19,14 @@ def _log_path() -> Path:
     return logs_dir() / LOG_FILE
 
 
+def not_found(name: str) -> FriendlyError:
+    """What a command that is not installed means to the user, wherever it surfaced."""
+    return FriendlyError(
+        f"Command not found: {name}",
+        f"Install {name} or run `lepika doctor` for setup help.",
+    )
+
+
 def run_logged(
     cmd: Sequence[str],
     *,
@@ -44,10 +52,7 @@ def run_logged(
         )
     except FileNotFoundError as exc:
         logger.error("proc.run", cmd=list(cmd), outcome="not found", output=str(exc))
-        raise FriendlyError(
-            f"Command not found: {cmd[0]}",
-            f"Install {cmd[0]} or run `lepika doctor` for setup help.",
-        ) from exc
+        raise not_found(cmd[0]) from exc
     except subprocess.TimeoutExpired as exc:
         logger.error(
             "proc.run",
@@ -81,6 +86,26 @@ def run_logged(
     return result
 
 
+def call(cmd: Sequence[str]) -> int:
+    """Run a command on the user's own terminal and return its exit code.
+
+    For commands that may prompt — `sudo`'s password, the Ollama install script — so
+    nothing is captured and there is no output to log: one line says what ran and
+    how it ended. A missing binary is a `FriendlyError`, as for every other command.
+    """
+    logger = get_logger()
+    try:
+        code = subprocess.call(list(cmd))
+    except FileNotFoundError as exc:
+        logger.error("proc.call", cmd=list(cmd), outcome="not found", output=str(exc))
+        raise not_found(cmd[0]) from exc
+    if code == 0:
+        logger.info("proc.call", cmd=list(cmd), exit=code)
+    else:
+        logger.warning("proc.call", cmd=list(cmd), exit=code)
+    return code
+
+
 _SEGMENT = re.compile(rb"[\r\n]")
 
 
@@ -112,10 +137,7 @@ def stream(
         )
     except FileNotFoundError as exc:
         get_logger().error("proc.stream", cmd=list(cmd), outcome="not found", output=str(exc))
-        raise FriendlyError(
-            f"Command not found: {cmd[0]}",
-            f"Install {cmd[0]} or run `lepika doctor` for setup help.",
-        ) from exc
+        raise not_found(cmd[0]) from exc
     tail: deque[str] = deque(maxlen=40)
     pending = b""
     with child:

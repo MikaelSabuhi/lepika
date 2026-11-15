@@ -81,6 +81,29 @@ def test_run_logged_timeout_is_friendly(isolated_home: Path) -> None:
     assert "lepika.log" in exc.value.fix
 
 
+def _log_entries() -> list[dict[str, Any]]:
+    log_path = paths.logs_dir() / "lepika.log"
+    return [json.loads(line) for line in log_path.read_text().splitlines()]
+
+
+def test_call_returns_the_exit_code(isolated_home: Path) -> None:
+    assert proc.call([sys.executable, "-c", "pass"]) == 0
+    assert proc.call([sys.executable, "-c", "raise SystemExit(3)"]) == 3
+    ok, failed = _log_entries()[-2:]
+    assert (ok["event"], ok["level"], ok["exit"]) == ("proc.call", "info", 0)
+    assert (failed["event"], failed["level"], failed["exit"]) == ("proc.call", "warning", 3)
+    # The command drew on the user's terminal: there is no output to record.
+    assert "output" not in ok and "output" not in failed
+
+
+def test_call_turns_a_missing_binary_into_a_friendly_error(isolated_home: Path) -> None:
+    with pytest.raises(FriendlyError) as exc:
+        proc.call(["lepika-no-such-binary", "--help"])
+    assert exc.value.problem == "Command not found: lepika-no-such-binary"
+    assert exc.value.fix == "Install lepika-no-such-binary or run `lepika doctor` for setup help."
+    assert _log_entries()[-1]["outcome"] == "not found"
+
+
 class FakePopen:
     """A child whose merged output is a canned byte string; records how it was started."""
 

@@ -20,7 +20,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from lepika import acquire, config, detect, engine, express, log, models, paths, server
+from lepika import acquire, config, detect, engine, express, log, models, paths, proc, server
 from lepika.backend import UpdateStep
 from lepika.errors import FriendlyError
 
@@ -593,6 +593,11 @@ def run() -> None:
         # A read or a write, in LePika's home or the user's own folder (`model
         # import <dir>`): name the file and the folder it is in, nothing assumed.
         path = os.fsdecode(exc.filename)
+        if isinstance(exc, FileNotFoundError) and not os.path.dirname(path):
+            # A bare name is a program looked up on PATH: one that is not installed.
+            missing = proc.not_found(path)
+            _fail(missing.problem, missing.fix)
+            raise SystemExit(1) from exc
         _fail(
             f"Could not access {path}: {exc.strerror}",
             f"Check the permissions on {Path(path).parent} and that the disk is not full.",

@@ -20,7 +20,7 @@ LePika CLI (Python: Typer + Rich, structlog for the log)
  ├─ mlx.py      Ollama's MLX bundle + where Ollama keeps its files
  ├─ health.py   is it answering (Ollama API, vLLM, OpenWebUI), and waiting until it is
  ├─ ports.py    can a server bind a port
- ├─ serving.py  which engine serves a ref here (import_allowed · vllm_allowed · vllm_active · engine_label)
+ ├─ serving.py  which engine serves a ref, and its name
  ├─ server.py   Server backend: docker compose (profiles engine · vllm · expose)
  ├─ stack_env.py the stack's .env (0600, merge-preserving) and its API key
  ├─ backend.py  what an update reports: one UpdateStep (upgraded · current · stale · note) per component

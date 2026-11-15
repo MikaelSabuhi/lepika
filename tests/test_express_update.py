@@ -118,10 +118,19 @@ def _update(
     )
 
 
-def _linux_run(enabled: int, active: int, versions: list[str] | None = None) -> Seq:
+_UNIT_STATE = {0: "enabled\n", 1: "disabled\n", 4: "not-found\n"}
+
+
+def _linux_run(
+    enabled: int, active: int, versions: list[str] | None = None, state: str | None = None
+) -> Seq:
+    """`state` is what `is-enabled` prints; by default the token its exit code means."""
     return Seq(
         {
-            "systemctl is-enabled": (enabled, ""),
+            "systemctl is-enabled": (
+                enabled,
+                _UNIT_STATE.get(enabled, "") if state is None else state,
+            ),
             "systemctl is-active": (active, ""),
             "ollama --version": [_version(v) for v in (versions or ["0.34.0"])],
         }
@@ -216,12 +225,43 @@ def test_update_brings_back_its_own_engine_when_the_upgrade_stopped_it(
         {
             "winget upgrade": (0, ""),
             "ollama --version": [_version("0.33.2"), _version("0.34.0")],
-            "tasklist": '"ollama.exe","4242"\n',
+            # An Ollama before the upgrade; gone after it.
+            "tasklist": ['"ollama.exe","4242"\n', "INFO: No tasks are running\n"],
         }
     )
     steps = _update(_info("windows"), run, running="0.34.0", up=[True, False, True])
     assert restarts == ["start", "ui"]
     assert steps[0] == UpdateStep("Ollama", "upgraded", "0.33.2 → 0.34.0")
+
+
+def test_update_does_not_start_a_second_engine_when_its_own_is_alive_but_silent(
+    restarts: list[str], isolated_home: Path
+) -> None:
+    """One missed probe is a busy engine, not a stopped one: a second would lose the port
+    and overwrite the only record of the first."""
+    _pid_file()
+    run = _linux_run(0, 0, ["0.33.2", "0.34.0"])
+    run.answers["ps -p 4242"] = "ollama\n"
+    steps = _update(_info("linux"), run, running="0.33.2", up=[True, False])
+    assert "start" not in restarts and "stop" not in restarts
+    assert paths.pid_file("ollama").read_text() == "4242"
+    assert steps[0] == UpdateStep(
+        "Ollama",
+        "stale",
+        "installed 0.34.0; the running engine is not answering — "
+        "run `lepika update` again to restart it",
+    )
+    assert restarts == ["ui"]
+
+
+def test_update_restores_nothing_when_is_enabled_fails_without_a_state(
+    restarts: list[str],
+) -> None:
+    """systemctl folds errors such as a refused bus into exit 1, with no state printed."""
+    call = Caller()
+    _update(_info("linux"), _linux_run(1, 3, state=""), call=call, running="0.34.0")
+    assert any("install.sh" in " ".join(c) for c in call.calls)
+    assert not any("systemctl" in c for c in call.calls)
 
 
 def test_update_never_starts_an_adopted_engine_the_upgrade_stopped(restarts: list[str]) -> None:
@@ -364,3 +404,17 @@ def test_ollama_binary_version_reads_the_client_line_when_both_are_printed() -> 
     """A running engine older than the binary prints both: the client line is the binary."""
     both = "ollama version is 0.33.2\nWarning: client version is 0.34.0\n"
     assert express.ollama_binary_version(Seq({"ollama": both})) == "0.34.0"
+
+
+def test_update_stops_its_engine_with_the_configured_key(
+    restarts: list[str], isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pid_file()
+    run = _linux_run(0, 0, ["0.33.2", "0.34.0"])
+    run.answers["ps -p 4242"] = "ollama\n"
+    keys: list[str] = []
+    monkeypatch.setattr(
+        express, "stop_ollama", lambda os_name, url, **k: keys.append(k["key"]) or True
+    )
+    _update(_info("linux"), run, cfg=config.Config(engine_key="k"), running=["0.33.2", "0.34.0"])
+    assert keys == ["k"]

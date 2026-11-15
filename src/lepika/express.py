@@ -53,6 +53,26 @@ _WINGET_OK = (0, 0x8A15002B, 0x8A15002B - 2**32)
 # else — systemctl on PATH with no systemd running it — is no answer at all.
 _IS_ACTIVE_OK = (0, 3, 4)
 _IS_ENABLED_OK = (0, 1, 4)
+# What `is-enabled` prints (systemctl(1), "is-enabled output"). systemctl also folds
+# errors such as a refused bus into exit 1, printing no state: then nothing was read.
+_UNIT_FILE_STATES = frozenset(
+    {
+        "enabled",
+        "enabled-runtime",
+        "linked",
+        "linked-runtime",
+        "alias",
+        "masked",
+        "masked-runtime",
+        "static",
+        "indirect",
+        "disabled",
+        "generated",
+        "transient",
+        "bad",
+        "not-found",
+    }
+)
 
 _OLLAMA_VERSION = re.compile(r"version is (\S+)")
 _OPENWEBUI_VERSION = re.compile(r"^open-webui v(\S+)", re.MULTILINE)
@@ -974,13 +994,16 @@ def _unit_state(run: RunFn, which: WhichFn) -> tuple[bool, bool] | None:
     if which("systemctl") is None:
         return None
     unit = "ollama.service"
-    enabled = run(
-        ["systemctl", "is-enabled", "--quiet", unit], check=False, log=False, ok=_IS_ENABLED_OK
-    )
+    # Not --quiet: the printed state is what tells "disabled" from "could not ask".
+    enabled = run(["systemctl", "is-enabled", unit], check=False, log=False, ok=_IS_ENABLED_OK)
     active = run(
         ["systemctl", "is-active", "--quiet", unit], check=False, log=False, ok=_IS_ACTIVE_OK
     )
-    if enabled.returncode not in _IS_ENABLED_OK or active.returncode not in _IS_ACTIVE_OK:
+    read_enabled = enabled.returncode == 0 or (
+        enabled.returncode in _IS_ENABLED_OK
+        and str(enabled.stdout or "").strip() in _UNIT_FILE_STATES
+    )
+    if not read_enabled or active.returncode not in _IS_ACTIVE_OK:
         log.get_logger().warning(
             "ollama.update.unit_state_unknown",
             is_enabled=enabled.returncode,
@@ -1170,8 +1193,19 @@ def _update_ollama(
     if ours_and_up:
         start = False
         if not api_up(cfg.engine_url, key=cfg.engine_key):
-            # The installer stopped it (winget replaces a running Ollama): ours, so
-            # the command that stopped it brings it back.
+            if _ours(info.os, run):
+                # Still an Ollama, just not answering (busy loading a model misses a
+                # 1s probe). A second `ollama serve` would lose the port and overwrite
+                # the pid file, the only record of which engine is ours.
+                installed = f"installed {after}; " if after else ""
+                return UpdateStep(
+                    "Ollama",
+                    "stale",
+                    f"{installed}the running engine is not answering — "
+                    "run `lepika update` again to restart it",
+                )
+            # Really gone — the installer stopped it (winget replaces a running
+            # Ollama): ours, so the command that stopped it brings it back.
             log.get_logger().info("engine.restart", reason="update", stopped_by="installer")
             start = True
         else:
@@ -1187,6 +1221,7 @@ def _update_ollama(
                     run=run,
                     kill=kill,
                     api_up=api_up,
+                    key=cfg.engine_key,
                     sleep=sleep,
                     rerun="lepika update",
                 )

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import functools
 import importlib.resources
 import json
 import os
 import secrets
 import socket
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -16,7 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from rich.console import Console
 
-from lepika import fsio, health, log, models, proc, prompts, system
+from lepika import fsio, health, log, models, proc, prompts
 from lepika.backend import UpdateStep
 from lepika.config import Config
 from lepika.detect import SystemInfo
@@ -25,14 +23,7 @@ from lepika.paths import logs_dir, stack_dir
 from lepika.system import System
 
 RunFn = Callable[..., Any]
-CallFn = Callable[[list[str]], int]
-SleepFn = Callable[[float], None]
 AskFn = Callable[..., str]
-
-# The default probes, bound once at import as the bare functions used to be: a test
-# that patches `health.api_up` or `health.webui_up` does not reach a default.
-_REAL_API_UP = functools.partial(health.api_up, sys=system.REAL)
-_REAL_WEBUI_UP = functools.partial(health.webui_up, sys=system.REAL)
 
 console = Console()
 
@@ -391,33 +382,21 @@ def gpu_note(info: SystemInfo, run: RunFn = proc.run_logged) -> str | None:
     return None
 
 
-def _real_vllm_up(url: str) -> bool:
-    return health.vllm_up(url, sys=system.REAL)
-
-
 def start_stack(
     info: SystemInfo,
     cfg: Config,
     after_engine: Callable[[], None] | None = None,
-    run: RunFn = proc.run_logged,
-    call: CallFn = proc.call,
-    api_up: Callable[..., bool] = _REAL_API_UP,
-    vllm_up: Callable[..., bool] | None = None,
-    up: Callable[..., bool] = _REAL_WEBUI_UP,
-    sleep: SleepFn = time.sleep,
     *,
-    sys: System = system.REAL,
+    sys: System,
 ) -> str:
     """Reconcile the stack with config and return the URL to open.
 
     Always runs `compose up -d`: it is idempotent, takes about a second when nothing
     changed, and is what makes `connect`/`expose` edits take effect.
     """
-    vllm_probe = vllm_up if vllm_up is not None else _real_vllm_up
-    waits = system.overlay(system.REAL, sleep=sleep)
-    ensure_docker(info, run=run)
+    ensure_docker(info, run=sys.run)
     stack = install_stack()
-    if cfg.engine_managed and info.ollama_running and not _our_ollama(stack, run):
+    if cfg.engine_managed and info.ollama_running and not _our_ollama(stack, sys.run):
         raise FriendlyError(
             "Ollama is already running natively on port 11434, so the Docker engine can't bind it.",
             "Stop it first: `brew services stop ollama` (macOS), `systemctl stop ollama` "
@@ -427,7 +406,7 @@ def start_stack(
     env_path = stack / ENV_FILE
     values = env_values(cfg, info, read_env(env_path))
     active = profiles(cfg)
-    gpu = nvidia_in_docker(info, run=run)
+    gpu = nvidia_in_docker(info, run=sys.run)
     # Both refusals come before anything is written or started.
     # Caddy matches `Authorization: Bearer {$LEPIKA_API_KEY}`; an empty key makes a
     # bare `Bearer ` header match, which is an open proxy on the network.
@@ -448,13 +427,13 @@ def start_stack(
     log.get_logger().info("stack.up", mode="server", profiles=active, gpu=info.gpu)
     # Streamed, not captured: the first run pulls gigabytes of images and a silent
     # terminal for minutes looks like a hang.
-    if call([*base, "up", "-d", "--remove-orphans"]) != 0:
+    if sys.call([*base, "up", "-d", "--remove-orphans"]) != 0:
         raise _compose_failed("up")
     # Compose does not stop services whose profile just went inactive; we do —
     # in one call, since compose takes several profiles and several services.
     inactive = [profile for profile in INACTIVE if profile not in active]
     if inactive:
-        run(
+        sys.run(
             [
                 *compose_cmd(stack, inactive, gpu_overlay=False),
                 "stop",
@@ -470,26 +449,29 @@ def start_stack(
             "vLLM is loading the model — the first time this downloads the full "
             "weights; watch with `lepika logs`."
         )
-        health.wait_for(lambda: vllm_probe(VLLM_URL), _VLLM_READY_SECONDS, "vLLM", sys=waits)
+        health.wait_for(
+            lambda: health.vllm_up(VLLM_URL, sys=sys), _VLLM_READY_SECONDS, "vLLM", sys=sys
+        )
     elif cfg.engine_managed:
-        health.wait_for(lambda: api_up(cfg.engine_url), 120, "Ollama (container)", sys=waits)
-    elif not api_up(cfg.engine_url, key=cfg.engine_key):
-        # The injected probe stands in for `health.check_remote_engine`'s own.
-        raise health.engine_unreachable(cfg)
+        health.wait_for(
+            lambda: health.api_up(cfg.engine_url, sys=sys), 120, "Ollama (container)", sys=sys
+        )
+    else:
+        health.check_remote_engine(cfg, sys=sys)
     if after_engine is not None:
         after_engine()
-    health.wait_for(lambda: up(cfg.webui_port), 180, "OpenWebUI", sys=waits)
+    health.wait_for(lambda: health.webui_up(cfg.webui_port, sys=sys), 180, "OpenWebUI", sys=sys)
     return health.webui_url(cfg.webui_port)
 
 
-def stop(
-    info: SystemInfo, cfg: Config, run: RunFn = proc.run_logged, *, sys: System = system.REAL
-) -> bool:
+def stop(info: SystemInfo, cfg: Config, *, sys: System) -> bool:
     """`lepika down` in Server mode: stop and remove the containers; volumes stay."""
-    ensure_docker(info, run=run, retry="lepika down")
+    ensure_docker(info, run=sys.run, retry="lepika down")
     stack = install_stack()
     every = list(INACTIVE)  # every profile, so nothing is left behind
-    result = run([*compose_cmd(stack, every, gpu_overlay=False), "down"], check=False, timeout=120)
+    result = sys.run(
+        [*compose_cmd(stack, every, gpu_overlay=False), "down"], check=False, timeout=120
+    )
     log.get_logger().info("stack.down", exit=result.returncode)
     return bool(result.returncode == 0)
 
@@ -497,21 +479,19 @@ def stop(
 def update(
     info: SystemInfo,
     cfg: Config,
-    run: RunFn = proc.run_logged,
-    call: CallFn = proc.call,
     *,
-    sys: System = system.REAL,
+    sys: System,
 ) -> list[UpdateStep]:
     """`lepika update` in Server mode: pull newer images, then reconcile."""
-    ensure_docker(info, run=run, retry="lepika update")
+    ensure_docker(info, run=sys.run, retry="lepika update")
     stack = install_stack()
     log.get_logger().info("stack.update")
     base = compose_cmd(stack, profiles(cfg), gpu_overlay=False)
-    before = _image_ids(base, run)
-    if call([*base, "pull"]) != 0:
+    before = _image_ids(base, sys.run)
+    if sys.call([*base, "pull"]) != 0:
         raise _compose_failed("pull")
-    after = _image_ids(base, run)
-    start_stack(info, cfg, run=run, call=call)
+    after = _image_ids(base, sys.run)
+    start_stack(info, cfg, sys=sys)
     if not after:
         # Nothing to compare: "up to date" would be a claim nobody checked. Unreadable
         # before but readable after is different: the pull certainly fetched something.
@@ -544,12 +524,10 @@ def _image_ids(base: list[str], run: RunFn) -> str:
     return f"{ids.returncode}\n{ids.stdout}"
 
 
-def logs(
-    lines: int, run: RunFn = proc.run_logged, *, sys: System = system.REAL
-) -> list[tuple[str, str]]:
+def logs(lines: int, *, sys: System) -> list[tuple[str, str]]:
     """`lepika logs` in Server mode: compose logs, then LePika's own log."""
     stack = stack_dir()
-    result = run(
+    result = sys.run(
         [
             *compose_cmd(stack, list(INACTIVE), gpu_overlay=False),
             "logs",

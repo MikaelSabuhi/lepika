@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import Caller, Runner
+from fakes import FakeResponse, FakeSystem, Runner, routes
 
 from lepika import config, detect, log, paths, server
 from lepika.backend import UpdateStep
@@ -57,32 +56,44 @@ def test_ensure_docker_daemon_down_is_friendly() -> None:
     assert "Docker" in exc.value.problem
 
 
+_ENGINE = "http://127.0.0.1:11434/api/version"
+_UI = "http://127.0.0.1:3000/health"
+_UP = FakeResponse()
+
+
+def _probed(machine: FakeSystem) -> list[str]:
+    return [request.full_url for request in machine.requested]
+
+
+def _box(stdout: dict[str, str | list[str]], **kwargs: Any) -> FakeSystem:
+    """A Docker host whose engine container and OpenWebUI both answer their probes."""
+    return FakeSystem(stdout=stdout, urls=routes({_ENGINE: _UP, _UI: _UP}), **kwargs)
+
+
 def test_start_stack_writes_env_ups_and_waits(isolated_home: Path) -> None:
     cfg = config.Config(mode="server", model="qwen3:8b")
-    run = Runner({"docker info": '{"nvidia": {}}\n'})
-    call = Caller()
-    events: list[str] = []
+    machine = _box({"docker info": '{"nvidia": {}}\n'})
+    # How many probes had been made when the hook ran.
+    hook_ran_after: list[int] = []
     url = server.start_stack(
         LINUX_NVIDIA,
         cfg,
-        after_engine=lambda: events.append("after"),
-        run=run,
-        call=call,
-        api_up=lambda url, **k: bool(events.append("engine-probe")) or True,
-        up=lambda port, **k: bool(events.append("ui-probe")) or True,
-        sleep=lambda s: None,
+        after_engine=lambda: hook_ran_after.append(len(machine.requested)),
+        sys=machine,
     )
     assert url == "http://localhost:3000"
-    up_cmd = next(c for c in call.calls if "up" in c)
+    up_cmd = next(c for c in machine.called if "up" in c)
     assert up_cmd[-3:] == ["up", "-d", "--remove-orphans"]
     assert "--profile" in up_cmd and "engine" in up_cmd
     assert str(isolated_home / "stack" / "compose.nvidia.yml") in up_cmd
     env = server.read_env(isolated_home / "stack" / ".env")
     assert env["OLLAMA_BASE_URL"] == "http://ollama:11434"
-    assert events.index("engine-probe") < events.index("after") < events.index("ui-probe")
+    # The engine is probed before the hook runs, and the UI after it.
+    assert _probed(machine) == [_ENGINE, _UI]
+    assert hook_ran_after == [1]
     # Services from profiles that are not active are stopped explicitly — in one
     # compose call, not one per profile.
-    stops = [c for c in run.calls if "stop" in c]
+    stops = [c for c in machine.ran if "stop" in c]
     assert len(stops) == 1
     assert stops[0][stops[0].index("stop") + 1 :] == ["vllm", "caddy"]
     assert stops[0].count("--profile") == 2
@@ -93,72 +104,53 @@ def test_start_stack_writes_env_ups_and_waits(isolated_home: Path) -> None:
 ENGINE_ANSWERING = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, True, True)
 
 
-def _start_with_ps(ps_stdout: str, call: Caller) -> tuple[str, Runner]:
-    """Start the stack on a box where something already serves 11434.
+def _with_ps(ps_stdout: str) -> FakeSystem:
+    """A box where something already serves 11434.
 
     `docker compose ps -q ollama` is what tells the two apart: a container id means
     the engine on that port is ours.
     """
-    run = Runner({"docker info": '{"nvidia": {}}', "docker compose": ps_stdout})
-    url = server.start_stack(
-        ENGINE_ANSWERING,
-        config.Config(mode="server"),
-        run=run,
-        call=call,
-        api_up=lambda url, **k: True,
-        up=lambda port, **k: True,
-        sleep=lambda s: None,
-    )
-    return url, run
+    return _box({"docker info": '{"nvidia": {}}', "docker compose": ps_stdout})
 
 
 def test_start_stack_proceeds_when_the_engine_on_11434_is_our_own_container(
     isolated_home: Path,
 ) -> None:
     """The stack publishes 127.0.0.1:11434 itself, so a second `lepika up` must not refuse."""
-    call = Caller()
-    url, run = _start_with_ps("9f8e7d6c5b4a\n", call)
+    machine = _with_ps("9f8e7d6c5b4a\n")
+    url = server.start_stack(ENGINE_ANSWERING, config.Config(mode="server"), sys=machine)
     assert url == "http://localhost:3000"
-    assert any(c[-3:] == ["up", "-d", "--remove-orphans"] for c in call.calls)
-    ps_cmd = next(c for c in run.calls if "ps" in c)
+    assert any(c[-3:] == ["up", "-d", "--remove-orphans"] for c in machine.called)
+    ps_cmd = next(c for c in machine.ran if "ps" in c)
     assert ps_cmd[-4:] == ["-q", "--status", "running", "ollama"]
 
 
 def test_start_stack_refuses_when_native_ollama_holds_the_port(isolated_home: Path) -> None:
-    call = Caller()
+    machine = _with_ps("")
     with pytest.raises(FriendlyError) as exc:
-        _start_with_ps("", call)
+        server.start_stack(ENGINE_ANSWERING, config.Config(mode="server"), sys=machine)
     assert "11434" in exc.value.problem
     # A loopback-bound native Ollama is not reachable from a container, so the only
     # real way forward is stopping it.
     assert "brew services stop ollama" in exc.value.fix
     assert "lepika connect" not in exc.value.fix
-    assert call.calls == []
+    assert machine.called == []
 
 
 def test_start_stack_refuses_to_expose_without_an_api_key(isolated_home: Path) -> None:
     # An empty key makes Caddy's `Bearer {$LEPIKA_API_KEY}` matcher accept a bare
     # `Bearer ` header, so exposing without one is an open proxy.
-    call = Caller()
+    machine = FakeSystem(stdout={"docker info": "{}"})
     with pytest.raises(FriendlyError) as exc:
-        server.start_stack(
-            LINUX_NVIDIA,
-            config.Config(mode="server", exposed=True),
-            run=Runner({"docker info": "{}"}),
-            call=call,
-        )
+        server.start_stack(LINUX_NVIDIA, config.Config(mode="server", exposed=True), sys=machine)
     assert "lepika expose" in exc.value.fix
-    assert call.calls == []
+    assert machine.called == []
 
 
 def test_start_stack_compose_failure_is_friendly(isolated_home: Path) -> None:
+    machine = FakeSystem(stdout={"docker info": "{}"}, codes={"docker compose": 1})
     with pytest.raises(FriendlyError) as exc:
-        server.start_stack(
-            LINUX_NVIDIA,
-            config.Config(mode="server"),
-            run=Runner({"docker info": "{}"}),
-            call=Caller(1),
-        )
+        server.start_stack(LINUX_NVIDIA, config.Config(mode="server"), sys=machine)
     assert "lepika logs" in exc.value.fix
 
 
@@ -171,65 +163,66 @@ def test_start_stack_with_remote_engine_does_not_wait_for_a_container(
         engine_url="http://gpu-box:11435",
         engine_key="k",
     )
-    probed: list[tuple[str, str]] = []
-    call = Caller()
-    server.start_stack(
-        LINUX_NVIDIA,
-        cfg,
-        run=Runner({"docker info": "{}"}),
-        call=call,
-        api_up=lambda url, key="", **k: bool(probed.append((url, key))) or True,
-        up=lambda port, **k: True,
-        sleep=lambda s: None,
-    )
-    assert probed == [("http://gpu-box:11435", "k")]
-    up_cmd = next(c for c in call.calls if "up" in c)
+    remote = "http://gpu-box:11435/api/version"
+    machine = FakeSystem(stdout={"docker info": "{}"}, urls=routes({remote: _UP, _UI: _UP}))
+    server.start_stack(LINUX_NVIDIA, cfg, sys=machine)
+    # Asked once, with its key; nothing waits for a local engine.
+    engine_probes = [r for r in machine.requested if r.full_url != _UI]
+    assert [(r.full_url, r.get_header("Authorization")) for r in engine_probes] == [
+        (remote, "Bearer k")
+    ]
+    up_cmd = next(c for c in machine.called if "up" in c)
     assert "engine" not in up_cmd
 
 
 def test_stop_runs_compose_down(isolated_home: Path) -> None:
-    run = Runner()
-    assert server.stop(LINUX_NVIDIA, config.Config(mode="server"), run=run) is True
-    assert any(c[-1] == "down" for c in run.calls)
+    machine = FakeSystem()
+    assert server.stop(LINUX_NVIDIA, config.Config(mode="server"), sys=machine) is True
+    assert any(c[-1] == "down" for c in machine.ran)
 
 
 def test_update_pulls_then_starts(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    call = Caller()
+    machine = FakeSystem(stdout={"docker info": "{}"})
     started: list[str] = []
     monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: started.append("up") or "u")
-    server.update(
-        LINUX_NVIDIA,
-        config.Config(mode="server"),
-        run=Runner({"docker info": "{}"}),
-        call=call,
-    )
-    assert any(c[-1] == "pull" for c in call.calls)
+    server.update(LINUX_NVIDIA, config.Config(mode="server"), sys=machine)
+    assert any(c[-1] == "pull" for c in machine.called)
     assert started == ["up"]
 
 
-class _ImageIds(Runner):
+def _image_ids(before: str, after: str) -> FakeSystem:
     """`docker image inspect` answers `before` until the pull has run, then `after`."""
+    return FakeSystem(
+        stdout={
+            "docker info": "{}",
+            "docker compose": "ollama/ollama:latest\n",
+            "docker image inspect": [before, after],
+        }
+    )
 
-    def __init__(self, before: str, after: str) -> None:
-        super().__init__({"docker info": "{}", "docker compose": "ollama/ollama:latest\n"})
-        self.ids = [before, after]
 
-    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if cmd[:3] != ["docker", "image", "inspect"]:
-            return super().__call__(cmd, **kwargs)
-        self.calls.append(list(cmd))
-        assert kwargs == {"check": False, "log": False}
-        return subprocess.CompletedProcess(cmd, 0, stdout=self.ids.pop(0), stderr="")
+def _server_update(machine: FakeSystem) -> list[UpdateStep]:
+    steps = server.update(LINUX_NVIDIA, config.Config(mode="server"), sys=machine)
+    inspects = [
+        kw
+        for c, kw in zip(machine.ran, machine.ran_kwargs, strict=True)
+        if c[:3] == ["docker", "image", "inspect"]
+    ]
+    # Once before the pull and once after; a quiet read, whatever it exits with.
+    assert len(inspects) <= 2
+    unchecked = {"check": False, "env": None, "timeout": None, "log": False, "ok": (0,)}
+    assert all(kw == unchecked for kw in inspects)
+    return steps
 
 
 def test_server_update_reports_current_when_image_ids_are_unchanged(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
-    run = _ImageIds("sha256:aaa\n", "sha256:aaa\n")
-    steps = server.update(LINUX_NVIDIA, config.Config(mode="server"), run=run, call=Caller())
+    machine = _image_ids("sha256:aaa\n", "sha256:aaa\n")
+    steps = _server_update(machine)
     assert steps == [UpdateStep("Container images", "current")]
-    inspect = next(c for c in run.calls if c[:3] == ["docker", "image", "inspect"])
+    inspect = next(c for c in machine.ran if c[:3] == ["docker", "image", "inspect"])
     assert inspect[-1] == "ollama/ollama:latest"
 
 
@@ -237,8 +230,7 @@ def test_server_update_reports_upgraded_when_they_change(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
-    run = _ImageIds("sha256:aaa\n", "sha256:bbb\n")
-    steps = server.update(LINUX_NVIDIA, config.Config(mode="server"), run=run, call=Caller())
+    steps = _server_update(_image_ids("sha256:aaa\n", "sha256:bbb\n"))
     assert steps == [UpdateStep("Container images", "upgraded")]
 
 
@@ -247,25 +239,24 @@ def test_server_update_reports_upgraded_when_images_appear_for_the_first_time(
 ) -> None:
     """No id before the pull and one after: the pull certainly fetched something."""
     monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
-    run = _ImageIds("", "sha256:bbb\n")
-    steps = server.update(LINUX_NVIDIA, config.Config(mode="server"), run=run, call=Caller())
+    steps = _server_update(_image_ids("", "sha256:bbb\n"))
     assert steps == [UpdateStep("Container images", "upgraded")]
 
 
 @pytest.mark.parametrize(
-    "run",
+    "machine",
     [
-        Runner({"docker info": "{}", "docker compose": ""}),
-        _ImageIds("", ""),
-        _ImageIds("sha256:aaa\n", ""),
+        FakeSystem(stdout={"docker info": "{}", "docker compose": ""}),
+        _image_ids("", ""),
+        _image_ids("sha256:aaa\n", ""),
     ],
     ids=["no images listed", "no ids", "no ids after the pull"],
 )
 def test_server_update_does_not_claim_up_to_date_when_image_ids_are_unreadable(
-    run: Runner, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+    machine: FakeSystem, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
-    steps = server.update(LINUX_NVIDIA, config.Config(mode="server"), run=run, call=Caller())
+    steps = _server_update(machine)
     assert steps == [
         UpdateStep(
             "Container images",
@@ -286,18 +277,20 @@ def test_logs_returns_compose_and_lepika_logs(isolated_home: Path) -> None:
     from lepika import paths
 
     (paths.logs_dir() / "lepika.log").write_text('{"event": "x"}\n')
-    run = Runner({"docker compose": "ollama-1 | ready\n"})
-    sections = dict(server.logs(20, run=run))
+    machine = FakeSystem(stdout={"docker compose": "ollama-1 | ready\n"})
+    sections = dict(server.logs(20, sys=machine))
     assert "ready" in sections["docker compose"]
     assert '"event": "x"' in sections["lepika.log"]
-    tail_cmd = next(c for c in run.calls if "logs" in c)
+    tail_cmd = next(c for c in machine.ran if "logs" in c)
     assert "--tail" in tail_cmd and "20" in tail_cmd
 
 
 def test_stop_with_the_daemon_down_says_to_retry_down(isolated_home: Path) -> None:
     """`lepika down` cannot finish without the daemon: the containers come back with it."""
     with pytest.raises(FriendlyError) as exc:
-        server.stop(LINUX_NVIDIA, config.Config(mode="server"), run=Runner(code=1))
+        server.stop(
+            LINUX_NVIDIA, config.Config(mode="server"), sys=FakeSystem(codes={"docker info": 1})
+        )
     assert "not running" in exc.value.problem
     assert "lepika down" in exc.value.fix
     assert "lepika up" not in exc.value.fix
@@ -307,7 +300,9 @@ def test_update_with_the_daemon_down_says_to_retry_update(
     isolated_home: Path,
 ) -> None:
     with pytest.raises(FriendlyError) as exc:
-        server.update(LINUX_NVIDIA, config.Config(mode="server"), run=Runner(code=1), call=Caller())
+        server.update(
+            LINUX_NVIDIA, config.Config(mode="server"), sys=FakeSystem(codes={"docker info": 1})
+        )
     assert "lepika update" in exc.value.fix
 
 
@@ -316,11 +311,7 @@ def test_start_stack_names_the_mode_in_the_stack_up_line(isolated_home: Path) ->
     server.start_stack(
         LINUX_NVIDIA,
         config.Config(mode="server", model="qwen3:8b"),
-        run=Runner({"docker info": '{"nvidia": {}}\n'}),
-        call=Caller(),
-        api_up=lambda url, **k: True,
-        up=lambda port, **k: True,
-        sleep=lambda s: None,
+        sys=_box({"docker info": '{"nvidia": {}}\n'}),
     )
     text = (paths.logs_dir() / log.LOG_FILE).read_text(encoding="utf-8")
     line = next(json.loads(x) for x in text.splitlines() if json.loads(x)["event"] == "stack.up")

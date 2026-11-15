@@ -456,7 +456,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         # must not tear down what was already running — hence the reload.
         if cfg.mode == "server" and previous != "server" and config.load().mode != "server":
             try:
-                if server.stop(info, cfg):
+                if server.stop(info, cfg, sys=system.REAL):
                     console.print("Removed the containers the failed switch had created.")
             except FriendlyError as exc:
                 _report_stop_failure(exc)

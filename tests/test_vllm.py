@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import Caller, FakeResponse, FakeSystem, Runner, routes
+from fakes import FakeResponse, FakeSystem, Runner, routes
 from typer.testing import CliRunner
 
 from lepika import cli, config, detect, doctor, engine, health, models, paths, server, wizard
@@ -97,18 +97,15 @@ def test_vllm_up_is_false_when_nothing_answers() -> None:
 
 def test_start_stack_waits_for_vllm_not_ollama(isolated_home: Path) -> None:
     cfg = config.Config(mode="server", model=REPO)
-    probes: list[str] = []
-    server.start_stack(
-        LINUX_NVIDIA,
-        cfg,
-        run=Runner({"docker info": '{"nvidia": {}}'}),
-        call=Caller(),
-        api_up=lambda url, **k: bool(probes.append("ollama")) or True,
-        vllm_up=lambda url, **k: bool(probes.append("vllm")) or True,
-        up=lambda port, **k: True,
-        sleep=lambda s: None,
+    vllm = "http://127.0.0.1:8000/health"
+    ui = "http://127.0.0.1:3000/health"
+    # No answer for Ollama's /api/version: probing it would fail the test.
+    machine = FakeSystem(
+        stdout={"docker info": '{"nvidia": {}}'},
+        urls=routes({vllm: FakeResponse(), ui: FakeResponse()}),
     )
-    assert probes == ["vllm"]
+    server.start_stack(LINUX_NVIDIA, cfg, sys=machine)
+    assert [r.full_url for r in machine.requested] == [vllm, ui]
 
 
 def test_start_stack_vllm_without_toolkit_is_friendly(isolated_home: Path) -> None:
@@ -116,8 +113,7 @@ def test_start_stack_vllm_without_toolkit_is_friendly(isolated_home: Path) -> No
         server.start_stack(
             LINUX_NVIDIA,
             config.Config(mode="server", model=REPO),
-            run=Runner({"docker info": "{}"}),
-            call=Caller(),
+            sys=FakeSystem(stdout={"docker info": "{}"}),
         )
     assert "Container Toolkit" in exc.value.fix
 

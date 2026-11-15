@@ -230,7 +230,7 @@ def _apply_engine_change(cfg: config.Config) -> bool:
     if cfg.mode == "server":
         # `compose up -d` is the Server-mode reconciler: it rewrites .env and
         # recreates whatever the new engine URL changed, so it needs no probe.
-        server.start_stack(detect.detect(sys=system.REAL), cfg)
+        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL)
         return True
     if not health.webui_up(cfg.webui_port, sys=system.REAL):
         return False
@@ -303,7 +303,7 @@ def expose(
     if off:
         cfg.exposed = False
         config.save(cfg)
-        server.start_stack(detect.detect(sys=system.REAL), cfg)
+        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL)
         log.get_logger().info("expose.off")
         console.print("[green]✓ Back to localhost only.[/green]")
         return
@@ -325,7 +325,7 @@ def expose(
     if not show or rotate:
         cfg.exposed = True
         config.save(cfg)
-        server.start_stack(detect.detect(sys=system.REAL), cfg)
+        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL)
         log.get_logger().info("expose.on", api_port=cfg.api_port)
     ips = server.lan_ips()
     # Nothing resolved at all (offline, or a locked-down host): say so in words
@@ -455,14 +455,14 @@ def model_add(
         cfg.model = model_ref.raw
         config.save(cfg)
         console.print(f"[green]✓ Set:[/green] {escape(model_ref.raw)} — starting vLLM…")
-        _ready(cfg, server.start_stack(info, cfg))
+        _ready(cfg, server.start_stack(info, cfg, sys=system.REAL))
         return
     if cfg.engine_managed and cfg.mode == "server":
         # In Server mode the engine is a container: it has to be up before there is
         # anything to pull into — and it has to be the engine the *new* model needs.
         # Switching away from a full-weight repo with the old ref still in the config
         # would bring up vLLM, leave ollama stopped, and fail the pull.
-        server.start_stack(info, dataclasses.replace(cfg, model=model_ref.raw))
+        server.start_stack(info, dataclasses.replace(cfg, model=model_ref.raw), sys=system.REAL)
     elif cfg.engine_managed:
         ollama.ensure_ollama(
             info, url=cfg.engine_url, context_length=cfg.context_length, sys=system.REAL

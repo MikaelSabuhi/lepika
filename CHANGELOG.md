@@ -13,6 +13,9 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   name and what it accepts, instead of silently changing behaviour (`mode = "sever"`
   ran Express; `exposed = "no"` counted as yes). A file written by a newer LePika is
   refused with an upgrade hint, and any model name now saves and reloads intact.
+- A gated Hugging Face repo asks for a token again. Newer `hf` releases word the
+  refusal differently, so LePika now asks the Hub's model API why a listing failed
+  instead of reading the CLI's error text.
 
 ## [0.2.0] - 2026-11-10
 

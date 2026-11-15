@@ -125,6 +125,12 @@ class _Response:
     def read(self) -> bytes:
         return self._body
 
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
 
 def _serving(payload: Any) -> Any:
     seen: list[urllib.request.Request] = []
@@ -152,6 +158,8 @@ def test_list_builds_sends_the_token_as_a_bearer_header() -> None:
     opener = _serving(UNSLOTH)
     gguf.list_builds("unsloth/x-GGUF", token="hf_secret", urlopen=opener)
     assert opener.seen[0].get_header("Authorization") == "Bearer hf_secret"
+    # Unredirected: the token must not follow a 30x to another host.
+    assert "Authorization" not in opener.seen[0].headers
 
 
 def test_list_builds_is_unavailable_when_the_hub_does_not_answer() -> None:

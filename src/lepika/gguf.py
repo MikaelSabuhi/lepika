@@ -24,7 +24,7 @@ _UNQUANTIZED = frozenset({"BF16", "F16", "F32"})
 UrlOpenFn = Callable[..., Any]
 
 HUB_API = "https://huggingface.co/api/models"
-_TIMEOUT = 5
+TIMEOUT = 5
 
 
 class Unavailable(Exception):
@@ -86,6 +86,20 @@ def split_tag(raw: str) -> tuple[str, str]:
     return head + sep + name, tag
 
 
+def hub_request(
+    repo: str,
+    # B107: an empty default means "no token", not a credential.
+    token: str = "",  # nosec B107
+    query: str = "",
+) -> urllib.request.Request:
+    """A GET for the repo's Hub model API; the token rides in a header, never the URL."""
+    request = urllib.request.Request(f"{HUB_API}/{repo}{query}")
+    if token:
+        # Unredirected: urllib copies ordinary headers onto a 30x hop, to any host.
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
+    return request
+
+
 def list_builds(
     repo: str,
     # B107: an empty default means "no token", not a credential — a real one
@@ -100,10 +114,10 @@ def list_builds(
     caller turns into "let Ollama pick": this is a convenience, never a gate.
     """
     opener: UrlOpenFn = urlopen if urlopen is not None else urllib.request.urlopen
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    request = urllib.request.Request(f"{HUB_API}/{repo}?blobs=true", headers=headers)
+    request = hub_request(repo, token, "?blobs=true")
     try:
-        payload = json.loads(opener(request, timeout=_TIMEOUT).read().decode("utf-8"))
+        with opener(request, timeout=TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
         raise Unavailable(str(exc)) from exc
     return parse_builds(payload)

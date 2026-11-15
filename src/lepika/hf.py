@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import fnmatch
+import http.client
 import json
 import os
 import re
 import subprocess
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,13 +17,14 @@ from typing import Any
 
 from rich.prompt import Prompt
 
-from lepika import config, log, paths, proc
+from lepika import config, gguf, log, paths, proc
 from lepika.config import Config
 from lepika.errors import FriendlyError
 
 RunFn = Callable[..., Any]
 StreamFn = Callable[..., tuple[int, str]]
 AskFn = Callable[..., str]
+UrlOpenFn = gguf.UrlOpenFn
 
 # Same shape as OpenWebUI's `uv tool run`: pinned interpreter, named package.
 HF_PYTHON = "3.12"
@@ -48,7 +52,7 @@ _REPO_ID = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 
 
 class GatedRepo(FriendlyError):
-    """The Hub answered 401/403: a licence to accept, or a token to supply."""
+    """The Hub says the repo is gated, or refused the token: a licence to accept."""
 
 
 @dataclass(frozen=True)
@@ -158,6 +162,46 @@ def _parse_listing(stdout: str) -> list[dict[str, str]]:
     return listing
 
 
+def _listing_failure(repo: str, token: str, urlopen: UrlOpenFn | None) -> FriendlyError:
+    """Why `hf` could not list the repo, asked of the Hub's model API in one request.
+
+    `hf`'s error text changes between releases (2.4.0 says only "Access denied"), so
+    the structured answer decides: 200 with `gated` set is a licence to accept, 403 is
+    a token the Hub refused, 401/404 is a repo that does not exist (the Hub answers an
+    unknown repo with 401 so as not to reveal private ones). Anything else, including
+    the Hub not answering, is the generic failure.
+    """
+    opener: UrlOpenFn = urlopen if urlopen is not None else urllib.request.urlopen
+    status: int | None
+    gated = False
+    try:
+        with opener(gguf.hub_request(repo, token), timeout=gguf.TIMEOUT) as response:
+            status = getattr(response, "status", None)
+            payload = json.loads(response.read().decode("utf-8"))
+        gated = isinstance(payload, dict) and bool(payload.get("gated"))
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+    # Unreachable, timed out, a truncated or garbled reply (HTTPException is not an
+    # OSError, and urllib re-raises it unwrapped), or a body that is not JSON.
+    except (OSError, http.client.HTTPException, ValueError):
+        status = None
+    if (status == 200 and gated) or status == 403:
+        return GatedRepo(
+            f"'{repo}' is gated or private on Hugging Face.",
+            "Accept its licence on huggingface.co, then set HF_TOKEN or answer the prompt.",
+        )
+    if status in (401, 404):
+        return FriendlyError(
+            f"'{repo}' is not on Hugging Face.",
+            "Check the name — it is <org>/<repo>, e.g. Qwen/Qwen3.8-27B. "
+            "A private repo needs HF_TOKEN.",
+        )
+    return FriendlyError(
+        f"Could not list the files of '{repo}'.",
+        "Check your internet connection and that `uv` works, then try again.",
+    )
+
+
 def preflight(
     repo: str,
     # B107: an empty default means "no token", not a credential — a real one
@@ -165,11 +209,13 @@ def preflight(
     token: str = "",  # nosec B107
     run: RunFn = proc.run_logged,
     environ: Mapping[str, str] | None = None,
+    urlopen: UrlOpenFn | None = None,
 ) -> Preflight:
     """What the repo holds and how big it is, without downloading a byte.
 
     A pure read (`log=False`), and the one oracle for a bare `org/repo`: the file
     list says whether Ollama pulls it (GGUF) or LePika imports it (safetensors).
+    A failed listing is classified by the Hub's own answer, not by `hf`'s wording.
     """
     check_repo(repo)
     result: subprocess.CompletedProcess[str] = run(
@@ -180,24 +226,7 @@ def preflight(
         timeout=_PREFLIGHT_TIMEOUT,
     )
     if result.returncode != 0:
-        text = (result.stdout + result.stderr).lower()
-        # Not-found is tested first: the Hub answers a mistyped repo with a 401 whose
-        # body also mentions "gated", so a gated-first order would misread every typo.
-        if "404" in text or "not found" in text:
-            raise FriendlyError(
-                f"'{repo}' is not on Hugging Face.",
-                "Check the name — it is <org>/<repo>, e.g. Qwen/Qwen3.8-27B. "
-                "A private repo needs HF_TOKEN.",
-            )
-        if "401" in text or "403" in text or "gated" in text:
-            raise GatedRepo(
-                f"'{repo}' is gated or private on Hugging Face.",
-                "Accept its licence on huggingface.co, then set HF_TOKEN or answer the prompt.",
-            )
-        raise FriendlyError(
-            f"Could not list the files of '{repo}'.",
-            "Check your internet connection and that `uv` works, then try again.",
-        )
+        raise _listing_failure(repo, token, urlopen)
     try:
         entries = _parse_listing(result.stdout)
         cache = cache_dir(environ)

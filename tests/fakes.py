@@ -1,4 +1,4 @@
-"""Shared test doubles: `FakeSystem`, its HTTP answers, and the injected subprocess callables."""
+"""Shared test doubles: `FakeSystem` and its HTTP answers."""
 
 from __future__ import annotations
 
@@ -14,47 +14,8 @@ from lepika.errors import CommandNotFound, FriendlyError
 from lepika.system import Response
 
 
-class Runner:
-    """Stands in for proc.run_logged; canned stdout per leading argv words."""
-
-    def __init__(self, stdout: dict[str, str] | None = None, code: int = 0) -> None:
-        self.calls: list[list[str]] = []
-        self.stdout = stdout or {}
-        self.code = code
-
-    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        self.calls.append(list(cmd))
-        out = next((v for k, v in self.stdout.items() if " ".join(cmd).startswith(k)), "")
-        return subprocess.CompletedProcess(cmd, self.code, stdout=out, stderr="")
-
-
-class Caller:
-    """Stands in for proc.call: records the argv, returns a canned exit code."""
-
-    def __init__(self, code: int = 0) -> None:
-        self.calls: list[list[str]] = []
-        self.code = code
-
-    def __call__(self, cmd: list[str]) -> int:
-        self.calls.append(list(cmd))
-        return self.code
-
-
-class Streamer:
-    """Stands in for proc.stream: records argv and kwargs, returns a canned (code, tail)."""
-
-    def __init__(self, code: int = 0, tail: str = "") -> None:
-        self.calls: list[tuple[list[str], dict[str, Any]]] = []
-        self.code = code
-        self.tail = tail
-
-    def __call__(self, cmd: list[str], **kwargs: Any) -> tuple[int, str]:
-        self.calls.append((list(cmd), dict(kwargs)))
-        return self.code, self.tail
-
-
 def _leading(table: Mapping[str, Any], cmd: Sequence[str], default: Any) -> Any:
-    """The answer for the first key `cmd` starts with: the matching rule `Runner` uses."""
+    """The answer for the first key the command line starts with, in the table's order."""
     line = " ".join(cmd)
     return next((v for k, v in table.items() if line.startswith(k)), default)
 
@@ -154,6 +115,8 @@ class FakeSystem:
     `bindable` answers every port probe alike, or, as a callable, per address and
     port. `writable` answers every `can_write` alike, or, as a callable, per path.
     `signal_errors` is raised, after recording, for a signal sent to that pid.
+    `route_address` and `host_addresses` are this machine's addresses, as unfiltered
+    as the real ones: by default it has no route and its hostname resolves to nothing.
     """
 
     def __init__(
@@ -176,7 +139,11 @@ class FakeSystem:
         raises: dict[str, BaseException] | None = None,
         while_streaming: Callable[[list[str], Path | None], None] | None = None,
         while_running: Callable[[list[str]], None] | None = None,
+        route_address: str | None = None,
+        host_addresses: Sequence[str] = (),
     ) -> None:
+        self.route = route_address
+        self.hosts = list(host_addresses)
         self.stdout = stdout or {}
         self._outputs_served: dict[str, int] = {}
         self.while_streaming = while_streaming
@@ -329,3 +296,9 @@ class FakeSystem:
 
     def ram_bytes(self) -> int | None:
         return self.memory
+
+    def route_address(self) -> str | None:
+        return self.route
+
+    def host_addresses(self) -> list[str]:
+        return list(self.hosts)

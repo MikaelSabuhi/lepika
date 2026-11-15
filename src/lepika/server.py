@@ -5,16 +5,13 @@ from __future__ import annotations
 import importlib.resources
 import json
 import os
-import secrets
-import socket
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from rich.console import Console
 
-from lepika import fsio, health, log, models, proc, prompts
+from lepika import health, log, prompts, serving, stack_env
 from lepika.backend import UpdateStep
 from lepika.config import Config
 from lepika.detect import SystemInfo
@@ -22,13 +19,11 @@ from lepika.errors import FriendlyError
 from lepika.paths import logs_dir, stack_dir
 from lepika.system import System
 
-RunFn = Callable[..., Any]
 AskFn = Callable[..., str]
 
 console = Console()
 
 STACK_FILES = ("compose.yml", "compose.nvidia.yml", "Caddyfile")
-ENV_FILE = ".env"
 VLLM_URL = "http://127.0.0.1:8000"
 _TOOLKIT_URL = (
     "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
@@ -66,95 +61,17 @@ def install_stack() -> Path:
     return target
 
 
-def read_env(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if not path.exists():
-        return values
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-            quote, value = value[0], value[1:-1]
-            if quote == '"':
-                value = _unescape(value)
-        values[key.strip()] = value
-    return values
-
-
-def _unescape(text: str) -> str:
-    """Undo `_quote`'s double-quoted escapes: `\\"`, `\\\\`, and `$$` — nothing else."""
-    out: list[str] = []
-    i = 0
-    while i < len(text):
-        if text[i] == "\\" and i + 1 < len(text) and text[i + 1] in '\\"':
-            out.append(text[i + 1])
-            i += 2
-        elif text[i] == "$" and i + 1 < len(text) and text[i + 1] == "$":
-            out.append("$")
-            i += 2
-        else:
-            out.append(text[i])
-            i += 1
-    return "".join(out)
-
-
-def _quote(value: str) -> str:
-    """Single quotes keep JSON and `$` literal — but they cannot hold a `'`.
-
-    A value containing one (an API key from `lepika connect --key`) is written
-    double-quoted instead, with the escapes compose's .env parser expects — `$`
-    included, because compose interpolates `$VAR` inside double quotes.
-    """
-    if "'" not in value:
-        return f"'{value}'"
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "$$")
-    return f'"{escaped}"'
-
-
-def write_env(path: Path, values: dict[str, str]) -> None:
-    """Merge `values` into .env, keep everything else, write privately and atomically."""
-    merged = read_env(path) | values
-    body = "".join(f"{k}={_quote(v)}\n" for k, v in merged.items())
-    # Private, because the file holds the API key and an HF token.
-    fsio.write_private(path, body)
-    # Key names only: the values are exactly what must never reach the log.
-    log.get_logger().info("env.write", path=str(path), keys=sorted(values))
-
-
-def api_key(env_path: Path, rotate: bool = False) -> str:
-    """The key Caddy checks. Generated once, kept in .env (0600), never in LePika's log."""
-    current = read_env(env_path).get("LEPIKA_API_KEY", "")
-    if current and not rotate:
-        return current
-    key = secrets.token_urlsafe(32)
-    write_env(env_path, {"LEPIKA_API_KEY": key})
-    log.get_logger().info("expose.key", rotated=rotate)
-    return key
-
-
-def lan_ip(connect: Callable[[socket.socket], None] | None = None) -> str:
-    """The address other machines reach us on. A UDP connect picks the route; nothing is sent."""
-    # 10.255.255.255 needs no DNS and no reachable host: connecting a datagram
-    # socket only makes the kernel choose the outbound interface.
-    connect_fn = connect if connect is not None else (lambda s: s.connect(("10.255.255.255", 1)))
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            connect_fn(sock)
-            return str(sock.getsockname()[0])
-    except OSError:
+def lan_ip(*, sys: System) -> str:
+    """The address other machines reach us on: the one the default route leaves from."""
+    route = sys.route_address()
+    if route is None:
         # No route at all (offline, or a locked-down host): say so in the connect
         # line rather than printing something that looks like an address.
         return NO_ROUTE
+    return route
 
 
-def lan_ips(
-    connect: Callable[[socket.socket], None] | None = None,
-    getaddrinfo: Callable[..., Any] = socket.getaddrinfo,
-    hostname: Callable[[], str] = socket.gethostname,
-) -> list[str]:
+def lan_ips(*, sys: System) -> list[str]:
     """Every address other machines could reach us on, the default route's pick first.
 
     One address is the usual answer, but a box on Wi-Fi and Ethernet (or behind a
@@ -163,16 +80,11 @@ def lan_ips(
     the next room can reach.
     """
     found: list[str] = []
-    route = lan_ip(connect=connect)
+    route = lan_ip(sys=sys)
     if route != NO_ROUTE:
         found.append(route)
-    try:
-        addresses = getaddrinfo(hostname(), None, socket.AF_INET)
-    except OSError:
-        # An unresolvable hostname is normal on a laptop; the route pick still stands.
-        addresses = []
-    for entry in addresses:
-        ip = str(entry[4][0])
+    # An unresolvable hostname is normal on a laptop; the route pick still stands.
+    for ip in sys.host_addresses():
         # Loopback and link-local are addresses nobody on the network dials.
         if ip.startswith(("127.", "169.254.")) or ip in found:
             continue
@@ -201,11 +113,11 @@ def _upstream(url: str) -> str:
     return f"https://{authority}" if parts.scheme == "https" else authority
 
 
-def env_values(cfg: Config, info: SystemInfo, existing: dict[str, str]) -> dict[str, str]:
+def env_values(cfg: Config, existing: dict[str, str], environ: Mapping[str, str]) -> dict[str, str]:
     """Every key compose.yml interpolates — managed ones from config, the rest preserved."""
     values = {k: existing.get(k, v) for k, v in PRESERVED_DEFAULTS.items()}
     # A token in the shell is the freshest one the user has; it wins over the file.
-    values["HF_TOKEN"] = os.environ.get("HF_TOKEN", values["HF_TOKEN"])
+    values["HF_TOKEN"] = environ.get("HF_TOKEN", values["HF_TOKEN"])
     engine_url = (
         "http://ollama:11434" if cfg.engine_managed else container_engine_url(cfg.engine_url)
     )
@@ -229,7 +141,7 @@ def env_values(cfg: Config, info: SystemInfo, existing: dict[str, str]) -> dict[
         "API_PORT": str(cfg.api_port),
         "LEPIKA_UPSTREAM": upstream,
     }
-    if vllm_active(cfg):
+    if serving.vllm_active(cfg):
         # OLLAMA_BASE_URL is left pointing at the stopped ollama service on purpose:
         # OpenWebUI then lists no Ollama models, so the only model offered is vLLM's.
         values |= {
@@ -242,42 +154,10 @@ def env_values(cfg: Config, info: SystemInfo, existing: dict[str, str]) -> dict[
     return values
 
 
-def vllm_allowed(cfg: Config, info: SystemInfo) -> bool:
-    """Could this machine serve a full-weight repo? vLLM is a CUDA container we start.
-
-    `engine_managed` is part of it: with a remote engine we start no containers at
-    all, so accepting a repo would save a model nothing in the stack ever serves.
-    """
-    return (
-        cfg.engine_managed and cfg.mode == "server" and info.os == "linux" and info.gpu == "nvidia"
-    )
-
-
-def vllm_active(cfg: Config) -> bool:
-    """Is vLLM the engine right now? The one predicate every caller shares.
-
-    The mode is part of the answer: vLLM is a container in the Server stack, so an
-    Express config still naming a repo (a switch that failed halfway) has no vLLM
-    behind it for `status`, `doctor`, or `model list` to report.
-    """
-    return cfg.mode == "server" and cfg.engine_managed and models.uses_vllm(cfg.model)
-
-
-def engine_label(cfg: Config) -> str:
-    """What to call the engine in a sentence: the model picks it (rule 10).
-
-    A remote engine is nameless on purpose — `lepika connect` never asks what runs
-    over there, so calling it "Ollama" would be a guess printed as a fact.
-    """
-    if vllm_active(cfg):
-        return "vLLM"
-    return "Ollama" if cfg.engine_managed else "a remote engine"
-
-
 def profiles(cfg: Config) -> list[str]:
     active: list[str] = []
     if cfg.engine_managed:
-        active.append("vllm" if vllm_active(cfg) else "engine")
+        active.append("vllm" if serving.vllm_active(cfg) else "engine")
     if cfg.exposed:
         active.append("expose")
     return active
@@ -289,7 +169,7 @@ def hf_token_prompt(env_path: Path, ask: AskFn | None = None) -> None:
     Gated repos (Llama, Gemma…) 401 without one. The answer goes straight to .env
     (0600) — never onto the command line, and never into LePika's log.
     """
-    if os.environ.get("HF_TOKEN") or read_env(env_path).get("HF_TOKEN"):
+    if os.environ.get("HF_TOKEN") or stack_env.read_env(env_path).get("HF_TOKEN"):
         return
     # No terminal skips, as Enter does.
     token = prompts.ask(
@@ -298,16 +178,16 @@ def hf_token_prompt(env_path: Path, ask: AskFn | None = None) -> None:
         default="",
         reader=ask,
     ).strip()
-    write_env(env_path, {"HF_TOKEN": token})
+    stack_env.write_env(env_path, {"HF_TOKEN": token})
 
 
-def nvidia_in_docker(info: SystemInfo, run: RunFn = proc.run_logged) -> bool:
+def nvidia_in_docker(info: SystemInfo, *, sys: System) -> bool:
     """Can Docker hand the NVIDIA GPU to a container? (Linux: the toolkit registers a runtime.)"""
     if info.gpu != "nvidia":
         return False
     if info.os != "linux":
         return True  # Docker Desktop (WSL2) exposes the GPU without a named runtime
-    result = run(
+    result = sys.run(
         ["docker", "info", "--format", "{{json .Runtimes}}"], check=False, timeout=20, log=False
     )
     return bool(result.returncode == 0 and "nvidia" in result.stdout)
@@ -329,27 +209,27 @@ def compose_cmd(stack: Path, active: list[str], gpu_overlay: bool) -> list[str]:
     return cmd
 
 
-def ensure_docker(info: SystemInfo, run: RunFn = proc.run_logged, retry: str = "lepika up") -> None:
+def ensure_docker(info: SystemInfo, retry: str = "lepika up", *, sys: System) -> None:
     if not info.has_docker:
         raise FriendlyError(
             "Server mode needs Docker, which is not installed.",
             "Install it from https://docs.docker.com/get-docker/ — or use Express mode "
             "(no Docker): `lepika --mode express`.",
         )
-    if run(["docker", "info"], check=False, timeout=20, log=False).returncode != 0:
+    if sys.run(["docker", "info"], check=False, timeout=20, log=False).returncode != 0:
         raise FriendlyError(
             "Docker is installed but not running.",
             f"Start Docker Desktop (or `sudo systemctl start docker`) and run `{retry}` again.",
         )
 
 
-def _our_ollama(stack: Path, run: RunFn) -> bool:
+def _our_ollama(stack: Path, *, sys: System) -> bool:
     """Is the engine answering on 11434 our own container rather than a native Ollama?
 
     The stack publishes exactly `127.0.0.1:11434`, so every run after the first sees
     the port taken — by itself. Compose is the only thing that can tell them apart.
     """
-    result = run(
+    result = sys.run(
         [
             *compose_cmd(stack, ["engine"], gpu_overlay=False),
             "ps",
@@ -372,9 +252,9 @@ def _compose_failed(step: str) -> FriendlyError:
     )
 
 
-def gpu_note(info: SystemInfo, run: RunFn = proc.run_logged) -> str | None:
+def gpu_note(info: SystemInfo, *, sys: System) -> str | None:
     """One line when an NVIDIA GPU exists but Docker can't see it; None otherwise."""
-    if info.gpu == "nvidia" and info.os == "linux" and not nvidia_in_docker(info, run=run):
+    if info.gpu == "nvidia" and info.os == "linux" and not nvidia_in_docker(info, sys=sys):
         return (
             "NVIDIA GPU found, but Docker can't use it — running on CPU. Install the NVIDIA "
             f"Container Toolkit: {_TOOLKIT_URL}"
@@ -394,19 +274,19 @@ def start_stack(
     Always runs `compose up -d`: it is idempotent, takes about a second when nothing
     changed, and is what makes `connect`/`expose` edits take effect.
     """
-    ensure_docker(info, run=sys.run)
+    ensure_docker(info, sys=sys)
     stack = install_stack()
-    if cfg.engine_managed and info.ollama_running and not _our_ollama(stack, sys.run):
+    if cfg.engine_managed and info.ollama_running and not _our_ollama(stack, sys=sys):
         raise FriendlyError(
             "Ollama is already running natively on port 11434, so the Docker engine can't bind it.",
             "Stop it first: `brew services stop ollama` (macOS), `systemctl stop ollama` "
             "(Linux), or quit it from the tray (Windows); if LePika started it, "
             '`pkill -f "ollama serve"`.',
         )
-    env_path = stack / ENV_FILE
-    values = env_values(cfg, info, read_env(env_path))
+    env_path = stack / stack_env.ENV_FILE
+    values = env_values(cfg, stack_env.read_env(env_path), sys.environ)
     active = profiles(cfg)
-    gpu = nvidia_in_docker(info, run=sys.run)
+    gpu = nvidia_in_docker(info, sys=sys)
     # Both refusals come before anything is written or started.
     # Caddy matches `Authorization: Bearer {$LEPIKA_API_KEY}`; an empty key makes a
     # bare `Bearer ` header match, which is an open proxy on the network.
@@ -422,7 +302,7 @@ def start_stack(
             "vLLM needs the GPU inside Docker, and Docker can't see it.",
             f"Install the NVIDIA Container Toolkit: {_TOOLKIT_URL}",
         )
-    write_env(env_path, values)
+    stack_env.write_env(env_path, values)
     base = compose_cmd(stack, active, gpu_overlay=gpu)
     log.get_logger().info("stack.up", mode="server", profiles=active, gpu=info.gpu)
     # Streamed, not captured: the first run pulls gigabytes of images and a silent
@@ -466,7 +346,7 @@ def start_stack(
 
 def stop(info: SystemInfo, cfg: Config, *, sys: System) -> bool:
     """`lepika down` in Server mode: stop and remove the containers; volumes stay."""
-    ensure_docker(info, run=sys.run, retry="lepika down")
+    ensure_docker(info, retry="lepika down", sys=sys)
     stack = install_stack()
     every = list(INACTIVE)  # every profile, so nothing is left behind
     result = sys.run(
@@ -483,14 +363,14 @@ def update(
     sys: System,
 ) -> list[UpdateStep]:
     """`lepika update` in Server mode: pull newer images, then reconcile."""
-    ensure_docker(info, run=sys.run, retry="lepika update")
+    ensure_docker(info, retry="lepika update", sys=sys)
     stack = install_stack()
     log.get_logger().info("stack.update")
     base = compose_cmd(stack, profiles(cfg), gpu_overlay=False)
-    before = _image_ids(base, sys.run)
+    before = _image_ids(base, sys=sys)
     if sys.call([*base, "pull"]) != 0:
         raise _compose_failed("pull")
-    after = _image_ids(base, sys.run)
+    after = _image_ids(base, sys=sys)
     start_stack(info, cfg, sys=sys)
     if not after:
         # Nothing to compare: "up to date" would be a claim nobody checked. Unreadable
@@ -505,18 +385,18 @@ def update(
     return [UpdateStep("Container images", "current" if before == after else "upgraded")]
 
 
-def _image_ids(base: list[str], run: RunFn) -> str:
+def _image_ids(base: list[str], *, sys: System) -> str:
     """The local image ids behind the stack's images: what a pull that changed nothing keeps.
 
     Compared as a whole rather than parsed: an image not pulled yet makes `inspect`
     fail on that name, and that too changes once the pull has fetched it. Empty when
     there is nothing to compare — no images listed, or no id read for any of them.
     """
-    listed = run([*base, "config", "--images"], check=False, log=False)
+    listed = sys.run([*base, "config", "--images"], check=False, log=False)
     images = str(listed.stdout or "").split()
     if not images:
         return ""
-    ids = run(
+    ids = sys.run(
         ["docker", "image", "inspect", "--format", "{{.Id}}", *images], check=False, log=False
     )
     if not str(ids.stdout or "").strip():

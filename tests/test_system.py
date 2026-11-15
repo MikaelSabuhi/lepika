@@ -15,7 +15,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from conftest import RealNetworkCall
@@ -40,6 +40,8 @@ _METHODS = (
     "can_write",
     "disk_free",
     "ram_bytes",
+    "route_address",
+    "host_addresses",
 )
 
 
@@ -554,3 +556,104 @@ def test_fake_system_signal_can_be_told_to_raise() -> None:
     fake.signal(901, 15)
     # Recorded either way: the attempt is what the caller made.
     assert fake.signals == [(900, 15), (901, 15)]
+
+
+class _RouteSocket:
+    """Stands in for `socket.socket`: records the connect, reports a chosen local address."""
+
+    made: ClassVar[list[tuple[int, int]]] = []
+    dialled: ClassVar[list[tuple[str, int]]] = []
+
+    def __init__(self, family: int, kind: int) -> None:
+        self.made.append((family, kind))
+
+    def __enter__(self) -> _RouteSocket:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def connect(self, address: tuple[str, int]) -> None:
+        self.dialled.append(address)
+
+    def getsockname(self) -> tuple[str, int]:
+        return ("192.168.1.20", 50000)
+
+
+def test_route_address_is_the_address_the_socket_picked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A UDP connect picks the route; the answer is read back with getsockname."""
+    monkeypatch.setattr(_RouteSocket, "made", [])
+    monkeypatch.setattr(_RouteSocket, "dialled", [])
+    monkeypatch.setattr(socket, "socket", _RouteSocket)
+    assert REAL.route_address() == "192.168.1.20"
+    assert _RouteSocket.made == [(socket.AF_INET, socket.SOCK_DGRAM)]
+    # An address that needs no DNS and no reachable host: nothing is sent.
+    assert _RouteSocket.dialled == [("10.255.255.255", 1)]
+
+
+def test_route_address_reads_back_a_real_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Binding stands in for the real UDP connect: either way the answer is the
+    # local address the kernel chose, read back with getsockname.
+    class Bound(socket.socket):
+        def connect(self, address: Any) -> None:
+            self.bind(("127.0.0.1", 0))
+
+    monkeypatch.setattr(socket, "socket", Bound)
+    assert REAL.route_address() == "127.0.0.1"
+
+
+def test_route_address_is_none_without_a_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    class NoRoute(_RouteSocket):
+        def connect(self, address: tuple[str, int]) -> None:
+            raise OSError("no route")
+
+    monkeypatch.setattr(socket, "socket", NoRoute)
+    assert REAL.route_address() is None
+
+
+def _resolved(*ips: str) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+    """What `socket.getaddrinfo(host, None, AF_INET)` returns: the address is entry[4][0]."""
+    return [(socket.AF_INET, 0, 0, "", (ip, 0)) for ip in ips]
+
+
+def test_host_addresses_are_what_the_hostname_resolves_to_unfiltered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[tuple[Any, ...]] = []
+
+    def getaddrinfo(*args: Any) -> Any:
+        asked.append(args)
+        return _resolved("127.0.0.1", "169.254.1.9", "192.168.1.20", "10.0.0.5", "10.0.0.5")
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "box")
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    # Which of these anyone can dial is the caller's policy, not the system's.
+    assert REAL.host_addresses() == [
+        "127.0.0.1",
+        "169.254.1.9",
+        "192.168.1.20",
+        "10.0.0.5",
+        "10.0.0.5",
+    ]
+    assert asked == [("box", None, socket.AF_INET)]
+
+
+def test_host_addresses_are_empty_when_the_hostname_does_not_resolve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unresolvable hostname is normal on a laptop."""
+
+    def boom(*args: Any) -> Any:
+        raise OSError("no such host")
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "box")
+    monkeypatch.setattr(socket, "getaddrinfo", boom)
+    assert REAL.host_addresses() == []
+
+
+def test_fake_system_answers_the_address_probes() -> None:
+    assert FakeSystem().route_address() is None
+    assert FakeSystem().host_addresses() == []
+    fake = FakeSystem(route_address="192.168.1.20", host_addresses=["192.168.1.20", "10.0.0.5"])
+    assert fake.route_address() == "192.168.1.20"
+    assert fake.host_addresses() == ["192.168.1.20", "10.0.0.5"]

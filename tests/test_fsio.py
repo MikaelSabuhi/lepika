@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,7 @@ import pytest
 from lepika import fsio
 
 
-@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="POSIX permission bits")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 def test_write_private_creates_the_file_owner_only(tmp_path: Path) -> None:
     path = tmp_path / "secret"
     fsio.write_private(path, "s3cret\n")
@@ -20,6 +21,8 @@ def test_write_private_creates_the_file_owner_only(tmp_path: Path) -> None:
 def test_write_private_replaces_atomically_and_leaves_no_temp_file(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text("old\n", encoding="utf-8")
+    # A temp file an interrupted run left behind is overwritten, not appended to.
+    (tmp_path / "config.toml.tmp").write_text("leftover from an older run", encoding="utf-8")
     fsio.write_private(path, "new\n")
     assert path.read_text(encoding="utf-8") == "new\n"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["config.toml"]
@@ -45,7 +48,7 @@ def test_write_private_keeps_the_old_file_when_the_write_fails(
     assert path.read_text(encoding="utf-8") == "KEEP=1\n"
 
 
-@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="POSIX permission bits")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 def test_write_private_tightens_a_stale_world_readable_temp_file(tmp_path: Path) -> None:
     """O_TRUNC keeps an existing file's bits: a temp file an interrupted run left
     world-readable would otherwise hand its secret to every user on the box."""

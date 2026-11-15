@@ -1,4 +1,4 @@
-"""Writing the files that hold secrets: the config, the stack's .env, the UI secret."""
+"""Writing files that hold secrets: privately, atomically, from the first byte."""
 
 from __future__ import annotations
 

@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 from conftest import RealNetworkCall
-from fakes import FakeSystem
+from fakes import FakeSystem, UnansweredURL
 
 from lepika import proc, system
 from lepika.errors import CommandNotFound, FriendlyError
@@ -53,7 +53,7 @@ def test_real_and_fake_system_match_the_protocol_signatures() -> None:
         name
         for name, value in vars(System).items()
         if not name.startswith("_") and (callable(value) or isinstance(value, property))
-    }
+    } | set(System.__annotations__)
     assert declared == {*_METHODS, "environ"}
     assert isinstance(vars(System)["environ"], property)
     for name in _METHODS:
@@ -328,5 +328,19 @@ def test_fake_system_records_every_effect_in_order(tmp_path: Path) -> None:
 
 def test_fake_system_refuses_an_unanswered_url() -> None:
     fake = FakeSystem()
-    with pytest.raises(AssertionError, match="http://x/unanswered"):
+    with pytest.raises(UnansweredURL, match=re.escape("http://x/unanswered")):
         fake.open_url(urllib.request.Request("http://x/unanswered"), timeout=1)
+
+
+def test_an_unanswered_url_is_not_swallowed_by_a_broad_except() -> None:
+    """Every opener in `src/` turns an `Exception` into `False` or a fallback, so a
+    refusal that was one would let a test that forgot to answer a URL pass."""
+    fake = FakeSystem()
+    request = urllib.request.Request("http://x/api/version")
+    with pytest.raises(UnansweredURL):
+        try:
+            fake.open_url(request, timeout=1)
+            result = True
+        except Exception:
+            result = False
+        assert result  # never reached: the refusal must escape the except

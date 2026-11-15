@@ -58,8 +58,17 @@ def _leading(table: Mapping[str, Any], cmd: Sequence[str], default: Any) -> Any:
     return next((v for k, v in table.items() if line.startswith(k)), default)
 
 
+class UnansweredURL(BaseException):
+    """A test let code open a URL it gave `FakeSystem` no answer for.
+
+    A BaseException for the same reason as the suite's network guard: every opener
+    in `src/` sits under an `except Exception` that would read this as `False`.
+    """
+
+
 def _no_url(request: urllib.request.Request) -> Response:
-    raise AssertionError(f"FakeSystem was not given an answer for {request.full_url}")
+    url = getattr(request, "full_url", request)
+    raise UnansweredURL(f"FakeSystem was not given an answer for {url}")
 
 
 class FakeSystem:
@@ -121,7 +130,13 @@ class FakeSystem:
     ) -> subprocess.CompletedProcess[str]:
         self.ran.append(list(cmd))
         self.ran_kwargs.append(
-            {"check": check, "env": env, "timeout": timeout, "log": log, "ok": ok}
+            {
+                "check": check,
+                "env": dict(env) if env is not None else None,
+                "timeout": timeout,
+                "log": log,
+                "ok": ok,
+            }
         )
         self._launch(cmd)
         code = _leading(self.codes, cmd, 0)
@@ -147,12 +162,14 @@ class FakeSystem:
         env: Mapping[str, str] | None = None,
         cwd: Path | None = None,
     ) -> tuple[int, str]:
-        self.streamed.append((list(cmd), {"env": env, "cwd": cwd}))
+        self.streamed.append(
+            (list(cmd), {"env": dict(env) if env is not None else None, "cwd": cwd})
+        )
         self._launch(cmd)
         return self.stream_answer
 
     def spawn(self, cmd: Sequence[str], *, env: Mapping[str, str], log: Path) -> int:
-        self.spawned.append((list(cmd), env, log))
+        self.spawned.append((list(cmd), dict(env), log))
         self._launch(cmd)
         return self.spawn_pid
 

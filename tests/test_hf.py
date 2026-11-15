@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import subprocess
 import urllib.error
@@ -224,6 +225,12 @@ class _HubAnswer:
     def read(self) -> bytes:
         return self._body
 
+    def __enter__(self) -> _HubAnswer:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
 
 class _Hub:
     """Stands in for urlopen: one canned answer (a body, or an exception to raise)."""
@@ -294,7 +301,12 @@ def test_a_public_repo_that_failed_to_list_is_a_generic_failure() -> None:
 
 @pytest.mark.parametrize(
     "failure",
-    [urllib.error.URLError("no network"), TimeoutError("timed out"), _http_error(500)],
+    [
+        urllib.error.URLError("no network"),
+        TimeoutError("timed out"),
+        _http_error(500),
+        http.client.IncompleteRead(b""),  # a truncated body: not an OSError
+    ],
 )
 def test_an_unreachable_hub_is_a_generic_failure(failure: BaseException) -> None:
     with pytest.raises(FriendlyError) as exc:
@@ -327,6 +339,17 @@ def test_the_token_travels_as_a_header_only() -> None:
     request, _timeout = hub.seen[0]
     assert request.get_header("Authorization") == "Bearer hf_secret"
     assert "hf_secret" not in request.full_url
+    # Unredirected: urllib copies `headers` onto a 30x hop, wherever it points.
+    assert "Authorization" not in request.headers
+    assert "Authorization" in request.unredirected_hdrs
+
+
+def test_no_token_sends_no_authorization_header() -> None:
+    hub = _Hub({"gated": "manual"})
+    with pytest.raises(hf.GatedRepo):
+        _failing_preflight(hub, token="")
+    request, _timeout = hub.seen[0]
+    assert request.get_header("Authorization") is None
 
 
 def test_a_successful_listing_never_asks_the_hub() -> None:

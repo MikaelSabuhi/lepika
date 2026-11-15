@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import http.client
 import json
 import os
 import re
@@ -174,13 +175,15 @@ def _listing_failure(repo: str, token: str, urlopen: UrlOpenFn | None) -> Friend
     status: int | None
     gated = False
     try:
-        response = opener(gguf.hub_request(repo, token), timeout=gguf.TIMEOUT)
-        status = getattr(response, "status", None)
-        payload = json.loads(response.read().decode("utf-8"))
+        with opener(gguf.hub_request(repo, token), timeout=gguf.TIMEOUT) as response:
+            status = getattr(response, "status", None)
+            payload = json.loads(response.read().decode("utf-8"))
         gated = isinstance(payload, dict) and bool(payload.get("gated"))
     except urllib.error.HTTPError as exc:
         status = exc.code
-    except (OSError, ValueError):  # unreachable, timed out, or not JSON
+    # Unreachable, timed out, a truncated or garbled reply (HTTPException is not an
+    # OSError, and urllib re-raises it unwrapped), or a body that is not JSON.
+    except (OSError, http.client.HTTPException, ValueError):
         status = None
     if (status == 200 and gated) or status == 403:
         return GatedRepo(

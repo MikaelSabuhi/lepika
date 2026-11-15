@@ -93,8 +93,11 @@ def hub_request(
     query: str = "",
 ) -> urllib.request.Request:
     """A GET for the repo's Hub model API; the token rides in a header, never the URL."""
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    return urllib.request.Request(f"{HUB_API}/{repo}{query}", headers=headers)
+    request = urllib.request.Request(f"{HUB_API}/{repo}{query}")
+    if token:
+        # Unredirected: urllib copies ordinary headers onto a 30x hop, to any host.
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
+    return request
 
 
 def list_builds(
@@ -113,7 +116,8 @@ def list_builds(
     opener: UrlOpenFn = urlopen if urlopen is not None else urllib.request.urlopen
     request = hub_request(repo, token, "?blobs=true")
     try:
-        payload = json.loads(opener(request, timeout=TIMEOUT).read().decode("utf-8"))
+        with opener(request, timeout=TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
         raise Unavailable(str(exc)) from exc
     return parse_builds(payload)

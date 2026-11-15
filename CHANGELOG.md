@@ -5,6 +5,15 @@ All notable changes to LePika are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A mistyped `~/.lepika/config.toml` setting now stops LePika with the setting's
+  name and what it accepts, instead of silently changing behaviour (`mode = "sever"`
+  ran Express; `exposed = "no"` counted as yes). A file written by a newer LePika is
+  refused with an upgrade hint, and any model name now saves and reloads intact.
+
 ## [0.2.0] - 2026-11-10
 
 ### Added

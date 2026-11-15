@@ -68,10 +68,93 @@ def test_save_escapes_quotes_and_backslashes_in_strings(isolated_home: Path) -> 
     assert config.load() == cfg
 
 
-def test_load_drops_unknown_keys(isolated_home: Path) -> None:
-    config.config_path().write_text('schema_version = 1\nmode = "express"\nfuture_option = "x"\n')
-    cfg = config.load()
-    assert cfg.mode == "express"
+def _load_error(text: str) -> FriendlyError:
+    config.config_path().write_text(text, encoding="utf-8")
+    with pytest.raises(FriendlyError) as excinfo:
+        config.load()
+    return excinfo.value
+
+
+def test_an_unknown_key_suggests_the_nearest_setting(isolated_home: Path) -> None:
+    err = _load_error("schema_version = 1\nwebui_prot = 8080\n")
+    assert "webui_prot" in err.problem
+    assert str(config.config_path()) in err.problem + err.fix
+    assert "webui_port" in err.fix
+
+
+def test_a_mistyped_mode_is_named_not_silently_express(isolated_home: Path) -> None:
+    err = _load_error('mode = "sever"\n')
+    assert "mode" in err.problem
+    assert "sever" in err.problem
+    assert "express" in err.problem + err.fix
+    assert "server" in err.problem + err.fix
+
+
+def test_a_quoted_boolean_does_not_expose_the_ui(isolated_home: Path) -> None:
+    err = _load_error('exposed = "no"\n')
+    assert "exposed" in err.problem
+
+
+def test_a_quoted_port_is_refused(isolated_home: Path) -> None:
+    err = _load_error('webui_port = "abc"\n')
+    assert "webui_port" in err.problem
+
+
+@pytest.mark.parametrize("port", [0, 70000])
+def test_a_port_out_of_range_is_refused(isolated_home: Path, port: int) -> None:
+    err = _load_error(f"api_port = {port}\n")
+    assert "api_port" in err.problem
+    assert str(port) in err.problem
+
+
+def test_a_boolean_is_not_a_port(isolated_home: Path) -> None:
+    err = _load_error("webui_port = true\n")
+    assert "webui_port" in err.problem
+
+
+@pytest.mark.parametrize("length", [-5, 0])
+def test_context_length_must_be_positive(isolated_home: Path, length: int) -> None:
+    err = _load_error(f"context_length = {length}\n")
+    assert "context_length" in err.problem
+
+
+def test_engine_url_needs_a_scheme(isolated_home: Path) -> None:
+    err = _load_error('engine_url = "127.0.0.1:11434"\n')
+    assert "engine_url" in err.problem
+    assert "http://" in err.problem + err.fix
+
+
+def test_a_newer_schema_is_refused_with_an_upgrade_hint(isolated_home: Path) -> None:
+    err = _load_error('schema_version = 99\nmode = "express"\n')
+    assert "newer" in err.problem
+    assert "install" in err.fix
+
+
+def test_validation_error_never_echoes_a_secret(isolated_home: Path) -> None:
+    for key in ("engine_key", "hf_token"):
+        err = _load_error(f"{key} = 12345\n")
+        assert key in err.problem
+        assert "12345" not in err.problem
+        assert "12345" not in err.fix
+
+
+def test_the_first_problem_in_file_order_is_reported(isolated_home: Path) -> None:
+    err = _load_error('exposed = "no"\nmode = "sever"\n')
+    assert "exposed" in err.problem
+    assert "sever" not in err.problem
+
+
+def test_a_config_saved_by_this_version_loads_without_complaint(isolated_home: Path) -> None:
+    cfg = config.Config(model="x", engine_key="k", exposed=True)
+    config.save(cfg)
+    assert config.load() == cfg
+
+
+def test_any_string_round_trips_through_save_and_load(isolated_home: Path) -> None:
+    """Every control character must be escaped, or the saved file no longer parses."""
+    cfg = config.Config(model="".join(chr(c) for c in range(0x80)) + "é✓")
+    config.save(cfg)
+    assert config.load() == cfg
 
 
 def test_load_raises_friendly_error_on_corrupt_file(isolated_home: Path) -> None:

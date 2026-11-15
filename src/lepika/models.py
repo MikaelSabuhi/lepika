@@ -15,6 +15,10 @@ from lepika.errors import FriendlyError
 
 ModelKind = Literal["ollama", "hf_gguf", "hf_repo"]
 
+# The `schema` a models.toml must declare for this LePika to read it. A remote list
+# with any other value was written for a different client and is ignored.
+MODELS_SCHEMA = 1
+
 CURATED_MODELS_URL = "https://raw.githubusercontent.com/MikaelSabuhi/lepika/main/models.toml"
 
 
@@ -52,14 +56,19 @@ def _usable_entry(entry: dict[str, Any]) -> bool:
     )
 
 
+_REF_EXAMPLES = (
+    "Examples: qwen3:8b · hf.co/unsloth/gemma-3-4b-it-GGUF · meta-llama/Llama-3.3-70B-Instruct"
+)
+
+
 def parse_model_ref(raw: str) -> ModelRef:
     ref = raw.strip()
     if not ref:
-        raise FriendlyError(
-            "Empty model reference.",
-            "Examples: qwen3:8b · hf.co/unsloth/gemma-3-4b-it-GGUF · "
-            "meta-llama/Llama-3.3-70B-Instruct",
-        )
+        raise FriendlyError("Empty model reference.", _REF_EXAMPLES)
+    # No real ref contains one, and the ref is written to config.toml and passed
+    # to `ollama` as an argument: a pasted newline must not get that far.
+    if any(ch < " " or ch == "\x7f" for ch in ref):
+        raise FriendlyError("The model reference contains a control character.", _REF_EXAMPLES)
     for scheme in ("https://", "http://"):
         if ref.lower().startswith(scheme):
             ref = ref[len(scheme) :]
@@ -91,6 +100,11 @@ def _parse_curated(text: str, *, lenient: bool) -> list[CuratedModel]:
     ships with the code, so it is parsed strictly and a defect there raises.
     """
     data = tomllib.loads(text)
+    if data.get("schema") != MODELS_SCHEMA:
+        if lenient:
+            # Returning nothing makes `load_curated` fall back to the bundled list.
+            return []
+        raise ValueError(f"models.toml must declare `schema = {MODELS_SCHEMA}`")
     entries = data.get("models", [])
     if not isinstance(entries, list):
         raise TypeError("`models` must be an array of tables")

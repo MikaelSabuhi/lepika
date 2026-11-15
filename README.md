@@ -100,7 +100,8 @@ Point `LEPIKA_HOME` somewhere else if you prefer.
 Every model gets a **16k-token context window** (Ollama's own default is 4k, which
 one pasted document overruns). To change it, set `context_length` in
 `~/.lepika/config.toml` and run `lepika up` again — it restarts the Ollama it
-started so the new value applies; bigger windows cost GPU memory.
+started so the new value applies; bigger windows cost GPU memory. A mistyped
+setting in that file is reported by name, never silently ignored.
 If Ollama was already running when `lepika up` started — the tray app on Windows,
 say — it keeps its own setting, and `lepika up` tells you where to change it.
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tomllib
 from collections.abc import Callable
 from typing import Any
 
@@ -33,6 +34,13 @@ def test_parse_org_slash_repo_is_hf_repo() -> None:
 def test_parse_empty_raises() -> None:
     with pytest.raises(FriendlyError):
         models.parse_model_ref("   ")
+
+
+def test_a_model_ref_with_a_control_character_is_refused() -> None:
+    """A newline in a ref is how a pasted line would smuggle a setting into config.toml."""
+    with pytest.raises(FriendlyError) as excinfo:
+        models.parse_model_ref("qwen3:8b\nmode = x")
+    assert "qwen3:8b" in excinfo.value.fix
 
 
 def test_load_curated_falls_back_to_bundled_on_network_error(isolated_home: Any) -> None:
@@ -76,14 +84,14 @@ def test_load_curated_falls_back_to_bundled_on_invalid_remote_toml() -> None:
 
 
 def test_load_curated_falls_back_to_bundled_when_remote_has_no_models() -> None:
-    curated = models.load_curated(urlopen=_serving("schema = 2\n"))
+    curated = models.load_curated(urlopen=_serving("schema = 1\n"))
     assert len(curated) >= 5
     assert any(m.ref == "qwen3:8b" for m in curated)
 
 
 def test_load_curated_ignores_unknown_keys_in_remote_entries() -> None:
     remote = (
-        "schema = 2\n"
+        "schema = 1\n"
         "\n"
         "[[models]]\n"
         'name = "Future model"\n'
@@ -103,6 +111,7 @@ def test_load_curated_ignores_unknown_keys_in_remote_entries() -> None:
 
 def test_load_curated_skips_remote_entries_missing_required_fields() -> None:
     remote = (
+        "schema = 1\n"
         "[[models]]\n"
         'name = "Good"\n'
         'ref = "good:1b"\n'
@@ -119,6 +128,7 @@ def test_load_curated_skips_remote_entries_missing_required_fields() -> None:
 def test_load_curated_skips_remote_entries_with_wrong_field_types() -> None:
     """A plausible TOML typo (quoted number) must not reach `fitting` and crash there."""
     remote = (
+        "schema = 1\n"
         "[[models]]\n"
         'name = "Good"\n'
         'ref = "good:1b"\n'
@@ -142,6 +152,19 @@ def test_load_curated_skips_remote_entries_with_wrong_field_types() -> None:
     curated = models.load_curated(urlopen=_serving(remote))
     assert [m.ref for m in curated] == ["good:1b"]
     assert models.fitting(curated, ram_gb=16.0) == curated
+
+
+@pytest.mark.parametrize("header", ["schema = 2\n", ""])
+def test_remote_list_with_another_schema_falls_back_to_bundled(header: str) -> None:
+    remote = header + '[[models]]\nname = "Other"\nref = "other:1b"\nmin_ram_gb = 4\n'
+    curated = models.load_curated(urlopen=_serving(remote))
+    assert all(m.ref != "other:1b" for m in curated)
+    assert any(m.ref == "qwen3:8b" for m in curated)
+
+
+def test_bundled_list_declares_the_supported_schema() -> None:
+    data = tomllib.loads(models._bundled_models_text())
+    assert data["schema"] == models.MODELS_SCHEMA == 1
 
 
 def test_fitting_filters_by_ram() -> None:

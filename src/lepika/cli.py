@@ -28,8 +28,6 @@ app = typer.Typer(
 console = Console()
 err_console = Console(stderr=True)
 
-MODES = ("express", "server")
-
 
 def _backend(cfg: config.Config) -> ModuleType:
     """The module that runs the stack in this mode — the only place the two differ.
@@ -59,7 +57,7 @@ def main(
         typer.echo(_version_string())
         raise typer.Exit()
     if mode is not None:
-        if mode not in MODES:
+        if mode not in config.MODES:
             raise typer.BadParameter("--mode must be 'express' or 'server'.")
         if ctx.invoked_subcommand is not None:
             # The mode is chosen once, by the wizard, and then lives in config.toml;

@@ -16,3 +16,7 @@ class UpdateStep:
     component: str
     outcome: Outcome
     detail: str = ""
+
+
+def changed(before: str | None, after: str | None) -> str:
+    return f"{before} → {after}" if before and after else after or ""

@@ -190,7 +190,7 @@ def test_stop_is_the_backend_stop_for_express(monkeypatch: pytest.MonkeyPatch) -
         "stop_openwebui",
         lambda os_name, port=None, **k: bool(seen.append((os_name, port))) or True,
     )
-    assert express.stop(info, Config(webui_port=3210)) is True
+    assert express.stop(info, Config(webui_port=3210), sys=FakeSystem()) is True
     assert seen == [("linux", 3210)]
 
 
@@ -206,7 +206,7 @@ def test_start_stack_writes_one_stack_up_line(monkeypatch: pytest.MonkeyPatch) -
     info = SystemInfo("linux", "x86_64", "none", 16.0, False, True, True)
     monkeypatch.setattr(ollama, "ensure_ollama", lambda info, url=None, **k: None)
     monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
-    express.start_stack(info, Config())
+    express.start_stack(info, Config(), sys=FakeSystem())
     assert _log_events().count("stack.up") == 1
 
 
@@ -222,21 +222,24 @@ def test_start_stack_logs_nothing_when_the_engine_pre_flight_refuses(
     monkeypatch.setattr(ollama, "ensure_ollama", refuse)
     monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
     with pytest.raises(FriendlyError):
-        express.start_stack(info, Config())
+        express.start_stack(info, Config(), sys=FakeSystem())
     assert "stack.up" not in _log_events()
 
 
 def test_stop_writes_a_stack_down_line(monkeypatch: pytest.MonkeyPatch) -> None:
     info = SystemInfo("linux", "x86_64", "none", 16.0, False, True, True)
     monkeypatch.setattr(openwebui, "stop_openwebui", lambda os_name, port=None, **k: False)
-    assert express.stop(info, Config()) is False
+    assert express.stop(info, Config(), sys=FakeSystem()) is False
     assert "stack.down" in _log_events()
 
 
 def test_logs_returns_the_tail_of_every_log_file(isolated_home: Path) -> None:
     (paths.logs_dir() / "ollama.log").write_text("one\ntwo\nthree\n")
     (paths.logs_dir() / "openwebui.log").write_text("only\n")
-    assert express.logs(2) == [("ollama.log", "two\nthree"), ("openwebui.log", "only")]
+    assert express.logs(2, sys=FakeSystem()) == [
+        ("ollama.log", "two\nthree"),
+        ("openwebui.log", "only"),
+    ]
 
 
 def test_start_openwebui_missing_uv_is_friendly(isolated_home: Path) -> None:

@@ -355,7 +355,7 @@ def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> SystemInf
     # the engine stop down with it, and the port 11434 the next mode needs stays held.
     try:
         # The bool is "was anything running", which is not a reason to stop switching.
-        backend.stop(info, old_cfg)
+        backend.stop(info, old_cfg, sys=system.REAL)
     except FriendlyError as exc:
         _report_stop_failure(exc)
     # `lepika down` leaves Ollama up on purpose, but Server's pre-flight refuses a
@@ -442,7 +442,10 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     # bring up vLLM and leave nothing to pull into. Only the pull saves it (above).
     try:
         url = cli._backend(cfg).start_stack(
-            info, dataclasses.replace(cfg, model=ref.raw), after_engine=pull_then_save
+            info,
+            dataclasses.replace(cfg, model=ref.raw),
+            after_engine=pull_then_save,
+            sys=system.REAL,
         )
     except FriendlyError:
         # A switch into Server that fails before the engine came up never saved the
@@ -453,7 +456,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         # must not tear down what was already running — hence the reload.
         if cfg.mode == "server" and previous != "server" and config.load().mode != "server":
             try:
-                if server.stop(info, cfg):
+                if server.stop(info, cfg, sys=system.REAL):
                     console.print("Removed the containers the failed switch had created.")
             except FriendlyError as exc:
                 _report_stop_failure(exc)

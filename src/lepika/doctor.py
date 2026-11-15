@@ -16,8 +16,9 @@ from lepika.errors import FriendlyError
 RAM_CHECK = "RAM"
 
 # The default probes, bound once at import as the bare functions used to be: a test
-# that patches `health.api_up` or `health.webui_up` does not reach a default.
+# that patches `health.api_up`, `health.vllm_up` or `health.webui_up` does not reach a default.
 _REAL_API_UP = functools.partial(health.api_up, sys=system.REAL)
+_REAL_VLLM_UP = functools.partial(health.vllm_up, sys=system.REAL)
 _REAL_WEBUI_UP = functools.partial(health.webui_up, sys=system.REAL)
 
 
@@ -54,7 +55,7 @@ def run_checks(
     webui_up: Callable[..., bool] = _REAL_WEBUI_UP,
     run: Callable[..., Any] = proc.run_logged,
 ) -> list[CheckResult]:
-    vllm_probe = vllm_up if vllm_up is not None else server._real_vllm_up
+    vllm_probe = vllm_up if vllm_up is not None else _REAL_VLLM_UP
     cfg = config.load()
     checks: list[CheckResult] = []
     if cfg.mode == "server":

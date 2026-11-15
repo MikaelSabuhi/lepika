@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import re
 import signal
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
-from lepika import health, log
+from lepika import engine, health, log
+from lepika.backend import UpdateStep, changed
 from lepika.config import DEFAULT_CONTEXT_LENGTH, DEFAULT_ENGINE_URL, Config
 from lepika.detect import SystemInfo
 from lepika.errors import CommandNotFound, FriendlyError
@@ -178,7 +179,6 @@ def stop_ollama(
     rerun: str = "lepika --mode server",
     *,
     sys: System,
-    api_up: Callable[..., bool] | None = None,
 ) -> bool:
     """Stop the native Ollama LePika started — never one the machine already ran.
 
@@ -188,15 +188,9 @@ def stop_ollama(
 
     Three things must agree before anything is signalled: a pid file we wrote, an
     engine answering on `url`, and a process by that pid that really is an Ollama.
-
-    `api_up`, when given, is the "is the engine answering" probe in place of
-    `health.api_up` on `sys`: `express.update` still hands one in from its tests.
-    It is removed when `express` takes a `System` itself.
     """
 
     def answering() -> bool:
-        if api_up is not None:
-            return api_up(url, key=key)
         return health.api_up(url, key=key, sys=sys)
 
     pf = pid_file("ollama")
@@ -251,16 +245,11 @@ def ensure_ollama(
     context_length: int,
     url: str = DEFAULT_ENGINE_URL,
     sys: System,
-    api_up: Callable[..., bool] | None = None,
 ) -> None:
-    """Install Ollama if it is missing, and have an engine answering on `url`.
-
-    `api_up`, when given, is the "is the engine answering" probe in place of
-    `health.api_up` on `sys`. It is removed when `express` takes a `System` itself.
-    """
+    """Install Ollama if it is missing, and have an engine answering on `url`."""
 
     def answering() -> bool:
-        return api_up(url) if api_up is not None else health.api_up(url, sys=sys)
+        return health.api_up(url, sys=sys)
 
     if not info.has_ollama:
         install_ollama(info, sys=sys)
@@ -272,7 +261,7 @@ def ensure_ollama(
         if not _ours(info.os, sys=sys) or _launched_context() == wanted:
             return
         log.get_logger().info("engine.restart", reason="context_length", wanted=wanted)
-        stop_ollama(info.os, url, rerun="lepika up", sys=sys, api_up=api_up)
+        stop_ollama(info.os, url, rerun="lepika up", sys=sys)
     start_ollama(context_length=context_length, sys=sys)
     health.wait_for(answering, 30, "Ollama API", sys=sys)
 
@@ -438,3 +427,127 @@ def upgrade_ollama(info: SystemInfo, *, sys: System) -> None:
                 "Ollama upgrade failed.",
                 "Run `winget upgrade --id Ollama.Ollama -e` to see why, then `lepika update`.",
             )
+
+
+def update(info: SystemInfo, cfg: Config, *, sys: System) -> list[UpdateStep]:
+    """The Ollama steps of `lepika update` in Express mode, for an engine LePika manages."""
+    steps: list[UpdateStep] = []
+    # Read before the install script runs: it re-enables and starts the unit.
+    systemd = info.os == "linux" and sys.which("systemctl") is not None
+    unit = _unit_state(sys=sys) if systemd else None
+    step, restored = _update_ollama(info, cfg, unit, sys=sys)
+    steps.append(step)
+    if systemd and unit is None:
+        # Left alone rather than restored from a guess: wrongly disabling a
+        # user's own service is the worse mistake. But a unit the script just
+        # enabled and started can contend for port 11434, so the user hears of it.
+        steps.append(
+            UpdateStep(
+                "Ollama service",
+                "note",
+                "could not read ollama.service's state, so it was left as the installer "
+                "set it — if Ollama misbehaves, run "
+                "`systemctl disable --now ollama.service` as root",
+            )
+        )
+    elif not restored:
+        steps.append(
+            UpdateStep(
+                "Ollama service",
+                "note",
+                "could not put ollama.service back as it was — if Ollama misbehaves, "
+                "run `systemctl disable --now ollama.service` as root",
+            )
+        )
+    return steps
+
+
+def _update_ollama(
+    info: SystemInfo, cfg: Config, unit: tuple[bool, bool] | None, *, sys: System
+) -> tuple[UpdateStep, bool]:
+    """The Ollama step, and whether `ollama.service` is back as `unit` recorded it.
+
+    `unit` is the unit's (enabled, active) as read before the upgrade (`_unit_state`);
+    None leaves it as the install script sets it — there is none, or its state could
+    not be read.
+    """
+
+    def answering() -> bool:
+        return health.api_up(cfg.engine_url, key=cfg.engine_key, sys=sys)
+
+    def running() -> str | None:
+        """What the engine at the configured URL serves now, or None if it cannot say."""
+        if not answering():
+            return None
+        try:
+            return engine.version(cfg.engine_url, key=cfg.engine_key, sys=sys)
+        except FriendlyError:
+            # It answered a moment ago and not now, or not with JSON: unknown, and
+            # not a reason to leave OpenWebUI un-upgraded.
+            return None
+
+    # Decided before anything changes: the upgrade may stop the process, and then
+    # the pid file can no longer be vouched for by a running Ollama.
+    ours_and_up = answering() and _ours(info.os, sys=sys)
+    before = ollama_binary_version(sys=sys)
+    failure: FriendlyError | None = None
+    try:
+        upgrade_ollama(info, sys=sys)
+    except FriendlyError as exc:
+        failure = exc
+    finally:
+        # Before anything below starts an engine: a unit the script started holds
+        # port 11434. `_restore_unit` never raises, so it cannot mask `failure`.
+        restored = _restore_unit(unit, sys=sys)
+    after = ollama_binary_version(sys=sys)
+    if failure is not None:
+        # On Linux the binary, not the script's exit code, says whether the upgrade
+        # happened: the script aborts on its optional systemd steps with the new
+        # engine already in place — the same rule `install_ollama` follows.
+        if info.os != "linux" or after == before:
+            raise failure
+        log.get_logger().warning("ollama.update.optional_step_failed")
+    if ours_and_up:
+        start = False
+        if not answering():
+            if _ours(info.os, sys=sys):
+                # Still an Ollama, just not answering (busy loading a model misses a
+                # 1s probe). A second `ollama serve` would lose the port and overwrite
+                # the pid file, the only record of which engine is ours.
+                installed = f"installed {after}; " if after else ""
+                return UpdateStep(
+                    "Ollama",
+                    "stale",
+                    f"{installed}the running engine is not answering — "
+                    "run `lepika update` again to restart it",
+                ), restored
+            # Really gone — the installer stopped it (winget replaces a running
+            # Ollama): ours, so the command that stopped it brings it back.
+            log.get_logger().info("engine.restart", reason="update", stopped_by="installer")
+            start = True
+        else:
+            now = running()
+            if now and after and now != after:
+                # The old binary keeps serving until its process is replaced.
+                log.get_logger().info("engine.restart", reason="update", running=now, wanted=after)
+                # Started again only once the stop is confirmed: a refused stop leaves
+                # the old engine on the port, and a second one would fight it for it.
+                start = stop_ollama(
+                    info.os,
+                    cfg.engine_url,
+                    key=cfg.engine_key,
+                    rerun="lepika update",
+                    sys=sys,
+                )
+        if start:
+            start_ollama(context_length=cfg.context_length, sys=sys)
+            health.wait_for(answering, 30, "Ollama API", sys=sys)
+    serving = running()
+    if serving and after and serving != after:
+        # Ours when its stop was refused; otherwise whoever started it restarts it.
+        return UpdateStep(
+            "Ollama", "stale", f"running {serving}, installed {after} — restart Ollama to load it"
+        ), restored
+    if before != after:
+        return UpdateStep("Ollama", "upgraded", changed(before, after)), restored
+    return UpdateStep("Ollama", "current", after or ""), restored

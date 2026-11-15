@@ -144,6 +144,8 @@ class FakeSystem:
 
     `stdout`, `codes` and `raises` answer by the leading words of the argv: a
     matching `run`, `call` or `stream` is recorded, then raises (a timeout, say).
+    A `stdout` list answers that command's successive runs in order, its last item
+    repeating: the same question asked before and after an upgrade.
     A program named in `missing` is not installed for every launcher alike.
     `while_streaming` is handed the argv and cwd of each `stream` while it "runs":
     a working directory the caller stages is often gone once the call returns.
@@ -157,7 +159,7 @@ class FakeSystem:
     def __init__(
         self,
         *,
-        stdout: dict[str, str] | None = None,
+        stdout: dict[str, str | list[str]] | None = None,
         codes: dict[str, int] | None = None,
         which: dict[str, str] | None = None,
         environ: dict[str, str] | None = None,
@@ -176,6 +178,7 @@ class FakeSystem:
         while_running: Callable[[list[str]], None] | None = None,
     ) -> None:
         self.stdout = stdout or {}
+        self._outputs_served: dict[str, int] = {}
         self.while_streaming = while_streaming
         self.while_running = while_running
         self.codes = codes or {}
@@ -246,8 +249,19 @@ class FakeSystem:
                 f"Command failed: {' '.join(cmd)}",
                 f"Details were logged to {proc._log_path()}",
             )
-        out = _leading(self.stdout, cmd, "")
-        return subprocess.CompletedProcess(list(cmd), code, stdout=out, stderr="")
+        return subprocess.CompletedProcess(list(cmd), code, stdout=self._output(cmd), stderr="")
+
+    def _output(self, cmd: Sequence[str]) -> str:
+        line = " ".join(cmd)
+        key = next((k for k in self.stdout if line.startswith(k)), None)
+        if key is None:
+            return ""
+        found = self.stdout[key]
+        if isinstance(found, str):
+            return found
+        index = self._outputs_served.get(key, 0)
+        self._outputs_served[key] = index + 1
+        return found[min(index, len(found) - 1)]
 
     def call(self, cmd: Sequence[str]) -> int:
         self.called.append(list(cmd))

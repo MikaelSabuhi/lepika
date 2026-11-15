@@ -119,14 +119,14 @@ def up() -> None:
     # will adopt, and the context length in config.toml will not reach it.
     if (note := ollama.context_note(info, cfg, sys=system.REAL)) is not None:
         console.print(f"[yellow]{escape(note)}[/yellow]")
-    _ready(cfg, _backend(cfg).start_stack(info, cfg))
+    _ready(cfg, _backend(cfg).start_stack(info, cfg, sys=system.REAL))
 
 
 @app.command()
 def down() -> None:
     """Stop the stack (Express: OpenWebUI only; Server: every container, models kept)."""
     cfg = config.load()
-    if _backend(cfg).stop(detect.detect(sys=system.REAL), cfg):
+    if _backend(cfg).stop(detect.detect(sys=system.REAL), cfg, sys=system.REAL):
         console.print("[green]✓ Stopped.[/green]")
     else:
         console.print("Nothing was running.")
@@ -171,7 +171,7 @@ def status() -> None:
 @app.command()
 def logs(lines: int = typer.Option(50, min=1, help="Lines per log file.")) -> None:
     """Print the tail of LePika's logs (Server mode: the container logs too)."""
-    sections = _backend(config.load()).logs(lines)
+    sections = _backend(config.load()).logs(lines, sys=system.REAL)
     if not sections:
         # Silence is indistinguishable from a broken command.
         console.print("(no logs yet)")
@@ -206,7 +206,9 @@ def update() -> None:
     """Upgrade the engine and OpenWebUI to their latest versions."""
     console.print("Upgrading…")
     cfg = config.load()
-    steps: list[UpdateStep] = _backend(cfg).update(detect.detect(sys=system.REAL), cfg)
+    steps: list[UpdateStep] = _backend(cfg).update(
+        detect.detect(sys=system.REAL), cfg, sys=system.REAL
+    )
     for step in steps:
         detail = escape(step.detail)
         if step.outcome in ("stale", "note"):
@@ -228,7 +230,7 @@ def _apply_engine_change(cfg: config.Config) -> bool:
     if cfg.mode == "server":
         # `compose up -d` is the Server-mode reconciler: it rewrites .env and
         # recreates whatever the new engine URL changed, so it needs no probe.
-        server.start_stack(detect.detect(sys=system.REAL), cfg)
+        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL)
         return True
     if not health.webui_up(cfg.webui_port, sys=system.REAL):
         return False
@@ -301,7 +303,7 @@ def expose(
     if off:
         cfg.exposed = False
         config.save(cfg)
-        server.start_stack(detect.detect(sys=system.REAL), cfg)
+        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL)
         log.get_logger().info("expose.off")
         console.print("[green]✓ Back to localhost only.[/green]")
         return
@@ -323,7 +325,7 @@ def expose(
     if not show or rotate:
         cfg.exposed = True
         config.save(cfg)
-        server.start_stack(detect.detect(sys=system.REAL), cfg)
+        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL)
         log.get_logger().info("expose.on", api_port=cfg.api_port)
     ips = server.lan_ips()
     # Nothing resolved at all (offline, or a locked-down host): say so in words
@@ -453,14 +455,14 @@ def model_add(
         cfg.model = model_ref.raw
         config.save(cfg)
         console.print(f"[green]✓ Set:[/green] {escape(model_ref.raw)} — starting vLLM…")
-        _ready(cfg, server.start_stack(info, cfg))
+        _ready(cfg, server.start_stack(info, cfg, sys=system.REAL))
         return
     if cfg.engine_managed and cfg.mode == "server":
         # In Server mode the engine is a container: it has to be up before there is
         # anything to pull into — and it has to be the engine the *new* model needs.
         # Switching away from a full-weight repo with the old ref still in the config
         # would bring up vLLM, leave ollama stopped, and fail the pull.
-        server.start_stack(info, dataclasses.replace(cfg, model=model_ref.raw))
+        server.start_stack(info, dataclasses.replace(cfg, model=model_ref.raw), sys=system.REAL)
     elif cfg.engine_managed:
         ollama.ensure_ollama(
             info, url=cfg.engine_url, context_length=cfg.context_length, sys=system.REAL

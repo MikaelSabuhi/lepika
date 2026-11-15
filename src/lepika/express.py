@@ -1036,8 +1036,20 @@ def _restore_unit(state: tuple[bool, bool] | None, call: CallFn) -> None:
     call(["sudo", "systemctl", *verb, "ollama.service"])
 
 
-def upgrade_ollama(info: SystemInfo, *, run: RunFn, which: WhichFn, call: CallFn) -> None:
-    """Upgrade the native Ollama in place, each OS through its own package manager."""
+def upgrade_ollama(
+    info: SystemInfo,
+    *,
+    run: RunFn,
+    which: WhichFn,
+    call: CallFn,
+    unit: tuple[bool, bool] | None = None,
+) -> None:
+    """Upgrade the native Ollama in place, each OS through its own package manager.
+
+    `unit` is `ollama.service`'s (enabled, active) as read before the upgrade
+    (`_unit_state`); on Linux it is put back afterwards. None leaves the unit as the
+    install script sets it — there is none, or its state could not be read.
+    """
     if info.os == "macos":
         # No Homebrew means the Ollama.app installer, which updates itself.
         if which("brew") is None:
@@ -1048,9 +1060,8 @@ def upgrade_ollama(info: SystemInfo, *, run: RunFn, which: WhichFn, call: CallFn
         if "ollama" in str(outdated.stdout or "").split():
             run(["brew", "upgrade", "ollama"], check=True)
     elif info.os == "linux":
-        # Recorded first: the script re-enables and starts the systemd unit, which
-        # must not be how an upgrade changes a service the user already ran.
-        state = _unit_state(run, which)
+        # The script re-enables and starts the systemd unit, which must not be how an
+        # upgrade changes a service the user already ran.
         try:
             # Streamed, not captured: the script may prompt for sudo.
             if call(["sh", "-c", OLLAMA_INSTALL_SCRIPT]) != 0:
@@ -1059,7 +1070,7 @@ def upgrade_ollama(info: SystemInfo, *, run: RunFn, which: WhichFn, call: CallFn
                     "See https://ollama.com/download/linux for manual install steps.",
                 )
         finally:
-            _restore_unit(state, call)
+            _restore_unit(unit, call)
     else:  # windows
         result = run(
             [
@@ -1109,20 +1120,38 @@ def update(
     kill_fn = kill if kill is not None else os.kill
     steps: list[UpdateStep] = []
     if cfg.engine_managed:
+        which_fn = which if which is not None else shutil.which
+        # Read before the install script runs: it re-enables and starts the unit.
+        systemd = info.os == "linux" and which_fn("systemctl") is not None
+        unit = _unit_state(run_fn, which_fn) if systemd else None
         steps.append(
             _update_ollama(
                 info,
                 cfg,
                 run=run_fn,
-                which=which if which is not None else shutil.which,
+                which=which_fn,
                 call=call if call is not None else subprocess.call,
                 popen=popen_fn,
                 api_up=api_up if api_up is not None else detect.api_up,
                 sleep=sleep_fn,
                 kill=kill_fn,
                 running_version=running_version,
+                unit=unit,
             )
         )
+        if systemd and unit is None:
+            # Left alone rather than restored from a guess: wrongly disabling a
+            # user's own service is the worse mistake. But a unit the script just
+            # enabled can win port 11434 after a reboot, so the user hears of it.
+            steps.append(
+                UpdateStep(
+                    "Ollama service",
+                    "stale",
+                    "could not read ollama.service's state, so it was left as the installer "
+                    "set it — if Ollama misbehaves after a reboot, run "
+                    "`sudo systemctl disable --now ollama.service`",
+                )
+            )
     before = openwebui_version(run_fn)
     # Pinned like the install and the run: an upgrade that resolved a different
     # interpreter would move the tool env out from under `uv tool run --python`,
@@ -1153,6 +1182,7 @@ def _update_ollama(
     sleep: SleepFn,
     kill: Callable[[int, int], None],
     running_version: Callable[..., str] | None,
+    unit: tuple[bool, bool] | None,
 ) -> UpdateStep:
     if running_version is None:
         # Imported here: engine.py is the HTTP layer, and express has no other
@@ -1179,7 +1209,7 @@ def _update_ollama(
     before = ollama_binary_version(run)
     failure: FriendlyError | None = None
     try:
-        upgrade_ollama(info, run=run, which=which, call=call)
+        upgrade_ollama(info, run=run, which=which, call=call, unit=unit)
     except FriendlyError as exc:
         failure = exc
     after = ollama_binary_version(run)

@@ -182,9 +182,25 @@ def test_update_accepts_a_failed_optional_step_once_the_binary_moved(
 def test_update_without_systemctl_touches_no_unit(restarts: list[str]) -> None:
     call = Caller()
     run = _linux_run(1, 3)
-    _update(_info("linux"), run, which=_which(), call=call, running="0.34.0")
+    steps = _update(_info("linux"), run, which=_which(), call=call, running="0.34.0")
     assert any("install.sh" in " ".join(c) for c in call.calls)
     assert not any("systemctl" in " ".join(c) for c in call.calls + run.argvs())
+    assert "Ollama service" not in [s.component for s in steps]
+
+
+def _service_warning(steps: list[UpdateStep]) -> UpdateStep:
+    """The step that says the unit was left as the installer set it — right after Ollama's."""
+    components = [s.component for s in steps]
+    assert components[:2] == ["Ollama", "Ollama service"]
+    return steps[1]
+
+
+def test_update_says_nothing_about_the_service_when_its_state_was_read(
+    restarts: list[str],
+) -> None:
+    for enabled, active in ((0, 0), (1, 3)):
+        steps = _update(_info("linux"), _linux_run(enabled, active), running="0.34.0")
+        assert "Ollama service" not in [s.component for s in steps]
 
 
 def _pid_file() -> None:
@@ -259,9 +275,10 @@ def test_update_restores_nothing_when_is_enabled_fails_without_a_state(
 ) -> None:
     """systemctl folds errors such as a refused bus into exit 1, with no state printed."""
     call = Caller()
-    _update(_info("linux"), _linux_run(1, 3, state=""), call=call, running="0.34.0")
+    steps = _update(_info("linux"), _linux_run(1, 3, state=""), call=call, running="0.34.0")
     assert any("install.sh" in " ".join(c) for c in call.calls)
     assert not any("systemctl" in c for c in call.calls)
+    assert _service_warning(steps).outcome == "stale"
 
 
 def test_update_never_starts_an_adopted_engine_the_upgrade_stopped(restarts: list[str]) -> None:
@@ -283,9 +300,16 @@ def test_update_restores_nothing_when_systemd_does_not_answer(
 ) -> None:
     """`systemctl` on PATH with no running systemd answers outside its documented codes."""
     call = Caller()
-    _update(_info("linux"), _linux_run(1, 1), call=call, running="0.34.0")
+    steps = _update(_info("linux"), _linux_run(1, 1), call=call, running="0.34.0")
     assert any("install.sh" in " ".join(c) for c in call.calls)
     assert not any("systemctl" in c for c in call.calls)
+    warning = _service_warning(steps)
+    assert warning == UpdateStep(
+        "Ollama service",
+        "stale",
+        "could not read ollama.service's state, so it was left as the installer set it — "
+        "if Ollama misbehaves after a reboot, run `sudo systemctl disable --now ollama.service`",
+    )
     log_text = (paths.logs_dir() / "lepika.log").read_text()
     assert "ollama.update.unit_state_unknown" in log_text
 
@@ -418,3 +442,13 @@ def test_update_stops_its_engine_with_the_configured_key(
     )
     _update(_info("linux"), run, cfg=config.Config(engine_key="k"), running=["0.33.2", "0.34.0"])
     assert keys == ["k"]
+
+
+def test_update_reports_an_unread_unit_even_when_the_script_failed_after_installing(
+    restarts: list[str],
+) -> None:
+    """A wedged systemd fails both the probe and the script's own systemd step."""
+    run = _linux_run(1, 1, ["0.33.2", "0.34.0"])
+    steps = _update(_info("linux"), run, call=Caller(code=1), running=None)
+    assert steps[0] == UpdateStep("Ollama", "upgraded", "0.33.2 → 0.34.0")
+    assert _service_warning(steps).outcome == "stale"

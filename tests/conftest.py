@@ -70,46 +70,45 @@ def no_real_network(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPa
 
 
 def guard_processes(node: pytest.Item, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace every standard-library way to launch or signal a process, except for
-    a `canary` test, which is opted out by marker exactly as from the network guard.
+    """Refuse a real child process and a real `os.kill`, except in a `canary` test,
+    which is opted out by marker exactly as from the network guard.
 
-    A `real_subprocess` test (the wrapper's own, launching the test interpreter) may
-    start a child, and may signal only a child it started: `subprocess.run` kills
-    its own child on a timeout. Every other pid stays refused. A test that exercises
-    `RealSystem` patches these same names with its own doubles; its
-    `monkeypatch.setattr` runs after this autouse fixture and wins.
+    Launches are refused in `subprocess.Popen.__init__` on the class itself, which
+    `run`, `call` and `check_output` all construct, so a reference to `Popen` captured
+    in a parameter default (`proc.stream`, `ollama.start_ollama`) is refused too.
+    Signals are refused by replacing the name `os.kill`. A builtin cannot be guarded
+    any deeper, so the defaults that captured the real one before this fixture ran
+    (`ollama.stop_ollama`, `ollama.ensure_ollama`) are a gap until that module stops
+    taking a `kill` parameter. `test_no_function_captures_a_real_launcher_or_signal_as_a_default`
+    fails on any new capture.
+
+    A `real_subprocess` test may start a child, and may signal only a child it
+    started: `subprocess.run` kills its own child on a timeout. Its registered
+    description limits it to the test interpreter, but that is a convention: the
+    guard does not check the program. A test that exercises `RealSystem` patches
+    `subprocess.Popen` or `os.kill` with its own double; its `monkeypatch.setattr`
+    runs after this autouse fixture and wins.
     """
     if node.get_closest_marker("canary") is not None:
         return
     children: set[int] = set()
     real_kill = os.kill
+    real_init = vars(subprocess.Popen)["__init__"]
+    marked = node.get_closest_marker("real_subprocess") is not None
 
-    def launcher(name: str) -> Any:
-        def refuse(*args: Any, **kwargs: Any) -> Any:
+    def guarded_init(self: subprocess.Popen[Any], *args: Any, **kwargs: Any) -> None:
+        if not marked:
             argv = args[0] if args else kwargs.get("args", "<unknown>")
-            raise RealProcessCall(f"test started a real process via {name}: {argv}")
-
-        return refuse
+            raise RealProcessCall(f"test started a real process: {argv}")
+        real_init(self, *args, **kwargs)
+        children.add(self.pid)
 
     def guarded_kill(pid: int, sig: int) -> None:
         if pid not in children:
             raise RealProcessCall(f"test sent a real signal {sig} to pid {pid}")
         real_kill(pid, sig)
 
-    if node.get_closest_marker("real_subprocess") is None:
-        for name in ("run", "call", "Popen"):
-            monkeypatch.setattr(subprocess, name, launcher(f"subprocess.{name}"))
-    else:
-
-        class RecordedPopen(subprocess.Popen):  # type: ignore[type-arg]
-            """`subprocess.Popen`, noting each pid so the test may signal only its own."""
-
-            def __init__(self, *args: Any, **kwargs: Any) -> None:
-                super().__init__(*args, **kwargs)
-                children.add(self.pid)
-
-        # `run` and `call` build their child through the module's `Popen`.
-        monkeypatch.setattr(subprocess, "Popen", RecordedPopen)
+    monkeypatch.setattr(subprocess.Popen, "__init__", guarded_init)
     monkeypatch.setattr(os, "kill", guarded_kill)
 
 

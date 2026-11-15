@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
+import inspect
 import os
+import pkgutil
 import re
 import signal
 import subprocess
@@ -15,6 +18,7 @@ from typing import Any
 import pytest
 from conftest import REAL_URLOPEN, RealNetworkCall, RealProcessCall, guard_network
 
+import lepika
 from lepika import detect, health, system
 
 
@@ -45,6 +49,48 @@ def test_a_real_subprocess_fails_the_test(launch: str) -> None:
 def test_a_real_signal_fails_the_test() -> None:
     with pytest.raises(RealProcessCall, match="pid 4242"):
         os.kill(4242, 15)
+
+
+# Taken at import, before any fixture runs: the way a parameter default captures them.
+_POPEN_AT_IMPORT = subprocess.Popen
+_REAL_EFFECTS = (subprocess.Popen, subprocess.run, subprocess.call, os.kill)
+
+
+def test_the_real_system_cannot_stream_a_real_child() -> None:
+    with pytest.raises(RealProcessCall, match=re.escape(sys.executable)):
+        system.REAL.stream([sys.executable, "-c", "pass"])
+
+
+def test_a_launcher_captured_before_the_guard_is_still_refused() -> None:
+    with pytest.raises(RealProcessCall, match="lepika-guard-probe"):
+        _POPEN_AT_IMPORT(["lepika-guard-probe", "--help"])
+
+
+# The parameter defaults that hold a real launcher or `os.kill` today. Each goes when
+# its module takes a `System`; a new one fails the test below.
+_KNOWN_CAPTURES = {
+    ("lepika.ollama", "ensure_ollama", "kill"),
+    ("lepika.ollama", "ensure_ollama", "popen"),
+    ("lepika.ollama", "start_ollama", "popen"),
+    ("lepika.ollama", "stop_ollama", "kill"),
+    ("lepika.proc", "stream", "popen"),
+}
+
+
+def test_no_function_captures_a_real_launcher_or_signal_as_a_default() -> None:
+    # A module first imported under the guard captures the guard's stand-ins
+    # instead, so those count too: the finding must not depend on import order.
+    effects = (*_REAL_EFFECTS, subprocess.Popen, subprocess.run, subprocess.call, os.kill)
+    found: set[tuple[str, str, str]] = set()
+    for info in pkgutil.walk_packages(lepika.__path__, "lepika."):
+        module = importlib.import_module(info.name)
+        for name, func in inspect.getmembers(module, inspect.isfunction):
+            if func.__module__ != module.__name__:
+                continue
+            for param in inspect.signature(func).parameters.values():
+                if any(param.default is effect for effect in effects):
+                    found.add((module.__name__, name, param.name))
+    assert found == _KNOWN_CAPTURES
 
 
 @pytest.mark.real_subprocess

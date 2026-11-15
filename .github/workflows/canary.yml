@@ -1,0 +1,70 @@
+name: Upstream canary
+
+# LePika reads other programs' output (Ollama's pull errors, the `hf` CLI, `ps`) and
+# tracks their latest versions. The unit suite fakes all of them, so this job runs
+# LePika's own classification against the real ones and opens an issue when they drift.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Monday 06:00 UTC
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/canary.yml"
+      - "tests/canary/**"
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      UV_PYTHON: "3.13"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+      - name: Wait for the Ollama API
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -fsS --max-time 2 http://127.0.0.1:11434/api/version; then exit 0; fi
+            sleep 2
+          done
+          echo "Ollama did not answer on 127.0.0.1:11434 after 60 tries (about four minutes)" >&2
+          exit 1
+      - name: Sync dependencies
+        run: uv sync --dev
+      - name: Canary
+        run: uv run pytest -m canary tests/canary -v
+
+  # Its own job so the token that can write issues never shares a runner with the
+  # third-party installer or the test code above.
+  report:
+    needs: canary
+    # `failure()` is false for a run that hit `timeout-minutes` (recorded as cancelled),
+    # and a hung upstream is exactly the case worth hearing about.
+    if: ${{ always() && github.event_name == 'schedule' && (needs.canary.result == 'failure' || needs.canary.result == 'cancelled') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Report the failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: Upstream canary failed
+        run: |
+          body="The scheduled upstream canary failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "\"$TITLE\" in:title" --json number,title \
+            --jq "map(select(.title == env.TITLE)) | .[0].number // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$body"
+          fi

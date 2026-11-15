@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import re
 import subprocess
+import tomllib
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import RealNetworkCall
+from conftest import REAL_URLOPEN, RealNetworkCall, guard_network
 
 from lepika import detect, express
 
@@ -40,3 +42,22 @@ def test_dockers_memory_is_never_asked_of_the_real_docker(monkeypatch: pytest.Mo
     monkeypatch.setattr(subprocess, "run", spawned)
     monkeypatch.setattr(subprocess, "Popen", spawned)
     assert detect.docker_memory_gb() == 0.0
+
+
+def test_canary_tests_are_deselected_by_default(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The canary talks to real upstreams, so the default run must leave it out — and
+    the network guard must step aside for it, and only for it."""
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    options = tomllib.loads(pyproject.read_text(encoding="utf-8"))["tool"]["pytest"]
+    assert "not canary" in options["ini_options"]["addopts"]
+
+    # This test is unmarked, so the guard is in place.
+    assert urllib.request.urlopen is not REAL_URLOPEN
+
+    # The same node, marked canary, is left with the real opener.
+    monkeypatch.setattr(urllib.request, "urlopen", REAL_URLOPEN)
+    request.node.add_marker(pytest.mark.canary)
+    guard_network(request.node, monkeypatch)
+    assert urllib.request.urlopen is REAL_URLOPEN

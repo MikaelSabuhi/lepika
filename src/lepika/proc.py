@@ -10,21 +10,13 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from lepika.errors import FriendlyError
+from lepika.errors import CommandNotFound, FriendlyError
 from lepika.log import LOG_FILE, get_logger
 from lepika.paths import logs_dir
 
 
 def _log_path() -> Path:
     return logs_dir() / LOG_FILE
-
-
-def not_found(name: str) -> FriendlyError:
-    """What a command that is not installed means to the user, wherever it surfaced."""
-    return FriendlyError(
-        f"Command not found: {name}",
-        f"Install {name} or run `lepika doctor` for setup help.",
-    )
 
 
 def run_logged(
@@ -52,7 +44,7 @@ def run_logged(
         )
     except FileNotFoundError as exc:
         logger.error("proc.run", cmd=list(cmd), outcome="not found", output=str(exc))
-        raise not_found(cmd[0]) from exc
+        raise CommandNotFound(cmd[0]) from exc
     except subprocess.TimeoutExpired as exc:
         logger.error(
             "proc.run",
@@ -98,7 +90,7 @@ def call(cmd: Sequence[str]) -> int:
         code = subprocess.call(list(cmd))
     except FileNotFoundError as exc:
         logger.error("proc.call", cmd=list(cmd), outcome="not found", output=str(exc))
-        raise not_found(cmd[0]) from exc
+        raise CommandNotFound(cmd[0]) from exc
     if code == 0:
         logger.info("proc.call", cmd=list(cmd), exit=code)
     else:
@@ -137,7 +129,7 @@ def stream(
         )
     except FileNotFoundError as exc:
         get_logger().error("proc.stream", cmd=list(cmd), outcome="not found", output=str(exc))
-        raise not_found(cmd[0]) from exc
+        raise CommandNotFound(cmd[0]) from exc
     tail: deque[str] = deque(maxlen=40)
     pending = b""
     with child:

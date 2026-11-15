@@ -15,7 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from rich.console import Console
 
-from lepika import detect, engine, express, log, models, proc, prompts
+from lepika import detect, engine, express, fsio, log, models, proc, prompts
 from lepika.backend import UpdateStep
 from lepika.config import Config
 from lepika.detect import SystemInfo
@@ -120,16 +120,8 @@ def write_env(path: Path, values: dict[str, str]) -> None:
     """Merge `values` into .env, keep everything else, write privately and atomically."""
     merged = read_env(path) | values
     body = "".join(f"{k}={_quote(v)}\n" for k, v in merged.items())
-    tmp = path.with_name(path.name + ".tmp")
-    # The file holds the API key and an HF token, so it is private from the first
-    # byte rather than chmod'ed once the secrets are already on disk. fchmod also
-    # tightens a stale tmp file left world-readable by an interrupted run.
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    if hasattr(os, "fchmod"):  # POSIX only; Windows ignores mode bits entirely
-        os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(body)
-    os.replace(tmp, path)
+    # Private, because the file holds the API key and an HF token.
+    fsio.write_private(path, body)
     # Key names only: the values are exactly what must never reach the log.
     log.get_logger().info("env.write", path=str(path), keys=sorted(values))
 

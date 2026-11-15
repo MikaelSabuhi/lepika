@@ -11,3 +11,13 @@ class FriendlyError(Exception):
         self.problem = problem
         self.fix = fix
         super().__init__(problem)
+
+
+class CommandNotFound(FriendlyError):
+    """A program LePika runs is not installed, wherever that surfaced."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(
+            f"Command not found: {name}",
+            f"Install {name} or run `lepika doctor` for setup help.",
+        )

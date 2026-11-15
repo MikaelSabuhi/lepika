@@ -9,9 +9,7 @@ import secrets
 import shlex
 import shutil
 import signal
-import socket
 import subprocess
-import sys
 import time
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -19,21 +17,19 @@ from itertools import pairwise
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from lepika import detect, log, proc
+from lepika import detect, fsio, log, proc
 from lepika.backend import UpdateStep
 from lepika.config import DEFAULT_CONTEXT_LENGTH, Config, config_path
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.paths import lepika_home, logs_dir, openwebui_data_dir, pid_file
+from lepika.system import _bind_address, _detach_kwargs, _effective_uid
 
 RunFn = Callable[..., Any]
 WhichFn = Callable[[str], str | None]
 PopenFn = Callable[..., Any]
 SleepFn = Callable[[float], None]
 CallFn = Callable[[list[str]], int]
-
-# Windows: DETACHED_PROCESS (0x8) | CREATE_NEW_PROCESS_GROUP (0x200)
-_WINDOWS_DETACH_FLAGS = 0x00000208
 
 # The interpreter OpenWebUI is installed on AND run on — both, or `uv tool run`
 # builds an ephemeral environment on the system Python instead of reusing the
@@ -79,14 +75,6 @@ _OLLAMA_VERSION = re.compile(r"version is (\S+)")
 _OPENWEBUI_VERSION = re.compile(r"^open-webui v(\S+)", re.MULTILINE)
 
 
-def _effective_uid() -> int:
-    # Windows has no `os.geteuid`. Nothing asks there; the branch keeps the module
-    # importable and type-checkable on every platform.
-    if sys.platform == "win32":
-        return -1
-    return os.geteuid()
-
-
 def _systemctl(*args: str, euid: int | None = None) -> list[str]:
     """`systemctl` changing a system unit: through `sudo` unless LePika already is root.
 
@@ -95,12 +83,6 @@ def _systemctl(*args: str, euid: int | None = None) -> list[str]:
     """
     uid = euid if euid is not None else _effective_uid()
     return ["systemctl", *args] if uid == 0 else ["sudo", "systemctl", *args]
-
-
-def _detach_kwargs(os_name: str) -> dict[str, Any]:
-    if os_name == "windows":
-        return {"creationflags": _WINDOWS_DETACH_FLAGS}
-    return {"start_new_session": True}
 
 
 def install_ollama(
@@ -405,35 +387,12 @@ def install_openwebui(run: RunFn = proc.run_logged) -> None:
     run(["uv", "tool", "install", "--python", OPENWEBUI_PYTHON, "open-webui"])
 
 
-# Only defined on Windows, so it is looked up rather than referenced.
-_WINDOWS_EXCLUSIVE_ADDR = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
-
 # A server can hold a port on the wildcard address or on loopback alone, and on
 # macOS a loopback bind succeeds straight over an existing 0.0.0.0 listener. Both
 # are probed, because either one is a real conflict.
 # B104 suppressed: these are bind probes, closed immediately without listening.
 # Detecting a conflict on the wildcard address requires naming it.
 _PROBE_ADDRESSES = ("0.0.0.0", "127.0.0.1")  # nosec B104
-
-
-def _bind_address(address: str, port: int) -> bool:
-    """Try to bind one address, reporting whether the port was available there."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        if os.name == "nt" and _WINDOWS_EXCLUSIVE_ADDR is not None:
-            # Windows' SO_REUSEADDR lets two sockets own the same port outright,
-            # which would hide every conflict. SO_EXCLUSIVEADDRUSE asks for the
-            # exclusivity that POSIX gives by default.
-            sock.setsockopt(socket.SOL_SOCKET, _WINDOWS_EXCLUSIVE_ADDR, 1)
-        else:
-            # SO_REUSEADDR matches what the OpenWebUI server itself sets, so a port
-            # left in TIME_WAIT by the previous run reads as free here exactly as
-            # it would there.
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind((address, port))
-        except OSError:
-            return False
-    return True
 
 
 def _bind_once(
@@ -483,17 +442,7 @@ def _webui_secret(data_dir: Path) -> str:
     if existing:
         return existing
     secret = secrets.token_urlsafe(32)
-    tmp = path.with_suffix(".tmp")
-    # Private from the first byte, exactly as `config.save` writes the API key:
-    # the mode is set when the file is created, not chmod'ed once the secret is
-    # already on disk, and fchmod also tightens a stale tmp file that an
-    # interrupted run left world-readable.
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    if hasattr(os, "fchmod"):  # POSIX only; Windows ignores mode bits entirely
-        os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(secret + "\n")
-    os.replace(tmp, path)
+    fsio.write_private(path, secret + "\n")
     return secret
 
 

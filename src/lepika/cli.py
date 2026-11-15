@@ -20,9 +20,9 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from lepika import acquire, config, detect, engine, express, log, models, paths, proc, server
+from lepika import acquire, config, detect, engine, express, log, models, paths, server
 from lepika.backend import UpdateStep
-from lepika.errors import ISSUES_URL, FriendlyError
+from lepika.errors import ISSUES_URL, CommandNotFound, FriendlyError
 
 app = typer.Typer(
     help="One command → local AI chat in your browser.",
@@ -594,7 +594,7 @@ def run() -> None:
             # A bare name that is nowhere on disk is a program looked up on PATH: one
             # that is not installed. A bare name that exists — a dangling link in the
             # folder `model import .` reads — is a file.
-            missing = proc.not_found(path)
+            missing = CommandNotFound(path)
             _fail(missing.problem, missing.fix)
             raise SystemExit(1) from exc
         _fail(

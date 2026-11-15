@@ -37,6 +37,7 @@ _METHODS = (
     "can_bind",
     "open_browser",
     "euid",
+    "can_write",
     "disk_free",
     "ram_bytes",
 )
@@ -298,6 +299,39 @@ def test_detach_flags_for_windows_and_posix() -> None:
     # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     assert system._detach_kwargs("windows") == {"creationflags": 0x00000208}
     assert system._detach_kwargs("posix") == {"start_new_session": True}
+
+
+def test_can_write_asks_the_filesystem(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    asked: list[tuple[Any, int]] = []
+
+    def access(path: Any, mode: int) -> bool:
+        asked.append((path, mode))
+        return path == tmp_path
+
+    monkeypatch.setattr(os, "access", access)
+    assert REAL.can_write(tmp_path) is True
+    assert REAL.can_write(tmp_path / "elsewhere") is False
+    assert asked == [(tmp_path, os.W_OK), (tmp_path / "elsewhere", os.W_OK)]
+
+
+def test_fake_system_answers_can_write(tmp_path: Path) -> None:
+    assert FakeSystem().can_write(tmp_path) is True
+    assert FakeSystem(writable=False).can_write(tmp_path) is False
+    per_path = FakeSystem(writable=lambda path: path == tmp_path)
+    assert per_path.can_write(tmp_path) is True
+    assert per_path.can_write(tmp_path / "other") is False
+    assert per_path.write_probes == [tmp_path, tmp_path / "other"]
+
+
+def test_overlay_supplies_an_injected_uid(tmp_path: Path) -> None:
+    base = FakeSystem(euid=1000, writable=False)
+    assert system.overlay(base, euid=0).euid() == 0
+    assert system.overlay(base, euid=501).euid() == 501
+    # None is "not injected": the base's answer, including the base having none.
+    assert system.overlay(base).euid() == 1000
+    assert system.overlay(FakeSystem(euid=None)).euid() is None
+    assert system.overlay(base, euid=0).can_write(tmp_path) is False
+    assert base.write_probes == [tmp_path]
 
 
 def test_euid_is_none_where_the_platform_has_none(monkeypatch: pytest.MonkeyPatch) -> None:

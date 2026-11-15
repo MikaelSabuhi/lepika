@@ -150,7 +150,8 @@ class FakeSystem:
     `while_running` is handed the argv of each `run` the same way, before it returns:
     a test can leave behind what the real command would have written.
     `bindable` answers every port probe alike, or, as a callable, per address and
-    port. `signal_errors` is raised, after recording, for a signal sent to that pid.
+    port. `writable` answers every `can_write` alike, or, as a callable, per path.
+    `signal_errors` is raised, after recording, for a signal sent to that pid.
     """
 
     def __init__(
@@ -166,6 +167,7 @@ class FakeSystem:
         euid: int | None = 1000,
         free: int = 10**12,
         bindable: bool | Callable[[str, int], bool] = True,
+        writable: bool | Callable[[Path], bool] = True,
         signal_errors: dict[int, BaseException] | None = None,
         missing: set[str] | None = None,
         ram_bytes: int | None = 16 * 2**30,
@@ -185,6 +187,7 @@ class FakeSystem:
         self.uid = euid
         self.free = free
         self.bindable = bindable
+        self.writable = writable
         self.signal_errors = signal_errors or {}
         self.missing = missing or set()
         self.memory = ram_bytes
@@ -196,6 +199,7 @@ class FakeSystem:
         self.spawned: list[tuple[list[str], Mapping[str, str], Path]] = []
         self.signals: list[tuple[int, int]] = []
         self.bind_probes: list[tuple[str, int]] = []
+        self.write_probes: list[Path] = []
         self.slept: list[float] = []
         self.requested: list[urllib.request.Request] = []
         self.request_timeouts: list[float] = []
@@ -299,6 +303,12 @@ class FakeSystem:
 
     def euid(self) -> int | None:
         return self.uid
+
+    def can_write(self, path: Path) -> bool:
+        self.write_probes.append(path)
+        if callable(self.writable):
+            return self.writable(path)
+        return self.writable
 
     def disk_free(self, path: Path) -> int:
         return self.free

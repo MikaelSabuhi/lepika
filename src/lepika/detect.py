@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from lepika import proc
 from lepika.errors import ISSUES_URL, FriendlyError
+from lepika.system import _global_memory_status
 
 OsName = Literal["macos", "linux", "windows"]
 Gpu = Literal["apple", "nvidia", "none"]
@@ -106,29 +107,6 @@ def docker_memory_gb(run: RunFn = proc.run_logged) -> float:
     except FriendlyError:
         return 0.0
     return int(output) / 2**30 if output.isdecimal() else 0.0
-
-
-def _global_memory_status() -> tuple[bool, int]:  # pragma: no cover - Windows only
-    """Call GlobalMemoryStatusEx, returning (succeeded, total physical bytes)."""
-    import ctypes
-
-    class MemoryStatusEx(ctypes.Structure):
-        _fields_ = [
-            ("dwLength", ctypes.c_ulong),
-            ("dwMemoryLoad", ctypes.c_ulong),
-            ("ullTotalPhys", ctypes.c_ulonglong),
-            ("ullAvailPhys", ctypes.c_ulonglong),
-            ("ullTotalPageFile", ctypes.c_ulonglong),
-            ("ullAvailPageFile", ctypes.c_ulonglong),
-            ("ullTotalVirtual", ctypes.c_ulonglong),
-            ("ullAvailVirtual", ctypes.c_ulonglong),
-            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-        ]
-
-    stat = MemoryStatusEx()
-    stat.dwLength = ctypes.sizeof(MemoryStatusEx)
-    ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))  # type: ignore[attr-defined]
-    return bool(ok), int(stat.ullTotalPhys)
 
 
 def _memory_error() -> FriendlyError:

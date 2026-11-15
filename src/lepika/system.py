@@ -63,6 +63,29 @@ def _bind_address(address: str, port: int) -> bool:
     return True
 
 
+def _global_memory_status() -> tuple[bool, int]:  # pragma: no cover - Windows only
+    """Call GlobalMemoryStatusEx, returning (succeeded, total physical bytes)."""
+    import ctypes
+
+    class MemoryStatusEx(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    stat = MemoryStatusEx()
+    stat.dwLength = ctypes.sizeof(MemoryStatusEx)
+    ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))  # type: ignore[attr-defined]
+    return bool(ok), int(stat.ullTotalPhys)
+
+
 class Response(Protocol):
     """What `open_url` hands back: the part of an HTTP response LePika reads."""
 

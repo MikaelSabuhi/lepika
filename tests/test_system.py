@@ -458,6 +458,19 @@ def test_fake_response_reads_iterates_and_closes() -> None:
         FakeResponse(b"", fails=TimeoutError("timed out")).read()
 
 
+def test_fake_system_hands_a_streaming_command_its_working_directory(tmp_path: Path) -> None:
+    seen: list[tuple[list[str], Path | None, str]] = []
+
+    def look(cmd: list[str], cwd: Path | None) -> None:
+        assert cwd is not None
+        seen.append((cmd, cwd, (cwd / "Modelfile").read_text()))
+
+    (tmp_path / "Modelfile").write_text("FROM .\n")
+    fake = FakeSystem(stream=(0, "done"), while_streaming=look)
+    assert fake.stream(["ollama", "create", "m"], cwd=tmp_path) == (0, "done")
+    assert seen == [(["ollama", "create", "m"], tmp_path, "FROM .\n")]
+
+
 def test_fake_system_records_the_timeout_of_each_request() -> None:
     fake = FakeSystem(urls=lambda request: FakeResponse(b""))
     fake.open_url(urllib.request.Request("http://x/1"), timeout=5)

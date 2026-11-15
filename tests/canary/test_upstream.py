@@ -50,15 +50,15 @@ def _no_stored_token(tmp_path: Path) -> System:
 def test_pull_of_the_smallest_curated_model_succeeds() -> None:
     curated = models.load_curated(fetch_remote=False, sys=system.REAL)
     smallest = min(curated, key=lambda m: m.min_ram_gb)
-    engine.pull_model(OLLAMA_URL, models.parse_model_ref(smallest.ref))
-    installed = [name for name, _size in engine.list_models(OLLAMA_URL)]
+    engine.pull_model(OLLAMA_URL, models.parse_model_ref(smallest.ref), sys=system.REAL)
+    installed = [name for name, _size in engine.list_models(OLLAMA_URL, sys=system.REAL)]
     assert any(engine.same_model(name, smallest.ref) for name in installed), installed
 
 
 def test_a_repo_without_gguf_is_classified_not_gguf() -> None:
     ref = models.parse_model_ref(f"hf.co/{SAFETENSORS_REPO}")
     with pytest.raises(engine.NotGGUF):
-        engine.pull_model(OLLAMA_URL, ref)
+        engine.pull_model(OLLAMA_URL, ref, sys=system.REAL)
 
 
 def test_preflight_of_a_public_repo_lists_files(tmp_path: Path) -> None:
@@ -90,7 +90,7 @@ def test_a_running_ollama_is_recognised_by_pid() -> None:
 
 
 def test_the_engine_reports_a_version_lepika_can_compare() -> None:
-    parsed = engine._version_tuple(engine.version(OLLAMA_URL))
+    parsed = engine._version_tuple(engine.version(OLLAMA_URL, sys=system.REAL))
     assert len(parsed) >= 3
     assert all(isinstance(part, int) for part in parsed)
     # `_version_tuple` pads with zeros, so a version string with no numbers in it

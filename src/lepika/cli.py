@@ -128,7 +128,7 @@ def status() -> None:
     table.add_row("Mode", cfg.mode)
     vllm = server.vllm_active(cfg)
     engine_ok = (
-        engine.vllm_up(server.VLLM_URL)
+        engine.vllm_up(server.VLLM_URL, sys=system.REAL)
         if vllm
         else detect.api_up(cfg.engine_url, key=cfg.engine_key)
     )
@@ -499,7 +499,9 @@ def model_list() -> None:
     """List downloaded models."""
     cfg = config.load()
     _refuse_ollama_only(cfg, "there is no Ollama model list to show.")
-    installed = engine.list_models(cfg.engine_url, key=cfg.engine_key, managed=cfg.engine_managed)
+    installed = engine.list_models(
+        cfg.engine_url, key=cfg.engine_key, managed=cfg.engine_managed, sys=system.REAL
+    )
     if not installed:
         console.print("No models yet — run `lepika model add`.", markup=False)
         return
@@ -519,7 +521,9 @@ def model_rm(
     """Remove a downloaded model."""
     cfg = config.load()
     _refuse_ollama_only(cfg, "there is nothing to remove from Ollama.")
-    engine.delete_model(cfg.engine_url, name, key=cfg.engine_key, managed=cfg.engine_managed)
+    engine.delete_model(
+        cfg.engine_url, name, key=cfg.engine_key, managed=cfg.engine_managed, sys=system.REAL
+    )
     console.print(f"[green]✓ Removed:[/green] {escape(name)}")
     if cfg.model and engine.same_model(name, cfg.model):
         # A config still naming a model the engine no longer has makes `status`

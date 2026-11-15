@@ -135,6 +135,8 @@ class FakeSystem:
     `stdout`, `codes` and `raises` answer by the leading words of the argv: a
     matching `run`, `call` or `stream` is recorded, then raises (a timeout, say).
     A program named in `missing` is not installed for every launcher alike.
+    `while_streaming` is handed the argv and cwd of each `stream` while it "runs":
+    a working directory the caller stages is often gone once the call returns.
     """
 
     def __init__(
@@ -153,8 +155,10 @@ class FakeSystem:
         missing: set[str] | None = None,
         ram_bytes: int | None = 16 * 2**30,
         raises: dict[str, BaseException] | None = None,
+        while_streaming: Callable[[list[str], Path | None], None] | None = None,
     ) -> None:
         self.stdout = stdout or {}
+        self.while_streaming = while_streaming
         self.codes = codes or {}
         self.paths = which or {}
         self.environ: Mapping[str, str] = environ if environ is not None else {}
@@ -237,6 +241,8 @@ class FakeSystem:
             (list(cmd), {"env": dict(env) if env is not None else None, "cwd": cwd})
         )
         self._start(cmd)
+        if self.while_streaming is not None:
+            self.while_streaming(list(cmd), cwd)
         return self.stream_answer
 
     def spawn(self, cmd: Sequence[str], *, env: Mapping[str, str], log: Path) -> int:

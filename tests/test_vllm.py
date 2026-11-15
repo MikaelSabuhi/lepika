@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import Caller, Runner
+from fakes import Caller, FakeResponse, FakeSystem, Runner, routes
 from typer.testing import CliRunner
 
 from lepika import cli, config, detect, doctor, engine, express, models, paths, server, wizard
@@ -84,21 +84,15 @@ def test_profiles_and_env_switch_to_vllm() -> None:
 
 
 def test_vllm_up_probes_health() -> None:
-    seen: list[Any] = []
-
-    def opener(req: Any, timeout: float = 0) -> Any:
-        seen.append(req.full_url)
-        return object()
-
-    assert engine.vllm_up("http://127.0.0.1:8000", urlopen=opener) is True
-    assert seen == ["http://127.0.0.1:8000/health"]
+    sys = FakeSystem(urls=routes({"http://127.0.0.1:8000/health": FakeResponse()}))
+    assert engine.vllm_up("http://127.0.0.1:8000", sys=sys) is True
+    assert [r.full_url for r in sys.requested] == ["http://127.0.0.1:8000/health"]
 
 
 def test_vllm_up_is_false_when_nothing_answers() -> None:
-    def opener(req: Any, timeout: float = 0) -> Any:
-        raise OSError("connection refused")
-
-    assert engine.vllm_up("http://127.0.0.1:8000", urlopen=opener) is False
+    refused = OSError("connection refused")
+    sys = FakeSystem(urls=routes({"http://127.0.0.1:8000/health": refused}))
+    assert engine.vllm_up("http://127.0.0.1:8000", sys=sys) is False
 
 
 def test_start_stack_waits_for_vllm_not_ollama(isolated_home: Path) -> None:

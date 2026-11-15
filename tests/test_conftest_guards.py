@@ -73,10 +73,6 @@ def test_a_launcher_captured_before_the_guard_is_still_refused() -> None:
 # The parameter defaults that hold a real launcher or `os.kill` today. Each goes when
 # its module takes a `System`; a new one fails the test below.
 _KNOWN_CAPTURES = {
-    ("lepika.ollama", "ensure_ollama", "kill"),
-    ("lepika.ollama", "ensure_ollama", "popen"),
-    ("lepika.ollama", "start_ollama", "popen"),
-    ("lepika.ollama", "stop_ollama", "kill"),
     ("lepika.proc", "stream", "popen"),
 }
 

@@ -111,6 +111,8 @@ def test_wizard_in_server_mode_uses_the_server_backend(
     monkeypatch.setattr(express, "start_stack", lambda *a, **k: pytest.fail("wrong backend"))
     # Leaving Express stops its stack: nothing of it runs here.
     monkeypatch.setattr(express, "stop", lambda info, cfg, **k: False)
+    # Nor did LePika start an Ollama here: there is none to stop.
+    monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: False)
     monkeypatch.setattr(cli, "_open_browser", lambda url: events.append("browser"))
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
@@ -126,6 +128,8 @@ def test_mode_flag_skips_the_question(monkeypatch: pytest.MonkeyPatch, isolated_
     monkeypatch.setattr(server, "start_stack", started)
     # Leaving Express stops its stack: nothing of it runs here.
     monkeypatch.setattr(express, "stop", lambda info, cfg, **k: False)
+    # Nor did LePika start an Ollama here: there is none to stop.
+    monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: False)
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: None)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
     result = runner.invoke(cli.app, ["--mode", "server"])
@@ -181,6 +185,8 @@ def switching(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> list[str]
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(express, "stop", lambda info, cfg, **k: stops.append("express") or True)
     monkeypatch.setattr(server, "stop", lambda info, cfg, **k: stops.append("server") or True)
+    # No native Ollama of LePika's runs; a test about that stop replaces this.
+    monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: False)
     monkeypatch.setattr(express, "start_stack", started)
     monkeypatch.setattr(server, "start_stack", started)
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: None)

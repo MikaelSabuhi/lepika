@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import Caller
+from fakes import Caller, FakeSystem
 
 from lepika import config, detect, express, health, ollama, openwebui, paths
 from lepika.backend import UpdateStep
@@ -74,7 +74,7 @@ def restarts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(
         ollama, "stop_ollama", lambda os_name, url, **k: seen.append("stop") or True
     )
-    monkeypatch.setattr(ollama, "start_ollama", lambda os_name, **k: seen.append("start"))
+    monkeypatch.setattr(ollama, "start_ollama", lambda **k: seen.append("start"))
     monkeypatch.setattr(health, "wait_for", lambda pred, secs, what, **k: None)
     return seen
 
@@ -423,7 +423,8 @@ def test_update_on_macos_asks_brew_before_upgrading(restarts: list[str]) -> None
     run = Seq({"brew outdated": (1, "ollama\n"), "ollama --version": _version("0.34.0")})
     _update(_info("macos"), run, running="0.34.0")
     upgrades = [kw for c, kw in run.calls if c == ["brew", "upgrade", "ollama"]]
-    assert upgrades == [{"check": True}]
+    # Checked; everything else is the runner's default.
+    assert upgrades == [{"check": True, "env": None, "timeout": None, "log": True, "ok": (0,)}]
     # That answer is expected, so `run_logged` records no failure for it.
     asked = [kw for c, kw in run.calls if c[:2] == ["brew", "outdated"]]
     assert asked and all(1 in kw["ok"] for kw in asked)
@@ -484,22 +485,25 @@ def test_update_skips_the_engine_entirely_when_it_is_remote(restarts: list[str])
     assert [s.component for s in steps] == ["OpenWebUI"]
 
 
+def _binary_version(answer: str | BaseException) -> str | None:
+    if isinstance(answer, BaseException):
+        return ollama.ollama_binary_version(sys=FakeSystem(raises={"ollama": answer}))
+    return ollama.ollama_binary_version(sys=FakeSystem(stdout={"ollama": answer}))
+
+
 def test_ollama_binary_version_reads_both_spellings() -> None:
-    assert ollama.ollama_binary_version(Seq({"ollama": "ollama version is 0.40.16\n"})) == (
-        "0.40.16"
-    )
+    assert _binary_version("ollama version is 0.40.16\n") == "0.40.16"
     no_engine = "Warning: could not connect to a running Ollama instance\n"
     no_engine += "Warning: client version is 0.40.16\n"
-    assert ollama.ollama_binary_version(Seq({"ollama": no_engine})) == "0.40.16"
-    assert ollama.ollama_binary_version(Seq({"ollama": ""})) is None
-    missing = Seq({"ollama": FriendlyError("Command not found: ollama", "install it")})
-    assert ollama.ollama_binary_version(missing) is None
+    assert _binary_version(no_engine) == "0.40.16"
+    assert _binary_version("") is None
+    assert _binary_version(FriendlyError("Command not found: ollama", "install it")) is None
 
 
 def test_ollama_binary_version_reads_the_client_line_when_both_are_printed() -> None:
     """A running engine older than the binary prints both: the client line is the binary."""
     both = "ollama version is 0.33.2\nWarning: client version is 0.34.0\n"
-    assert ollama.ollama_binary_version(Seq({"ollama": both})) == "0.34.0"
+    assert _binary_version(both) == "0.34.0"
 
 
 def test_update_stops_its_engine_with_the_configured_key(

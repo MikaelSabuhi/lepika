@@ -2,33 +2,17 @@
 
 from __future__ import annotations
 
-import functools
-import os
 import re
-import shutil
 import signal
-import subprocess
-import time
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
-from typing import Any
 
-from lepika import health, log, proc, system
+from lepika import health, log
 from lepika.config import DEFAULT_CONTEXT_LENGTH, DEFAULT_ENGINE_URL, Config
 from lepika.detect import SystemInfo
-from lepika.errors import FriendlyError
+from lepika.errors import CommandNotFound, FriendlyError
 from lepika.paths import lepika_home, logs_dir, pid_file
-from lepika.system import _detach_kwargs, _effective_uid
-
-RunFn = Callable[..., Any]
-WhichFn = Callable[[str], str | None]
-PopenFn = Callable[..., Any]
-SleepFn = Callable[[float], None]
-CallFn = Callable[[list[str]], int]
-
-# The default probe, bound once at import as the bare function used to be: a test
-# that patches `health.api_up` does not reach a default, and still must not.
-_REAL_API_UP = functools.partial(health.api_up, sys=system.REAL)
+from lepika.system import System
 
 # The official Linux installer, which both installs and upgrades in place.
 OLLAMA_INSTALL_SCRIPT = "curl -fsSL https://ollama.com/install.sh | sh"
@@ -70,26 +54,20 @@ _UNIT_FILE_STATES = frozenset(
 _OLLAMA_VERSION = re.compile(r"version is (\S+)")
 
 
-def _systemctl(*args: str, euid: int | None = None) -> list[str]:
+def _systemctl(*args: str, sys: System) -> list[str]:
     """`systemctl` changing a system unit: through `sudo` unless LePika already is root.
 
     A server whose root has a password may have no `sudo` at all — the Ollama install
-    script supports that — and root needs none. `euid` stands in for the real one.
+    script supports that — and root needs none. Only a uid of exactly 0 skips it: a
+    platform with no uid at all gets `sudo`, as it always has.
     """
-    uid = euid if euid is not None else _effective_uid()
-    return ["systemctl", *args] if uid == 0 else ["sudo", "systemctl", *args]
+    return ["systemctl", *args] if sys.euid() == 0 else ["sudo", "systemctl", *args]
 
 
-def install_ollama(
-    info: SystemInfo,
-    run: RunFn = proc.run_logged,
-    which: WhichFn = shutil.which,
-    call: CallFn = proc.call,
-    euid: int | None = None,
-) -> None:
+def install_ollama(info: SystemInfo, *, sys: System) -> None:
     if info.os == "macos":
-        if which("brew") is not None:
-            run(["brew", "install", "ollama"])
+        if sys.which("brew") is not None:
+            sys.run(["brew", "install", "ollama"])
         else:
             raise FriendlyError(
                 "Ollama is not installed and Homebrew was not found.",
@@ -98,7 +76,7 @@ def install_ollama(
     elif info.os == "linux":
         # Streamed, not captured: the official script may prompt for sudo, and a
         # password prompt hidden behind captured output looks like a hang.
-        code = call(["sh", "-c", OLLAMA_INSTALL_SCRIPT])
+        code = sys.call(["sh", "-c", OLLAMA_INSTALL_SCRIPT])
         # The binary on PATH, not the exit code, is what says the install worked.
         # The script runs under `set -e`, and everything past the point where the
         # engine lands — its own comment calls it optional — is the systemd setup
@@ -106,7 +84,7 @@ def install_ollama(
         # ("Reload daemon failed: Connection reset by peer") `systemctl enable`
         # aborts the script with a perfectly good engine already installed.
         if code != 0:
-            if which("ollama") is None:
+            if sys.which("ollama") is None:
                 raise FriendlyError(
                     "Ollama installation failed.",
                     "See https://ollama.com/download/linux for manual install steps.",
@@ -119,13 +97,13 @@ def install_ollama(
         # without systemd has nothing to disable. Streamed for the same reason as the
         # script; the outcome is deliberately ignored — a unit left running is a
         # nuisance, not a reason to fail an install whose engine is in place.
-        if which("systemctl") is not None:
+        if sys.which("systemctl") is not None:
             try:
-                call(_systemctl("disable", "--now", "ollama.service", euid=euid))
+                sys.call(_systemctl("disable", "--now", "ollama.service", sys=sys))
             except (FriendlyError, OSError):
                 log.get_logger().warning("ollama.install.unit_disable_failed")
     else:  # windows
-        run(
+        sys.run(
             [
                 "winget",
                 "install",
@@ -138,7 +116,7 @@ def install_ollama(
         )
 
 
-def ollama_env(context_length: int, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+def ollama_env(context_length: int, environ: Mapping[str, str]) -> dict[str, str]:
     """The environment `ollama serve` starts with: the shell's, plus the context length.
 
     Ollama has no config file; `OLLAMA_CONTEXT_LENGTH` is how its default context is
@@ -146,36 +124,23 @@ def ollama_env(context_length: int, environ: Mapping[str, str] | None = None) ->
     A value already in the shell wins over config.toml, as `HF_TOKEN` does in Server
     mode: what the user just exported is the freshest intent they have.
     """
-    env = dict(os.environ if environ is None else environ)
+    env = dict(environ)
     env.setdefault("OLLAMA_CONTEXT_LENGTH", str(context_length))
     return env
 
 
-def start_ollama(
-    os_name: str,
-    popen: PopenFn = subprocess.Popen,
-    context_length: int = DEFAULT_CONTEXT_LENGTH,
-    environ: Mapping[str, str] | None = None,
-) -> None:
-    env = ollama_env(context_length, environ)
-    log_file = (logs_dir() / "ollama.log").open("ab")
+def start_ollama(context_length: int = DEFAULT_CONTEXT_LENGTH, *, sys: System) -> None:
+    env = ollama_env(context_length, sys.environ)
     try:
-        proc_handle = popen(
-            ["ollama", "serve"],
-            stdout=log_file,
-            stderr=log_file,
-            env=env,
-            **_detach_kwargs(os_name),
-        )
-    except FileNotFoundError as exc:
-        log_file.close()
+        pid = sys.spawn(["ollama", "serve"], env=env, log=logs_dir() / "ollama.log")
+    except CommandNotFound as exc:
         raise FriendlyError(
             "Ollama is installed but not on your PATH yet.",
             "Close this terminal, open a new one, and run `lepika` again.",
         ) from exc
     # Recorded so a mode switch can tell the engine LePika started from one the
     # machine already ran: only a pid we wrote down is ever ours to stop.
-    pid_file("ollama").write_text(str(int(proc_handle.pid)))
+    pid_file("ollama").write_text(str(pid))
     # And what it was started with: Ollama has no way to ask an idle engine its
     # context length, and `lepika down` leaves this one running, so the next `up`
     # can only tell a changed setting from this record.
@@ -186,7 +151,7 @@ def _context_record() -> Path:
     return lepika_home() / "ollama.context"
 
 
-def _is_ollama_process(pid: int, os_name: str, run: RunFn) -> bool:
+def _is_ollama_process(pid: int, os_name: str, *, sys: System) -> bool:
     """Does this pid belong to an Ollama, or has the number been recycled?
 
     `ollama.pid` outlives `lepika down`, which leaves the engine running on purpose,
@@ -196,11 +161,11 @@ def _is_ollama_process(pid: int, os_name: str, run: RunFn) -> bool:
     """
     # log=False: a pure read, and a pid that is simply gone is not a failure.
     if os_name == "windows":
-        listed = run(
+        listed = sys.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], check=False, log=False
         )
         return "ollama" in str(listed.stdout).lower()
-    listed = run(["ps", "-p", str(pid), "-o", "comm="], check=False, log=False)
+    listed = sys.run(["ps", "-p", str(pid), "-o", "comm="], check=False, log=False)
     # `comm=` is a bare name on Linux and a full path on macOS; both end in the binary.
     return PurePosixPath(str(listed.stdout).strip()).name.startswith("ollama")
 
@@ -208,13 +173,12 @@ def _is_ollama_process(pid: int, os_name: str, run: RunFn) -> bool:
 def stop_ollama(
     os_name: str,
     url: str,
-    run: RunFn = proc.run_logged,
-    kill: Callable[[int, int], None] = os.kill,
-    api_up: Callable[..., bool] = _REAL_API_UP,
     key: str = "",
     attempts: int = 30,
-    sleep: SleepFn = time.sleep,
     rerun: str = "lepika --mode server",
+    *,
+    sys: System,
+    api_up: Callable[..., bool] | None = None,
 ) -> bool:
     """Stop the native Ollama LePika started — never one the machine already ran.
 
@@ -224,7 +188,17 @@ def stop_ollama(
 
     Three things must agree before anything is signalled: a pid file we wrote, an
     engine answering on `url`, and a process by that pid that really is an Ollama.
+
+    `api_up`, when given, is the "is the engine answering" probe in place of
+    `health.api_up` on `sys`: `express.update` still hands one in from its tests.
+    It is removed when `express` takes a `System` itself.
     """
+
+    def answering() -> bool:
+        if api_up is not None:
+            return api_up(url, key=key)
+        return health.api_up(url, key=key, sys=sys)
+
     pf = pid_file("ollama")
     if not pf.exists():
         # Homebrew, systemd, or the tray app started it: not ours, not our business.
@@ -240,7 +214,7 @@ def stop_ollama(
         # signal a group too — neither is ever what a stale pid file meant.
         pf.unlink(missing_ok=True)
         return False
-    if not api_up(url, key=key) or not _is_ollama_process(pid, os_name, run):
+    if not answering() or not _is_ollama_process(pid, os_name, sys=sys):
         # Nothing is answering, or the pid is not an Ollama: either way the recorded
         # number is not our engine, and a stale pid file is never a licence to signal
         # it (rule 7).
@@ -248,9 +222,9 @@ def stop_ollama(
         return False
     try:
         if os_name == "windows":
-            run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
+            sys.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
         else:
-            kill(pid, signal.SIGTERM)
+            sys.signal(pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         # Gone, or recycled into a process we don't own (a truncated pid can
         # parse to a live foreign pid) — the wait below decides what that meant.
@@ -259,10 +233,10 @@ def stop_ollama(
     # caller's next move is a Server stack that wants port 11434. Counted in probes
     # like `wait_until_down`, because each pass also pays `api_up`'s own timeout.
     for _ in range(attempts):
-        if not api_up(url, key=key):
+        if not answering():
             pf.unlink(missing_ok=True)
             return True
-        sleep(1)
+        sys.sleep(1)
     # The pid file stays: it is the only record of which engine was ours, and a
     # retry that has lost it can never stop this process at all.
     raise FriendlyError(
@@ -275,31 +249,32 @@ def ensure_ollama(
     info: SystemInfo,
     *,
     context_length: int,
-    run: RunFn = proc.run_logged,
-    which: WhichFn = shutil.which,
-    popen: PopenFn = subprocess.Popen,
-    api_up: Callable[..., bool] = _REAL_API_UP,
-    sleep: SleepFn = time.sleep,
-    call: CallFn = proc.call,
     url: str = DEFAULT_ENGINE_URL,
-    kill: Callable[[int, int], None] = os.kill,
-    environ: Mapping[str, str] | None = None,
+    sys: System,
+    api_up: Callable[..., bool] | None = None,
 ) -> None:
+    """Install Ollama if it is missing, and have an engine answering on `url`.
+
+    `api_up`, when given, is the "is the engine answering" probe in place of
+    `health.api_up` on `sys`. It is removed when `express` takes a `System` itself.
+    """
+
+    def answering() -> bool:
+        return api_up(url) if api_up is not None else health.api_up(url, sys=sys)
+
     if not info.has_ollama:
-        install_ollama(info, run=run, which=which, call=call)
-    if api_up(url):
+        install_ollama(info, sys=sys)
+    if answering():
         # Only an engine we started is ours to restart; any other keeps its own
         # setting and `context_note` says where it lives. A missing record is an
         # engine from before LePika set one at all: Ollama's 4096, not the config.
-        wanted = ollama_env(context_length, environ)["OLLAMA_CONTEXT_LENGTH"]
-        if not _ours(info.os, run) or _launched_context() == wanted:
+        wanted = ollama_env(context_length, sys.environ)["OLLAMA_CONTEXT_LENGTH"]
+        if not _ours(info.os, sys=sys) or _launched_context() == wanted:
             return
         log.get_logger().info("engine.restart", reason="context_length", wanted=wanted)
-        stop_ollama(info.os, url, run=run, kill=kill, api_up=api_up, sleep=sleep, rerun="lepika up")
-    start_ollama(info.os, popen=popen, context_length=context_length, environ=environ)
-    health.wait_for(
-        lambda: api_up(url), 30, "Ollama API", sys=system.overlay(system.REAL, sleep=sleep)
-    )
+        stop_ollama(info.os, url, rerun="lepika up", sys=sys, api_up=api_up)
+    start_ollama(context_length=context_length, sys=sys)
+    health.wait_for(answering, 30, "Ollama API", sys=sys)
 
 
 def _launched_context() -> str | None:
@@ -307,7 +282,7 @@ def _launched_context() -> str | None:
     return record.read_text().strip() if record.exists() else None
 
 
-def _ours(os_name: str, run: RunFn) -> bool:
+def _ours(os_name: str, *, sys: System) -> bool:
     """Did LePika start the Ollama that is running? A pid we wrote, still an Ollama."""
     pf = pid_file("ollama")
     if not pf.exists():
@@ -316,10 +291,10 @@ def _ours(os_name: str, run: RunFn) -> bool:
         pid = int(pf.read_text().strip())
     except ValueError:
         return False
-    return pid > 0 and _is_ollama_process(pid, os_name, run)
+    return pid > 0 and _is_ollama_process(pid, os_name, sys=sys)
 
 
-def context_note(info: SystemInfo, cfg: Config, run: RunFn = proc.run_logged) -> str | None:
+def context_note(info: SystemInfo, cfg: Config, *, sys: System) -> str | None:
     """One line for `lepika up` when the context length in config.toml cannot apply.
 
     `ensure_ollama` adopts an engine that already answers instead of starting one,
@@ -332,7 +307,7 @@ def context_note(info: SystemInfo, cfg: Config, run: RunFn = proc.run_logged) ->
     """
     if not (cfg.mode == "express" and cfg.engine_managed and info.ollama_running):
         return None
-    if _ours(info.os, run):
+    if _ours(info.os, sys=sys):
         return None
     if info.os == "windows":
         how = (
@@ -347,32 +322,32 @@ def context_note(info: SystemInfo, cfg: Config, run: RunFn = proc.run_logged) ->
     )
 
 
-def ollama_binary_version(run: RunFn = proc.run_logged) -> str | None:
+def ollama_binary_version(*, sys: System) -> str | None:
     """The version of the `ollama` binary on PATH, whether or not an engine is running.
 
     With an engine up it prints `ollama version is X`; without one, a warning ending
     `client version is X`. Both name the binary, which is the one this asks about.
     """
     try:
-        result = run(["ollama", "--version"], check=False, log=False)
+        result = sys.run(["ollama", "--version"], check=False, log=False)
     except FriendlyError:
         return None
     found = _OLLAMA_VERSION.findall(f"{result.stdout or ''}\n{result.stderr or ''}")
     return str(found[-1]) if found else None
 
 
-def _unit_state(run: RunFn, which: WhichFn) -> tuple[bool, bool] | None:
+def _unit_state(*, sys: System) -> tuple[bool, bool] | None:
     """(enabled, active) of `ollama.service`, or None when systemd cannot say.
 
     Unknown is not "disabled": restoring from a guess would run `sudo systemctl` on a
     unit whose state nobody read.
     """
-    if which("systemctl") is None:
+    if sys.which("systemctl") is None:
         return None
     unit = "ollama.service"
     # Not --quiet: the printed state is what tells "disabled" from "could not ask".
-    enabled = run(["systemctl", "is-enabled", unit], check=False, log=False, ok=_IS_ENABLED_OK)
-    active = run(
+    enabled = sys.run(["systemctl", "is-enabled", unit], check=False, log=False, ok=_IS_ENABLED_OK)
+    active = sys.run(
         ["systemctl", "is-active", "--quiet", unit], check=False, log=False, ok=_IS_ACTIVE_OK
     )
     read_enabled = enabled.returncode == 0 or (
@@ -389,7 +364,7 @@ def _unit_state(run: RunFn, which: WhichFn) -> tuple[bool, bool] | None:
     return enabled.returncode == 0, active.returncode == 0
 
 
-def _restore_unit(state: tuple[bool, bool] | None, call: CallFn, euid: int | None = None) -> bool:
+def _restore_unit(state: tuple[bool, bool] | None, *, sys: System) -> bool:
     """Put `ollama.service` back the way it was before the install script touched it.
 
     The script enables and starts the unit every time it runs. A unit the user ran
@@ -412,19 +387,13 @@ def _restore_unit(state: tuple[bool, bool] | None, call: CallFn, euid: int | Non
     # Streamed, like the script: sudo may prompt. A unit left running is a nuisance,
     # not a broken engine, so a restore that fails is reported, not raised.
     try:
-        return call(_systemctl(*verb, "ollama.service", euid=euid)) == 0
+        return sys.call(_systemctl(*verb, "ollama.service", sys=sys)) == 0
     except (FriendlyError, OSError) as exc:
         log.get_logger().warning("ollama.update.unit_restore_failed", error=str(exc))
         return False
 
 
-def upgrade_ollama(
-    info: SystemInfo,
-    *,
-    run: RunFn,
-    which: WhichFn,
-    call: CallFn,
-) -> None:
+def upgrade_ollama(info: SystemInfo, *, sys: System) -> None:
     """Upgrade the native Ollama in place, each OS through its own package manager.
 
     On Linux the install script re-enables and starts `ollama.service`; the caller
@@ -432,23 +401,25 @@ def upgrade_ollama(
     """
     if info.os == "macos":
         # No Homebrew means the Ollama.app installer, which updates itself.
-        if which("brew") is None:
+        if sys.which("brew") is None:
             return
         # Asked first, so the upgrade itself can be checked. `outdated` names the
         # formula only when there is something to do — and then exits 1, as it does
         # for any outdated formula named on its command line: an answer, not a failure.
-        outdated = run(["brew", "outdated", "--quiet", "ollama"], check=False, log=False, ok=(0, 1))
+        outdated = sys.run(
+            ["brew", "outdated", "--quiet", "ollama"], check=False, log=False, ok=(0, 1)
+        )
         if "ollama" in str(outdated.stdout or "").split():
-            run(["brew", "upgrade", "ollama"], check=True)
+            sys.run(["brew", "upgrade", "ollama"], check=True)
     elif info.os == "linux":
         # Streamed, not captured: the script may prompt for sudo.
-        if call(["sh", "-c", OLLAMA_INSTALL_SCRIPT]) != 0:
+        if sys.call(["sh", "-c", OLLAMA_INSTALL_SCRIPT]) != 0:
             raise FriendlyError(
                 "Ollama upgrade failed.",
                 "See https://ollama.com/download/linux for manual install steps.",
             )
     else:  # windows
-        result = run(
+        result = sys.run(
             [
                 "winget",
                 "upgrade",

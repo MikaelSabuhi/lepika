@@ -117,7 +117,7 @@ def up() -> None:
         console.print(f"[yellow]{escape(note)}[/yellow]")
     # `info` is the pre-start snapshot: an engine running now is one `start_stack`
     # will adopt, and the context length in config.toml will not reach it.
-    if (note := ollama.context_note(info, cfg)) is not None:
+    if (note := ollama.context_note(info, cfg, sys=system.REAL)) is not None:
         console.print(f"[yellow]{escape(note)}[/yellow]")
     _ready(cfg, _backend(cfg).start_stack(info, cfg))
 
@@ -462,7 +462,9 @@ def model_add(
         # would bring up vLLM, leave ollama stopped, and fail the pull.
         server.start_stack(info, dataclasses.replace(cfg, model=model_ref.raw))
     elif cfg.engine_managed:
-        ollama.ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length)
+        ollama.ensure_ollama(
+            info, url=cfg.engine_url, context_length=cfg.context_length, sys=system.REAL
+        )
     else:
         # A remote engine is someone else's to run: check it, never install for it.
         health.check_remote_engine(cfg, sys=system.REAL)
@@ -500,7 +502,9 @@ def model_import(
     acquire.check_local(path, name)
     # `import_allowed` already means Express with a managed engine, so there is no
     # container or remote case to branch on the way `model add` has to.
-    ollama.ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length)
+    ollama.ensure_ollama(
+        info, url=cfg.engine_url, context_length=cfg.context_length, sys=system.REAL
+    )
     # Resolved from here on: the "Importing … from …" line and the `source=` log field
     # name the folder unambiguously, whatever the shell was sitting in.
     served = acquire.import_local(info, cfg, path.resolve(), name, quant)

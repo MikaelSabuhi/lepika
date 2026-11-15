@@ -37,7 +37,9 @@ def start_stack(
     hook; the wizard passes its pull.
     """
     if cfg.engine_managed:
-        ollama.ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length)
+        ollama.ensure_ollama(
+            info, url=cfg.engine_url, context_length=cfg.context_length, sys=system.REAL
+        )
     else:
         # Someone else runs this engine: never install or start anything for it.
         health.check_remote_engine(cfg, sys=system.REAL)
@@ -84,12 +86,24 @@ def update(
     popen_fn = popen if popen is not None else subprocess.Popen
     sleep_fn = sleep if sleep is not None else time.sleep
     kill_fn = kill if kill is not None else os.kill
+    # The Ollama and OpenWebUI modules take a System; the callables this function
+    # was handed reach them through the transitional adapter.
+    legacy = system.overlay(
+        system.REAL,
+        run=run_fn,
+        which=which,
+        call=call,
+        popen=popen_fn,
+        sleep=sleep_fn,
+        kill=kill_fn,
+        euid=euid,
+    )
     steps: list[UpdateStep] = []
     if cfg.engine_managed:
         which_fn = which if which is not None else shutil.which
         # Read before the install script runs: it re-enables and starts the unit.
         systemd = info.os == "linux" and which_fn("systemctl") is not None
-        unit = ollama._unit_state(run_fn, which_fn) if systemd else None
+        unit = ollama._unit_state(sys=legacy) if systemd else None
         step, restored = _update_ollama(
             info,
             cfg,
@@ -129,9 +143,6 @@ def update(
                     "run `systemctl disable --now ollama.service` as root",
                 )
             )
-    # OpenWebUI takes a System; the callables this function was handed reach it
-    # through the transitional adapter.
-    legacy = system.overlay(system.REAL, run=run_fn, popen=popen_fn, sleep=sleep_fn, kill=kill_fn)
     before = openwebui.openwebui_version(sys=legacy)
     # Pinned like the install and the run: an upgrade that resolved a different
     # interpreter would move the tool env out from under `uv tool run --python`,
@@ -182,6 +193,12 @@ def _update_ollama(
             return engine.version(url, key, sys=system.REAL)
 
     version_of = running_version
+    # The Ollama module takes a System; the callables this function was handed
+    # reach it through the transitional adapter. `api_up` is a predicate, which no
+    # System stands in for, so it is passed on as one.
+    legacy = system.overlay(
+        system.REAL, run=run, which=which, call=call, popen=popen, sleep=sleep, kill=kill, euid=euid
+    )
 
     def running() -> str | None:
         """What the engine at the configured URL serves now, or None if it cannot say."""
@@ -196,18 +213,18 @@ def _update_ollama(
 
     # Decided before anything changes: the upgrade may stop the process, and then
     # the pid file can no longer be vouched for by a running Ollama.
-    ours_and_up = api_up(cfg.engine_url, key=cfg.engine_key) and ollama._ours(info.os, run)
-    before = ollama.ollama_binary_version(run)
+    ours_and_up = api_up(cfg.engine_url, key=cfg.engine_key) and ollama._ours(info.os, sys=legacy)
+    before = ollama.ollama_binary_version(sys=legacy)
     failure: FriendlyError | None = None
     try:
-        ollama.upgrade_ollama(info, run=run, which=which, call=call)
+        ollama.upgrade_ollama(info, sys=legacy)
     except FriendlyError as exc:
         failure = exc
     finally:
         # Before anything below starts an engine: a unit the script started holds
         # port 11434. `_restore_unit` never raises, so it cannot mask `failure`.
-        restored = ollama._restore_unit(unit, call, euid)
-    after = ollama.ollama_binary_version(run)
+        restored = ollama._restore_unit(unit, sys=legacy)
+    after = ollama.ollama_binary_version(sys=legacy)
     if failure is not None:
         # On Linux the binary, not the script's exit code, says whether the upgrade
         # happened: the script aborts on its optional systemd steps with the new
@@ -218,7 +235,7 @@ def _update_ollama(
     if ours_and_up:
         start = False
         if not api_up(cfg.engine_url, key=cfg.engine_key):
-            if ollama._ours(info.os, run):
+            if ollama._ours(info.os, sys=legacy):
                 # Still an Ollama, just not answering (busy loading a model misses a
                 # 1s probe). A second `ollama serve` would lose the port and overwrite
                 # the pid file, the only record of which engine is ours.
@@ -243,20 +260,18 @@ def _update_ollama(
                 start = ollama.stop_ollama(
                     info.os,
                     cfg.engine_url,
-                    run=run,
-                    kill=kill,
-                    api_up=api_up,
                     key=cfg.engine_key,
-                    sleep=sleep,
                     rerun="lepika update",
+                    sys=legacy,
+                    api_up=api_up,
                 )
         if start:
-            ollama.start_ollama(info.os, popen=popen, context_length=cfg.context_length)
+            ollama.start_ollama(context_length=cfg.context_length, sys=legacy)
             health.wait_for(
                 lambda: api_up(cfg.engine_url, key=cfg.engine_key),
                 30,
                 "Ollama API",
-                sys=system.overlay(system.REAL, sleep=sleep),
+                sys=legacy,
             )
     serving = running()
     if serving and after and serving != after:

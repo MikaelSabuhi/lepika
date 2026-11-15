@@ -17,7 +17,7 @@ LePika CLI (Python: Typer + Rich, structlog for the log)
  ├─ express.py  Express backend: native Ollama + OpenWebUI via uv
  ├─ server.py   Server backend: docker compose (profiles engine · vllm · expose), .env, API key
  ├─ stack/      compose.yml · compose.nvidia.yml · Caddyfile (copied into ~/.lepika/stack)
- ├─ config.py   ~/.lepika/config.toml (flat, validated, atomic 0600 writes); a new key bumps SCHEMA_VERSION — older builds refuse unknown keys, and the schema check makes that "upgrade LePika"
+ ├─ config.py   ~/.lepika/config.toml (flat, validated, atomic 0600 writes); a new key bumps SCHEMA_VERSION — post-0.2.0 builds refuse unknown keys, and the schema check makes that "upgrade LePika"
  ├─ doctor.py   diagnostics; every ✗ ships a one-line fix
  ├─ proc.py     the single subprocess choke point (logged, friendly)
  ├─ prompts.py  every question: no terminal means the default, or a NoTerminal

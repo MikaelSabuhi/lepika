@@ -172,7 +172,10 @@ def _validate(raw: dict[str, object], path: Path) -> Config:
                 f"(schema {value}; this version reads {SCHEMA_VERSION}).",
                 "Upgrade LePika: `uv tool upgrade lepika`.",
             )
-    return Config(**raw)  # type: ignore[arg-type]
+    # Upgraded in memory, so `save` writes the current schema: an older number beside
+    # a key it never had would have an older LePika call that key unknown instead of
+    # saying to upgrade. Read at call time, not from the dataclass default.
+    return Config(**{**raw, "schema_version": SCHEMA_VERSION})  # type: ignore[arg-type]
 
 
 def load() -> Config:

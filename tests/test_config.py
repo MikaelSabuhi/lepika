@@ -127,7 +127,14 @@ def test_engine_url_needs_a_scheme(isolated_home: Path) -> None:
 def test_a_newer_schema_is_refused_with_an_upgrade_hint(isolated_home: Path) -> None:
     err = _load_error('schema_version = 99\nmode = "express"\n')
     assert "newer" in err.problem
-    assert "install" in err.fix
+    assert "uv tool upgrade lepika" in err.fix
+
+
+def test_a_newer_schema_wins_over_an_unknown_key(isolated_home: Path) -> None:
+    """A newer LePika's file carries keys this one doesn't know; upgrading is the fix."""
+    err = _load_error("some_future_key = 1\nschema_version = 99\n")
+    assert "newer" in err.problem
+    assert "some_future_key" not in err.problem
 
 
 def test_validation_error_never_echoes_a_secret(isolated_home: Path) -> None:

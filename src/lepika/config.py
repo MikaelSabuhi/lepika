@@ -143,7 +143,12 @@ def _validate(raw: dict[str, object], path: Path) -> Config:
     """
     defaults = Config()
     known = [f.name for f in dataclasses.fields(Config)]
-    for key, value in raw.items():
+    # schema_version is checked before every other key: a newer LePika's file may
+    # hold keys this one has never heard of, and "upgrade" is the fix for those,
+    # not "remove it". Everything else is reported in file order.
+    keys = sorted(raw, key=lambda k: k != "schema_version")
+    for key in keys:
+        value = raw[key]
         if key not in known:
             match = difflib.get_close_matches(key, known, n=1)
             hint = f"Did you mean `{match[0]}`? " if match else ""
@@ -165,7 +170,7 @@ def _validate(raw: dict[str, object], path: Path) -> Config:
             raise FriendlyError(
                 f"{path} was written by a newer LePika "
                 f"(schema {value}; this version reads {SCHEMA_VERSION}).",
-                "Upgrade LePika: run the install command from the README again.",
+                "Upgrade LePika: `uv tool upgrade lepika`.",
             )
     return Config(**raw)  # type: ignore[arg-type]
 

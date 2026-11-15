@@ -11,7 +11,20 @@ from rich.markup import escape
 from rich.prompt import Prompt
 from rich.table import Table
 
-from lepika import acquire, config, detect, engine, express, gguf, hf, models, paths, proc, server
+from lepika import (
+    acquire,
+    config,
+    detect,
+    engine,
+    express,
+    gguf,
+    hf,
+    models,
+    paths,
+    proc,
+    prompts,
+    server,
+)
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import CuratedModel, ModelRef
@@ -161,10 +174,15 @@ def choose_quant(
         # `or default`: Prompt.ask already returns the default on an empty line, but a
         # caller-supplied `ask` may hand back "" — same guard as choose_mode.
         # No stdin to answer with — a script or CI — is not an error: the ★ is the
-        # answer Enter would give.
+        # answer Enter would give, and the line below names it rather than its number.
         try:
-            raw = ask_fn("Pick a number", default=default) if default else ask_fn("Pick a number")
-        except EOFError:
+            raw = prompts.ask(
+                "Pick a number",
+                default=default or None,
+                reader=ask_fn,
+                require_terminal=True,
+            )
+        except prompts.NoTerminal:
             if best is not None:
                 console.print(f"[dim]No terminal to ask — taking {escape(best.quant)}.[/dim]")
                 return chosen(best.quant)
@@ -232,7 +250,19 @@ def choose_model(
             return _validate(models.parse_model_ref(fitting[int(answer) - 1].ref), cfg, info)
         return None
 
-    answer = ask_fn(prompt).strip()
+    def ask_model() -> str:
+        try:
+            return prompts.ask(prompt, reader=ask_fn).strip()
+        except prompts.NoTerminal as exc:
+            # There is no default model to fall back on — a guess would download
+            # gigabytes nobody asked for.
+            raise FriendlyError(
+                "Choosing a model needs an answer, and there is no terminal to ask.",
+                "Run `lepika` from an interactive terminal, or name the model: "
+                "`lepika model add <model>`.",
+            ) from exc
+
+    answer = ask_model()
     chosen = picked(answer)
     if chosen is not None:
         return chosen
@@ -244,7 +274,7 @@ def choose_model(
             f"There are only {len(fitting)} numbered choices — pick 1 to "
             f"{len(fitting)}, or type a model name."
         )
-        answer = ask_fn(prompt).strip()
+        answer = ask_model()
         chosen = picked(answer)
         if chosen is not None:
             return chosen
@@ -269,10 +299,26 @@ def choose_mode(info: SystemInfo, current: str, ask: AskFn | None = None) -> str
         "  2  🐳 Server — everything in docker compose; NVIDIA GPU on Linux, "
         "shareable with `lepika expose`"
     )
-    # `or default`: Prompt.ask already returns the default on an empty line, but a
-    # bare Enter must mean "keep what I have" whatever the prompt is.
-    answer = ask_fn("Pick 1 or 2", default=default).strip() or default
-    return "server" if answer == "2" else "express"
+    choices = {"1": "express", "express": "express", "2": "server", "server": "server"}
+    for attempt in (1, 2):
+        # `or default`: Prompt.ask already returns the default on an empty line, but a
+        # bare Enter must mean "keep what I have" whatever the prompt is.
+        try:
+            answer = prompts.ask(
+                "Pick 1 or 2", default=default, reader=ask_fn, require_terminal=True
+            )
+        except prompts.NoTerminal:
+            # No terminal keeps the mode too — said by name, not as "1".
+            kept = choices[default]
+            console.print(f"[dim]No terminal to ask — staying with {_MODE_LABEL[kept]}.[/dim]")
+            return kept
+        answer = answer.strip() or default
+        if answer.lower() in choices:
+            return choices[answer.lower()]
+        if attempt == 1:
+            console.print("Pick 1 or 2 — or type express or server.")
+    # Two misses: keep the mode the machine already has rather than loop.
+    return choices[default]
 
 
 _MODE_LABEL = {"express": "Express", "server": "Server"}

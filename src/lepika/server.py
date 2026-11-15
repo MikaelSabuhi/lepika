@@ -15,9 +15,8 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from rich.console import Console
-from rich.prompt import Prompt
 
-from lepika import detect, engine, express, log, models, proc
+from lepika import detect, engine, express, log, models, proc, prompts
 from lepika.config import Config
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
@@ -302,11 +301,12 @@ def hf_token_prompt(env_path: Path, ask: AskFn | None = None) -> None:
     """
     if os.environ.get("HF_TOKEN") or read_env(env_path).get("HF_TOKEN"):
         return
-    ask_fn: AskFn = ask if ask is not None else Prompt.ask
-    token = ask_fn(
+    # No terminal skips, as Enter does.
+    token = prompts.ask(
         "Hugging Face token (needed for gated repos; Enter to skip)",
         password=True,
         default="",
+        reader=ask,
     ).strip()
     write_env(env_path, {"HF_TOKEN": token})
 

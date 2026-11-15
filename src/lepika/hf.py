@@ -15,9 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rich.prompt import Prompt
-
-from lepika import config, gguf, log, paths, proc
+from lepika import config, gguf, log, paths, proc, prompts
 from lepika.config import Config
 from lepika.errors import FriendlyError
 
@@ -341,9 +339,12 @@ def ask_token(cfg: Config, ask: AskFn | None = None) -> str:
     user has no token; the caller turns that into the licence hint. `config.save`
     writes every field, so pass the loaded Config, never a fresh one.
     """
-    ask_fn: AskFn = ask if ask is not None else Prompt.ask
-    token = ask_fn(
-        "Hugging Face token (this repo is gated; Enter to cancel)", password=True, default=""
+    # No terminal skips, as Enter does.
+    token = prompts.ask(
+        "Hugging Face token (this repo is gated; Enter to cancel)",
+        password=True,
+        default="",
+        reader=ask,
     ).strip()
     if token:
         cfg.hf_token = token

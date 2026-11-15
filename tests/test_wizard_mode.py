@@ -48,6 +48,43 @@ def test_choose_mode_asks_when_docker_is_present_and_defaults_to_current() -> No
     assert wizard.choose_mode(DOCKER, "server", ask=lambda *a, **k: "1") == "express"
 
 
+def _no_terminal(*a: Any, **k: Any) -> str:
+    raise EOFError("stdin is not a terminal")
+
+
+def test_choose_mode_keeps_the_current_mode_without_a_terminal(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert wizard.choose_mode(DOCKER, "server", ask=_no_terminal) == "server"
+    out = capsys.readouterr().out
+    assert "No terminal to ask — staying with Server." in out
+    assert "using 1" not in out and "using 2" not in out
+    assert wizard.choose_mode(DOCKER, "express", ask=_no_terminal) == "express"
+    out = capsys.readouterr().out
+    assert "No terminal to ask — staying with Express." in out
+    assert "using 1" not in out
+
+
+def test_choose_mode_accepts_the_mode_by_name() -> None:
+    assert wizard.choose_mode(DOCKER, "express", ask=lambda *a, **k: "server") == "server"
+    assert wizard.choose_mode(DOCKER, "server", ask=lambda *a, **k: "Express") == "express"
+
+
+def test_choose_mode_asks_again_once_then_keeps_the_default(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    answers = iter(["3", "x"])
+    asked: list[str] = []
+
+    def ask(prompt: str, **k: Any) -> str:
+        asked.append(prompt)
+        return next(answers)
+
+    assert wizard.choose_mode(DOCKER, "server", ask=ask) == "server"
+    assert len(asked) == 2
+    assert "Pick 1 or 2" in capsys.readouterr().out
+
+
 def test_wizard_in_server_mode_uses_the_server_backend(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:

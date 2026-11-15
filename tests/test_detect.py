@@ -52,6 +52,30 @@ def test_ram_linux_reads_meminfo(tmp_path: Path) -> None:
     assert ram == pytest.approx(16384000 / 2**20)
 
 
+def test_garbled_sysctl_is_a_friendly_error() -> None:
+    with pytest.raises(FriendlyError) as exc:
+        detect.detect_ram_gb("macos", run=fake_run("sysctl: unknown oid"))
+    assert exc.value.problem == "Could not detect system memory."
+
+
+def test_unreadable_meminfo_is_a_friendly_error(tmp_path: Path) -> None:
+    with pytest.raises(FriendlyError) as exc:
+        detect.detect_ram_gb("linux", meminfo=tmp_path / "missing")
+    assert exc.value.problem == "Could not detect system memory."
+    garbled = tmp_path / "meminfo"
+    garbled.write_text("MemTotal: lots kB\n")
+    with pytest.raises(FriendlyError):
+        detect.detect_ram_gb("linux", meminfo=garbled)
+
+
+def test_meminfo_without_memtotal_is_a_friendly_error(tmp_path: Path) -> None:
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemFree: 1 kB\n")
+    with pytest.raises(FriendlyError) as exc:
+        detect.detect_ram_gb("linux", meminfo=meminfo)
+    assert exc.value.problem == "Could not detect system memory."
+
+
 def test_windows_ram_converts_bytes_to_gb() -> None:
     assert detect._windows_ram_gb(status=lambda: (True, 16 * 2**30)) == pytest.approx(16.0)
 
@@ -61,7 +85,11 @@ def test_windows_ram_raises_when_the_memory_api_fails() -> None:
     with pytest.raises(FriendlyError) as exc:
         detect._windows_ram_gb(status=lambda: (False, 0))
     assert "memory" in exc.value.problem
-    assert "lepika doctor" in exc.value.fix
+    # Not `lepika doctor`: it detects memory too, and would fail the same way.
+    assert exc.value.fix == (
+        "Re-run the command; if it keeps happening, report it at "
+        "https://github.com/MikaelSabuhi/lepika/issues."
+    )
 
 
 def test_api_up_true_and_false() -> None:

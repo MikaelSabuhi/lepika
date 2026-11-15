@@ -131,6 +131,17 @@ def _global_memory_status() -> tuple[bool, int]:  # pragma: no cover - Windows o
     return bool(ok), int(stat.ullTotalPhys)
 
 
+def _memory_error() -> FriendlyError:
+    # Every platform's probe fails the same way: guessing 0 GB would silently filter
+    # the curated list down to nothing, and a raw ValueError is a traceback.
+    return FriendlyError(
+        "Could not detect system memory.",
+        # Not `lepika doctor`: it detects memory as well, and would fail the same way.
+        "Re-run the command; if it keeps happening, report it at "
+        "https://github.com/MikaelSabuhi/lepika/issues.",
+    )
+
+
 def _windows_ram_gb(status: Callable[[], tuple[bool, int]] | None = None) -> float:
     # GlobalMemoryStatusEx signals failure through its BOOL return, leaving the
     # struct untouched. Ignoring it reported a 0 GB machine, which silently
@@ -138,10 +149,7 @@ def _windows_ram_gb(status: Callable[[], tuple[bool, int]] | None = None) -> flo
     reader = status if status is not None else _global_memory_status
     ok, total_bytes = reader()
     if not ok:
-        raise FriendlyError(
-            "Could not detect system memory.",
-            "Re-run `lepika`; if this persists, file an issue with `lepika doctor` output.",
-        )
+        raise _memory_error()
     return float(total_bytes) / 2**30
 
 
@@ -153,13 +161,23 @@ def detect_ram_gb(
     if os_name == "macos":
         # A pure read of the machine: nothing changed, so nothing is logged.
         result = run(["sysctl", "-n", "hw.memsize"], log=False)
-        return float(int(result.stdout.strip())) / 2**30
+        try:
+            return float(int(result.stdout.strip())) / 2**30
+        except ValueError as exc:
+            raise _memory_error() from exc
     if os_name == "linux":
-        for line in meminfo.read_text().splitlines():
+        try:
+            text = meminfo.read_text()
+        except OSError as exc:
+            raise _memory_error() from exc
+        for line in text.splitlines():
             if line.startswith("MemTotal:"):
-                kb = int(line.split()[1])
+                try:
+                    kb = int(line.split()[1])
+                except (IndexError, ValueError) as exc:
+                    raise _memory_error() from exc
                 return float(kb) / 2**20
-        return 0.0
+        raise _memory_error()
     return _windows_ram_gb()
 
 

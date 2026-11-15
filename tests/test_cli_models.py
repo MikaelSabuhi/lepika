@@ -712,6 +712,34 @@ def test_model_add_import_without_a_terminal_is_friendly(
     assert fake_import["downloaded"] == []
 
 
+def _confirm_no_terminal(*a: Any, **k: Any) -> Any:
+    raise EOFError("stdin is not a terminal")
+
+
+def test_ask_confirm_enter_means_no(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict[str, Any]] = []
+
+    def enter(question: str, **kwargs: Any) -> Any:
+        seen.append(kwargs)
+        return kwargs["default"]
+
+    monkeypatch.setattr(acquire.Confirm, "ask", enter)
+    assert acquire.ask_confirm("Download 16 GB?") is False
+    assert seen == [{"default": False}]
+
+
+def test_ask_confirm_without_a_terminal_keeps_its_friendly_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(acquire.Confirm, "ask", _confirm_no_terminal)
+    with pytest.raises(FriendlyError) as exc:
+        acquire.ask_confirm("Download 16 GB?")
+    assert exc.value.problem == (
+        "Importing a full-weight repo needs a yes/no answer, and there is no terminal to ask."
+    )
+    assert exc.value.fix == "Run `lepika model add <repo>` from an interactive shell."
+
+
 def test_model_add_warns_when_the_import_may_not_fit_in_ram_but_proceeds(
     fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

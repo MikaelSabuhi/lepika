@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Confirm
 
-from lepika import config, engine, express, gguf, hf, models, paths
+from lepika import config, engine, express, gguf, hf, models, paths, prompts
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
@@ -29,8 +29,10 @@ console = Console()
 
 def ask_confirm(question: str) -> bool:
     try:
-        return bool(Confirm.ask(question, default=False))
-    except EOFError as exc:
+        # Enter means no, as it always has; no terminal is not taken as a no, because
+        # the caller would then report a decline nobody made.
+        return prompts.confirm(question, default=False, reader=Confirm.ask, require_terminal=True)
+    except prompts.NoTerminal as exc:
         # Piped, redirected or in CI: rich sees EOF on stdin. A download this size is
         # never started on a guess, so say what is missing instead of tracebacking.
         raise FriendlyError(

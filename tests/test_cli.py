@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import importlib.metadata
 import io
+import json
 import sys
+import urllib.error
+from email.message import Message
+from pathlib import Path
 from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
-from lepika import cli
+from lepika import cli, detect, express, models, wizard
 from lepika.cli import app
 
 runner = CliRunner()
@@ -86,3 +90,114 @@ def test_run_reconfigures_a_cp1252_stderr_too(monkeypatch: pytest.MonkeyPatch) -
     cli.run()
     stream.flush()
     assert stream.buffer.getvalue() == "✗ nope".encode()
+
+
+def _raise(exc: BaseException) -> Any:
+    def app() -> None:
+        raise exc
+
+    return app
+
+
+def _flat(text: str) -> str:
+    """Rich wraps at the console width; compare with the line breaks folded away."""
+    return " ".join(text.split())
+
+
+def test_run_turns_an_unexpected_exception_into_two_lines_and_a_log_entry(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], isolated_home: Path
+) -> None:
+    monkeypatch.setattr(cli, "app", _raise(ValueError("bad value")))
+    with pytest.raises(SystemExit) as exit_info:
+        cli.run()
+    assert exit_info.value.code == 1
+    err = _flat(capsys.readouterr().err)
+    assert "unexpected error: ValueError: bad value" in err
+    assert "https://github.com/MikaelSabuhi/lepika/issues" in err
+    assert "Details are in" in err
+    assert "Traceback" not in err
+    lines = (isolated_home / "logs" / "lepika.log").read_text().splitlines()
+    crash = [json.loads(line) for line in lines if '"cli.crash"' in line]
+    assert len(crash) == 1
+    assert "Traceback" in crash[0]["traceback"]
+    assert crash[0]["error"] == "ValueError('bad value')"
+
+
+def test_crash_handler_survives_an_unwritable_log(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def no_log() -> Any:
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(cli.log, "get_logger", no_log)
+    monkeypatch.setattr(cli, "app", _raise(RuntimeError("boom")))
+    with pytest.raises(SystemExit) as exit_info:
+        cli.run()
+    assert exit_info.value.code == 1
+    err = _flat(capsys.readouterr().err)
+    assert "unexpected error: RuntimeError: boom" in err
+    assert "Details are in" not in err
+    assert "https://github.com/MikaelSabuhi/lepika/issues" in err
+    assert "Traceback" not in err
+
+
+def test_run_reports_an_unreadable_file_by_name_and_folder(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], isolated_home: Path
+) -> None:
+    """Reads fail too, and the file may be the user's own: name it and its folder."""
+    error = PermissionError(13, "Permission denied", "/data/models/config.json")
+    monkeypatch.setattr(cli, "app", _raise(error))
+    with pytest.raises(SystemExit) as exit_info:
+        cli.run()
+    assert exit_info.value.code == 1
+    err = _flat(capsys.readouterr().err)
+    assert "✗ Could not access /data/models/config.json: Permission denied" in err
+    folder = Path("/data/models")
+    assert f"→ Check the permissions on {folder} and that the disk is not full." in err
+    assert str(isolated_home) not in err
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("boom"),
+        urllib.error.HTTPError("https://example.invalid/x", 500, "Server Error", Message(), None),
+    ],
+)
+def test_run_treats_an_os_error_without_a_file_as_unexpected(
+    error: OSError, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "app", _raise(error))
+    with pytest.raises(SystemExit) as exit_info:
+        cli.run()
+    assert exit_info.value.code == 1
+    err = _flat(capsys.readouterr().err)
+    assert "unexpected error" in err
+    assert "Could not access" not in err
+    assert "Traceback" not in err
+
+
+def test_run_without_a_terminal_is_two_lines_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    info = detect.SystemInfo("macos", "arm64", "apple", 16.0, False, True, True)
+
+    def no_terminal(*a: Any, **k: Any) -> str:
+        raise EOFError("stdin is not a terminal")
+
+    monkeypatch.setattr(sys, "argv", ["lepika"])
+    monkeypatch.setattr(detect, "detect", lambda **k: info)
+    monkeypatch.setattr(
+        models,
+        "load_curated",
+        lambda **k: [models.CuratedModel(name="Small", ref="llama3.2:3b", min_ram_gb=6)],
+    )
+    monkeypatch.setattr(express, "webui_up", lambda port, **k: True)
+    monkeypatch.setattr(wizard, "_ask", no_terminal)
+    with pytest.raises(SystemExit) as exit_info:
+        cli.run()
+    assert exit_info.value.code == 1
+    err = _flat(capsys.readouterr().err)
+    assert "✗ Choosing a model needs an answer, and there is no terminal to ask." in err
+    assert "Traceback" not in err

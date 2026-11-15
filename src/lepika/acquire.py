@@ -107,7 +107,7 @@ def import_repo(
     store_bytes = pre.download_bytes if method is not None else pre.download_bytes // 4
     need = int((pre.download_bytes + store_bytes) * 1.1)
     disks = {paths.lepika_home()}  # created on access, so it is always there
-    store = mlx.ollama_store()
+    store = mlx.ollama_store(sys=system.REAL)
     if store.exists():
         disks.add(store)
     free = min(shutil.disk_usage(disk).free for disk in disks)
@@ -127,7 +127,7 @@ def import_repo(
         return None
     if info.os != "macos":
         console.print("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
-    mlx.ensure_mlx(info)
+    mlx.ensure_mlx(info, sys=system.REAL)
     hf.download(repo, dest, token, sys=system.REAL)
     engine.import_model(
         cfg.engine_url,
@@ -200,7 +200,7 @@ def import_local(info: SystemInfo, cfg: config.Config, source: Path, name: str, 
     quantized = raw_bytes if method is not None else raw_bytes // 4
     # Only Ollama's store is at stake: the weights are already on disk and stay there,
     # so the copy Ollama writes is the one thing that needs room.
-    store = mlx.ollama_store()
+    store = mlx.ollama_store(sys=system.REAL)
     free = shutil.disk_usage(store if store.exists() else paths.lepika_home()).free
     if free < quantized:
         raise FriendlyError(
@@ -218,7 +218,7 @@ def import_local(info: SystemInfo, cfg: config.Config, source: Path, name: str, 
     console.print(f"Importing {escape(name)} from {escape(str(source))} {how}…")
     if info.os != "macos":
         console.print("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
-    mlx.ensure_mlx(info)
+    mlx.ensure_mlx(info, sys=system.REAL)
     engine.import_model(
         cfg.engine_url,
         name,

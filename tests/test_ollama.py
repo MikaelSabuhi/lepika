@@ -4,7 +4,7 @@ import dataclasses
 import json
 import shlex
 import signal
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -516,12 +516,14 @@ def test_ollama_install_dir_mirrors_install_sh(tmp_path: Path) -> None:
     exe = tmp_path / "usr" / "local" / "bin" / "ollama"
     exe.parent.mkdir(parents=True)
     exe.write_text("")
-    assert mlx.ollama_install_dir("linux", which=lambda n: str(exe)) == tmp_path / "usr" / "local"
+    linux = FakeSystem(which={"ollama": str(exe)})
+    assert mlx.ollama_install_dir("linux", sys=linux) == tmp_path / "usr" / "local"
     win = tmp_path / "Programs" / "Ollama" / "ollama.exe"
     win.parent.mkdir(parents=True)
     win.write_text("")
-    assert mlx.ollama_install_dir("windows", which=lambda n: str(win)) == win.parent
-    assert mlx.ollama_install_dir("linux", which=lambda n: None) is None
+    windows = FakeSystem(which={"ollama": str(win)})
+    assert mlx.ollama_install_dir("windows", sys=windows) == win.parent
+    assert mlx.ollama_install_dir("linux", sys=FakeSystem()) is None
 
 
 def test_mlx_present_looks_for_the_cuda_backend_dir(tmp_path: Path) -> None:
@@ -532,76 +534,82 @@ def test_mlx_present_looks_for_the_cuda_backend_dir(tmp_path: Path) -> None:
 
 def test_cuda_major_parses_nvidia_smi_and_defaults_to_zero() -> None:
     smi = "| NVIDIA-SMI 580.65   Driver Version: 580.65   CUDA Version: 13.0  |"
-    assert mlx.cuda_major(run=Runner(stdout={"nvidia-smi": smi})) == 13
-    assert mlx.cuda_major(run=Runner(stdout={"nvidia-smi": "no gpu"})) == 0
-
-    def gone(cmd: list[str], **k: Any) -> Any:
-        raise FriendlyError("Command not found: nvidia-smi", "Install it.")
-
-    assert mlx.cuda_major(run=gone) == 0
+    assert mlx.cuda_major(sys=FakeSystem(stdout={"nvidia-smi": smi})) == 13
+    assert mlx.cuda_major(sys=FakeSystem(stdout={"nvidia-smi": "no gpu"})) == 0
+    gone = FriendlyError("Command not found: nvidia-smi", "Install it.")
+    assert mlx.cuda_major(sys=FakeSystem(raises={"nvidia-smi": gone})) == 0
 
 
 def test_cuda_major_bounds_a_wedged_driver() -> None:
     """A hung `nvidia-smi` must not stall the import: the probe is timed out and reads as 0."""
-    seen: list[dict[str, Any]] = []
-
-    def timed_out(cmd: list[str], **kwargs: Any) -> Any:
-        seen.append(dict(kwargs))
-        raise FriendlyError("nvidia-smi timed out after 15s.", "Try again.")
-
-    assert mlx.cuda_major(run=timed_out) == 0
+    timed_out = FriendlyError("nvidia-smi timed out after 15s.", "Try again.")
+    machine = FakeSystem(raises={"nvidia-smi": timed_out})
+    assert mlx.cuda_major(sys=machine) == 0
+    seen = machine.ran_kwargs
     assert seen[0]["timeout"] == 15
     assert seen[0]["log"] is False and seen[0]["check"] is False
 
 
-def _linux_install(
-    tmp_path: Path, with_mlx: bool = False
-) -> tuple[Path, Callable[[str], str | None]]:
+# What `nvidia-smi` prints on a driver new enough for the MLX bundle.
+SMI13 = {"nvidia-smi": "CUDA Version: 13.0"}
+
+
+class Installs(FakeSystem):
+    """A machine whose streamed installer leaves the MLX runner where tar would."""
+
+    def __init__(self, root: Path, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.root = root
+
+    def call(self, cmd: Sequence[str]) -> int:
+        (self.root / "lib" / "ollama" / "mlx_cuda_v13").mkdir()
+        return super().call(cmd)
+
+
+def _linux_install(tmp_path: Path, with_mlx: bool = False) -> tuple[Path, dict[str, str]]:
+    """A standard Linux install under `tmp_path`, and a PATH with it and the pipeline."""
     root = tmp_path / "usr" / "local"
     (root / "bin").mkdir(parents=True)
     (root / "bin" / "ollama").write_text("")
     (root / "lib" / "ollama").mkdir(parents=True)
     if with_mlx:
         (root / "lib" / "ollama" / "mlx_cuda_v13").mkdir()
-    return root, lambda name: str(root / "bin" / "ollama") if name == "ollama" else "/usr/bin/zstd"
+    return root, {"ollama": str(root / "bin" / "ollama"), **_PIPELINE}
 
+
+# The rest of the Linux pipeline, on PATH.
+_PIPELINE = {name: f"/usr/bin/{name}" for name in ("zstd", "curl", "tar")}
 
 NVIDIA_LINUX = SystemInfo("linux", "x86_64", "nvidia", 64.0, False, True, True)
 NVIDIA_WINDOWS = SystemInfo("windows", "amd64", "nvidia", 64.0, False, True, True)
-SMI13 = Runner(stdout={"nvidia-smi": "CUDA Version: 13.0"})
+
+
+class NeverProbes(FakeSystem):
+    def which(self, name: str) -> str | None:
+        pytest.fail("macOS must not probe for a binary")
 
 
 def test_ensure_mlx_is_a_no_op_on_macos_and_when_the_bundle_is_present(tmp_path: Path) -> None:
     _root, which = _linux_install(tmp_path, with_mlx=True)
-    call = CallRecorder()
-    smi = Runner(stdout={"nvidia-smi": "CUDA Version: 13.0"})
     # macOS returns before it looks at anything: every effect is faked, and none is used.
-    mlx.ensure_mlx(
-        SystemInfo("macos", "arm64", "apple", 32.0, False, True, True),
-        which=lambda n: pytest.fail("macOS must not probe for a binary"),
-        run=smi,
-        call=call,
-    )
-    mlx.ensure_mlx(NVIDIA_LINUX, which=which, run=smi, call=call)
-    assert call.calls == []
+    mac = NeverProbes(stdout=SMI13)
+    mlx.ensure_mlx(SystemInfo("macos", "arm64", "apple", 32.0, False, True, True), sys=mac)
+    assert (mac.ran, mac.called, mac.write_probes) == ([], [], [])
+    linux = FakeSystem(which=which, stdout=SMI13)
+    mlx.ensure_mlx(NVIDIA_LINUX, sys=linux)
+    assert linux.called == []
     # The bundle is already there, so the driver is never asked about either.
-    assert smi.calls == []
+    assert linux.ran == []
 
 
 def test_ensure_mlx_installs_the_linux_bundle_with_sudo_when_needed(
     tmp_path: Path, isolated_home: Path
 ) -> None:
     root, which = _linux_install(tmp_path)
-
-    class Installer(CallRecorder):
-        def __call__(self, cmd: list[str]) -> int:
-            (root / "lib" / "ollama" / "mlx_cuda_v13").mkdir()
-            return super().__call__(cmd)
-
-    call = Installer()
-    mlx.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=call, writable=lambda p: False)
-    script = call.calls[0][2]
-    assert call.calls[0][:2] == ["sh", "-c"]
+    machine = Installs(root, which=which, stdout=SMI13, writable=False)
+    mlx.ensure_mlx(NVIDIA_LINUX, sys=machine)
+    script = machine.called[0][2]
+    assert machine.called[0][:2] == ["sh", "-c"]
     assert mlx.MLX_BUNDLE["linux"] in script
     assert "zstd -d" in script and "sudo tar" in script and str(root) in script
     entry = json.loads((logs_dir() / "lepika.log").read_text().splitlines()[-1])
@@ -611,79 +619,43 @@ def test_ensure_mlx_installs_the_linux_bundle_with_sudo_when_needed(
 
 def test_ensure_mlx_skips_sudo_for_a_writable_install(tmp_path: Path) -> None:
     root, which = _linux_install(tmp_path)
-
-    class Installer(CallRecorder):
-        def __call__(self, cmd: list[str]) -> int:
-            (root / "lib" / "ollama" / "mlx_cuda_v13").mkdir()
-            return super().__call__(cmd)
-
-    call = Installer()
-    probed: list[Path] = []
-    mlx.ensure_mlx(
-        NVIDIA_LINUX,
-        which=which,
-        run=SMI13,
-        call=call,
-        writable=lambda p: bool(probed.append(p)) or True,
-    )
+    machine = Installs(root, which=which, stdout=SMI13, writable=True)
+    mlx.ensure_mlx(NVIDIA_LINUX, sys=machine)
     # "sudo tar", not "sudo": the tmp_path this test extracts into is named after it.
-    assert "sudo tar" not in call.calls[0][2] and "| tar -xf" in call.calls[0][2]
+    assert "sudo tar" not in machine.called[0][2] and "| tar -xf" in machine.called[0][2]
     # tar writes into lib/ollama, so that is the directory whose permissions decide.
-    assert probed == [root / "lib" / "ollama"]
+    assert machine.write_probes == [root / "lib" / "ollama"]
 
 
 def test_ensure_mlx_quotes_an_awkward_linux_install_dir(tmp_path: Path) -> None:
     root = tmp_path / "my dir$1" / "usr" / "local"
     (root / "bin").mkdir(parents=True)
     (root / "lib" / "ollama").mkdir(parents=True)
-
-    class Installer(CallRecorder):
-        def __call__(self, cmd: list[str]) -> int:
-            (root / "lib" / "ollama" / "mlx_cuda_v13").mkdir()
-            return super().__call__(cmd)
-
-    call = Installer()
-    mlx.ensure_mlx(
-        NVIDIA_LINUX,
-        which=lambda n: str(root / "bin" / "ollama") if n == "ollama" else "/usr/bin/zstd",
-        run=SMI13,
-        call=call,
-        writable=lambda p: True,
-    )
+    which = {"ollama": str(root / "bin" / "ollama"), **_PIPELINE}
+    machine = Installs(root, which=which, stdout=SMI13, writable=True)
+    mlx.ensure_mlx(NVIDIA_LINUX, sys=machine)
     # A space would split the argument and `$1` would expand: sh sees neither.
-    assert shlex.quote(str(root)) in call.calls[0][2]
+    assert shlex.quote(str(root)) in machine.called[0][2]
 
 
 def test_ensure_mlx_installs_the_windows_zip_with_powershell(tmp_path: Path) -> None:
     root = tmp_path / "Programs" / "Ollama"
     (root / "lib" / "ollama").mkdir(parents=True)
     (root / "ollama.exe").write_text("")
-
-    class Installer(CallRecorder):
-        def __call__(self, cmd: list[str]) -> int:
-            (root / "lib" / "ollama" / "mlx_cuda_v13").mkdir()
-            return super().__call__(cmd)
-
-    call = Installer()
-    mlx.ensure_mlx(NVIDIA_WINDOWS, which=lambda n: str(root / "ollama.exe"), run=SMI13, call=call)
-    assert call.calls[0][:3] == ["powershell", "-NoProfile", "-Command"]
-    assert mlx.MLX_BUNDLE["windows"] in call.calls[0][3]
-    assert "Expand-Archive" in call.calls[0][3]
+    machine = Installs(root, which={"ollama": str(root / "ollama.exe")}, stdout=SMI13)
+    mlx.ensure_mlx(NVIDIA_WINDOWS, sys=machine)
+    assert machine.called[0][:3] == ["powershell", "-NoProfile", "-Command"]
+    assert mlx.MLX_BUNDLE["windows"] in machine.called[0][3]
+    assert "Expand-Archive" in machine.called[0][3]
 
 
 def test_ensure_mlx_quotes_an_apostrophe_in_the_windows_install_dir(tmp_path: Path) -> None:
     root = tmp_path / "O'Brien" / "Programs" / "Ollama"
     (root / "lib" / "ollama").mkdir(parents=True)
     (root / "ollama.exe").write_text("")
-
-    class Installer(CallRecorder):
-        def __call__(self, cmd: list[str]) -> int:
-            (root / "lib" / "ollama" / "mlx_cuda_v13").mkdir()
-            return super().__call__(cmd)
-
-    call = Installer()
-    mlx.ensure_mlx(NVIDIA_WINDOWS, which=lambda n: str(root / "ollama.exe"), run=SMI13, call=call)
-    script = call.calls[0][3]
+    machine = Installs(root, which={"ollama": str(root / "ollama.exe")}, stdout=SMI13)
+    mlx.ensure_mlx(NVIDIA_WINDOWS, sys=machine)
+    script = machine.called[0][3]
     # Doubled, not raw: a lone `'` would end the string PowerShell is parsing.
     assert f"-DestinationPath '{str(root).replace(chr(39), chr(39) * 2)}'" in script
     assert "O''Brien" in script
@@ -694,42 +666,30 @@ def test_ensure_mlx_quotes_an_apostrophe_in_the_windows_install_dir(tmp_path: Pa
 
 def test_ensure_mlx_refuses_an_old_driver(tmp_path: Path) -> None:
     _root, which = _linux_install(tmp_path)
+    machine = FakeSystem(which=which, stdout={"nvidia-smi": "CUDA Version: 12.8"})
     with pytest.raises(FriendlyError) as exc:
-        mlx.ensure_mlx(
-            NVIDIA_LINUX,
-            which=which,
-            run=Runner(stdout={"nvidia-smi": "CUDA Version: 12.8"}),
-            call=CallRecorder(),
-        )
+        mlx.ensure_mlx(NVIDIA_LINUX, sys=machine)
     assert "CUDA 13" in exc.value.problem
 
 
 @pytest.mark.parametrize("missing", ["curl", "tar"])
 def test_ensure_mlx_needs_curl_and_tar_on_linux(tmp_path: Path, missing: str) -> None:
     """The pipeline is `curl | zstd | tar`; a missing link fails halfway through a gigabyte."""
-    root, _ = _linux_install(tmp_path)
-
-    def which(name: str) -> str | None:
-        if name == "ollama":
-            return str(root / "bin" / "ollama")
-        return None if name == missing else f"/usr/bin/{name}"
-
-    call = CallRecorder()
+    _root, which = _linux_install(tmp_path)
+    del which[missing]
+    machine = FakeSystem(which=which, stdout=SMI13)
     with pytest.raises(FriendlyError) as exc:
-        mlx.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=call)
+        mlx.ensure_mlx(NVIDIA_LINUX, sys=machine)
     assert exc.value.problem == "Installing Ollama's MLX engine bundle needs curl and tar."
     assert "sudo apt install curl tar" in exc.value.fix
-    assert call.calls == []  # nothing downloaded before the pipeline could run
+    assert machine.called == []  # nothing downloaded before the pipeline could run
 
 
 def test_ensure_mlx_needs_zstd_on_linux(tmp_path: Path) -> None:
     root, _ = _linux_install(tmp_path)
-
-    def which(name: str) -> str | None:
-        return str(root / "bin" / "ollama") if name == "ollama" else None
-
+    machine = FakeSystem(which={"ollama": str(root / "bin" / "ollama")}, stdout=SMI13)
     with pytest.raises(FriendlyError) as exc:
-        mlx.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=CallRecorder())
+        mlx.ensure_mlx(NVIDIA_LINUX, sys=machine)
     assert "zstd" in exc.value.problem
 
 
@@ -737,8 +697,9 @@ def test_ensure_mlx_refuses_a_non_standard_install(tmp_path: Path) -> None:
     exe = tmp_path / "snap" / "bin" / "ollama"
     exe.parent.mkdir(parents=True)
     exe.write_text("")
+    machine = FakeSystem(which={"ollama": str(exe)}, stdout=SMI13)
     with pytest.raises(FriendlyError) as exc:
-        mlx.ensure_mlx(NVIDIA_LINUX, which=lambda n: str(exe), run=SMI13, call=CallRecorder())
+        mlx.ensure_mlx(NVIDIA_LINUX, sys=machine)
     # The probed directory is named: "not a standard install" alone is not actionable.
     assert f"{tmp_path / 'snap'} is not a standard Ollama install" in exc.value.problem
     assert mlx.MLX_BUNDLE["linux"] in exc.value.fix
@@ -747,7 +708,7 @@ def test_ensure_mlx_refuses_a_non_standard_install(tmp_path: Path) -> None:
 def test_ensure_mlx_reads_a_missing_binary_as_a_stale_path(tmp_path: Path) -> None:
     """A shell opened before OllamaSetup.exe ran has no `ollama` — that is not a broken install."""
     with pytest.raises(FriendlyError) as exc:
-        mlx.ensure_mlx(NVIDIA_WINDOWS, which=lambda n: None, run=SMI13, call=CallRecorder())
+        mlx.ensure_mlx(NVIDIA_WINDOWS, sys=FakeSystem(stdout=SMI13))
     assert exc.value.problem == "Ollama is installed but not on your PATH yet."
     assert "open a new one" in exc.value.fix
     assert "standard Ollama install" not in exc.value.problem
@@ -755,8 +716,9 @@ def test_ensure_mlx_reads_a_missing_binary_as_a_stale_path(tmp_path: Path) -> No
 
 def test_ensure_mlx_failed_install_is_friendly(tmp_path: Path, isolated_home: Path) -> None:
     _root, which = _linux_install(tmp_path)
+    machine = FakeSystem(which=which, stdout=SMI13, codes={"sh -c": 1})
     with pytest.raises(FriendlyError) as exc:
-        mlx.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=CallRecorder(code=1))
+        mlx.ensure_mlx(NVIDIA_LINUX, sys=machine)
     assert "MLX engine bundle failed" in exc.value.problem
     entry = json.loads((logs_dir() / "lepika.log").read_text().splitlines()[-1])
     assert entry["result"] == "failed"
@@ -767,22 +729,31 @@ def test_ensure_mlx_refuses_when_the_installer_reports_success_but_the_bundle_is
 ) -> None:
     """Exit 0 is not proof: a truncated archive unpacks cleanly and leaves no runner."""
     _root, which = _linux_install(tmp_path)
+    machine = FakeSystem(which=which, stdout=SMI13)
     with pytest.raises(FriendlyError) as exc:
-        mlx.ensure_mlx(NVIDIA_LINUX, which=which, run=SMI13, call=CallRecorder())
+        mlx.ensure_mlx(NVIDIA_LINUX, sys=machine)
     assert "MLX engine bundle failed" in exc.value.problem
     entry = json.loads((logs_dir() / "lepika.log").read_text().splitlines()[-1])
     assert entry["result"] == "failed"
 
 
-def test_ollama_store_prefers_the_env_then_the_service_dir_then_home() -> None:
+def test_ollama_store_prefers_the_env_then_the_service_dir_then_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The disk an import fills: OLLAMA_MODELS, else the systemd store, else ~/.ollama."""
-    assert mlx.ollama_store({"OLLAMA_MODELS": "/mnt/models"}) == Path("/mnt/models")
-    assert mlx.ollama_store({}, exists=lambda p: True) == Path("/usr/share/ollama/.ollama")
-    assert mlx.ollama_store({}, exists=lambda p: False) == Path.home() / ".ollama"
+    # The path the official install script gives the systemd service.
+    assert Path("/usr/share/ollama/.ollama") == mlx._SERVICE_STORE
+    service = tmp_path / "usr" / "share" / "ollama" / ".ollama"
+    monkeypatch.setattr(mlx, "_SERVICE_STORE", service)
+    configured = FakeSystem(environ={"OLLAMA_MODELS": "/mnt/models"})
+    assert mlx.ollama_store(sys=configured) == Path("/mnt/models")
+    assert mlx.ollama_store(sys=FakeSystem()) == Path.home() / ".ollama"
     # An empty value is not a configured path.
-    assert mlx.ollama_store({"OLLAMA_MODELS": ""}, exists=lambda p: False) == (
-        Path.home() / ".ollama"
-    )
+    empty = FakeSystem(environ={"OLLAMA_MODELS": ""})
+    assert mlx.ollama_store(sys=empty) == Path.home() / ".ollama"
+    service.mkdir(parents=True)
+    assert mlx.ollama_store(sys=FakeSystem()) == service
+    assert mlx.ollama_store(sys=configured) == Path("/mnt/models")
 
 
 def test_ollama_env_sets_the_context_length_from_config() -> None:

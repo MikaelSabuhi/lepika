@@ -500,8 +500,9 @@ def update(
         raise _compose_failed("pull")
     after = _image_ids(base, run)
     start_stack(info, cfg, run=run, call=call)
-    if not before or not after:
-        # Nothing to compare: "up to date" would be a claim nobody checked.
+    if not after:
+        # Nothing to compare: "up to date" would be a claim nobody checked. Unreadable
+        # before but readable after is different: the pull certainly fetched something.
         return [
             UpdateStep(
                 "Container images",

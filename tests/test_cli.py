@@ -174,6 +174,26 @@ def test_run_reports_a_missing_command_as_such(
     assert "Could not access" not in err
 
 
+def test_run_reports_a_dangling_file_as_a_file_not_a_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`model import .` names files relative to the folder: a bare name that exists as a
+    path, even a dangling link, is a file."""
+    name = "model-00001-of-00002.safetensors"
+    try:
+        (tmp_path / name).symlink_to(tmp_path / "gone.safetensors")
+    except OSError:
+        pytest.skip("this platform does not let the test create a symlink")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "app", _raise(FileNotFoundError(2, "No such file or directory", name)))
+    with pytest.raises(SystemExit) as exit_info:
+        cli.run()
+    assert exit_info.value.code == 1
+    err = _flat(capsys.readouterr().err)
+    assert f"✗ Could not access {name}: No such file or directory" in err
+    assert "Command not found" not in err
+
+
 @pytest.mark.parametrize(
     "error",
     [

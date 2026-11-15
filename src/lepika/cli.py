@@ -586,8 +586,14 @@ def run() -> None:
         # A read or a write, in LePika's home or the user's own folder (`model
         # import <dir>`): name the file and the folder it is in, nothing assumed.
         path = os.fsdecode(exc.filename)
-        if isinstance(exc, FileNotFoundError) and not os.path.dirname(path):
-            # A bare name is a program looked up on PATH: one that is not installed.
+        if (
+            isinstance(exc, FileNotFoundError)
+            and not os.path.dirname(path)
+            and not os.path.lexists(path)
+        ):
+            # A bare name that is nowhere on disk is a program looked up on PATH: one
+            # that is not installed. A bare name that exists — a dangling link in the
+            # folder `model import .` reads — is a file.
             missing = proc.not_found(path)
             _fail(missing.problem, missing.fix)
             raise SystemExit(1) from exc

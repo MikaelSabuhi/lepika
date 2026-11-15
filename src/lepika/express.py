@@ -145,7 +145,7 @@ def install_ollama(
         if which("systemctl") is not None:
             try:
                 call(_systemctl("disable", "--now", "ollama.service", euid=euid))
-            except FriendlyError:
+            except (FriendlyError, OSError):
                 log.get_logger().warning("ollama.install.unit_disable_failed")
     else:  # windows
         run(
@@ -1168,7 +1168,7 @@ def update(
                     "note",
                     "could not read ollama.service's state, so it was left as the installer "
                     "set it — if Ollama misbehaves, run "
-                    "`sudo systemctl disable --now ollama.service`",
+                    "`systemctl disable --now ollama.service` as root",
                 )
             )
         elif not restored:
@@ -1177,7 +1177,7 @@ def update(
                     "Ollama service",
                     "note",
                     "could not put ollama.service back as it was — if Ollama misbehaves, "
-                    "run `sudo systemctl disable --now ollama.service`",
+                    "run `systemctl disable --now ollama.service` as root",
                 )
             )
     before = openwebui_version(run_fn)

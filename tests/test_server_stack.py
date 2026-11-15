@@ -242,6 +242,16 @@ def test_server_update_reports_upgraded_when_they_change(
     assert steps == [UpdateStep("Container images", "upgraded")]
 
 
+def test_server_update_reports_upgraded_when_images_appear_for_the_first_time(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No id before the pull and one after: the pull certainly fetched something."""
+    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
+    run = _ImageIds("", "sha256:bbb\n")
+    steps = server.update(LINUX_NVIDIA, config.Config(mode="server"), run=run, call=Caller())
+    assert steps == [UpdateStep("Container images", "upgraded")]
+
+
 @pytest.mark.parametrize(
     "run",
     [

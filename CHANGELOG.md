@@ -30,8 +30,8 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "Everything is up to date".
 - `lepika update` works on a Linux server without `sudo`: run as root it needs none,
   OpenWebUI is still upgraded, and if `ollama.service` could not be put back the
-  report says so instead of failing with "Could not access sudo". In Server mode, it no longer
-  claims the images are up to date when it could not read their ids.
+  report says so instead of failing with "Could not access sudo". In Server mode, it
+  no longer claims the images are up to date when it could not read their ids.
 
 ### Changed
 

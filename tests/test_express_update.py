@@ -188,7 +188,7 @@ _RESTORE_FAILED = UpdateStep(
     "Ollama service",
     "note",
     "could not put ollama.service back as it was — if Ollama misbehaves, run "
-    "`sudo systemctl disable --now ollama.service`",
+    "`systemctl disable --now ollama.service` as root",
 )
 
 
@@ -376,7 +376,7 @@ def test_update_restores_nothing_when_systemd_does_not_answer(
         "Ollama service",
         "note",
         "could not read ollama.service's state, so it was left as the installer set it — "
-        "if Ollama misbehaves, run `sudo systemctl disable --now ollama.service`",
+        "if Ollama misbehaves, run `systemctl disable --now ollama.service` as root",
     )
     log_text = (paths.logs_dir() / "lepika.log").read_text()
     assert "ollama.update.unit_state_unknown" in log_text

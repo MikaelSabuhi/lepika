@@ -144,11 +144,15 @@ def test_install_ollama_as_root_disables_the_unit_without_sudo() -> None:
 
 @pytest.mark.parametrize(
     "disable",
-    [1, FriendlyError("Command not found: sudo", "Install sudo or run `lepika doctor`.")],
-    ids=["exits non-zero", "no sudo"],
+    [
+        1,
+        FriendlyError("Command not found: sudo", "Install sudo or run `lepika doctor`."),
+        PermissionError(13, "Permission denied", "sudo"),
+    ],
+    ids=["exits non-zero", "no sudo", "sudo not executable"],
 )
 def test_install_ollama_linux_survives_a_failed_service_disable(
-    disable: int | FriendlyError,
+    disable: int | Exception,
 ) -> None:
     class SecondCallFails:
         def __init__(self) -> None:
@@ -158,7 +162,7 @@ def test_install_ollama_linux_survives_a_failed_service_disable(
             self.calls.append(list(cmd))
             if len(self.calls) == 1:
                 return 0
-            if isinstance(disable, FriendlyError):
+            if isinstance(disable, Exception):
                 raise disable
             return disable
 

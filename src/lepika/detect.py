@@ -3,23 +3,18 @@
 from __future__ import annotations
 
 import platform as _platform
-import shutil
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Literal
 
-from lepika import proc
+from lepika import config
 from lepika.errors import ISSUES_URL, FriendlyError
-from lepika.system import _global_memory_status
+from lepika.system import System
 
 OsName = Literal["macos", "linux", "windows"]
 Gpu = Literal["apple", "nvidia", "none"]
-RunFn = Callable[..., Any]
 UrlOpenFn = Callable[..., Any]
-
-OLLAMA_URL = "http://127.0.0.1:11434"
 
 
 @dataclass(frozen=True)
@@ -47,14 +42,10 @@ def detect_os(system: str | None = None) -> OsName:
     )
 
 
-def detect_gpu(
-    os_name: OsName,
-    arch: str,
-    which: Callable[[str], str | None] = shutil.which,
-) -> Gpu:
+def detect_gpu(os_name: OsName, arch: str, sys: System) -> Gpu:
     if os_name == "macos" and arch == "arm64":
         return "apple"
-    if which("nvidia-smi") is not None:
+    if sys.which("nvidia-smi") is not None:
         return "nvidia"
     return "none"
 
@@ -62,7 +53,7 @@ def detect_gpu(
 _NVIDIA_SMI_MEMORY = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
 
 
-def gpu_memory_gb(info: SystemInfo, run: RunFn = proc.run_logged) -> float:
+def gpu_memory_gb(info: SystemInfo, sys: System) -> float:
     """Memory a model can be loaded into on the GPU, in GiB; 0.0 without one.
 
     Asked by the quant picker alone, never by `detect()`: on NVIDIA it is a
@@ -79,7 +70,7 @@ def gpu_memory_gb(info: SystemInfo, run: RunFn = proc.run_logged) -> float:
     if info.gpu != "nvidia":
         return 0.0
     try:
-        output = str(run(_NVIDIA_SMI_MEMORY, check=False, log=False, timeout=15).stdout)
+        output = str(sys.run(_NVIDIA_SMI_MEMORY, check=False, log=False, timeout=15).stdout)
     except FriendlyError:
         return 0.0
     total_mib = 0
@@ -94,7 +85,7 @@ def gpu_memory_gb(info: SystemInfo, run: RunFn = proc.run_logged) -> float:
 _DOCKER_MEMORY = ["docker", "info", "--format", "{{.MemTotal}}"]
 
 
-def docker_memory_gb(run: RunFn = proc.run_logged) -> float:
+def docker_memory_gb(sys: System) -> float:
     """Memory Docker's containers can use, in GiB; 0.0 when Docker will not say.
 
     On Linux that is the machine's own RAM. Docker Desktop (macOS, Windows) runs
@@ -103,59 +94,22 @@ def docker_memory_gb(run: RunFn = proc.run_logged) -> float:
     timeout, like `nvidia-smi`: a stopped daemon must read as "unknown", not hang.
     """
     try:
-        output = str(run(_DOCKER_MEMORY, check=False, log=False, timeout=15).stdout).strip()
+        output = str(sys.run(_DOCKER_MEMORY, check=False, log=False, timeout=15).stdout).strip()
     except FriendlyError:
         return 0.0
     return int(output) / 2**30 if output.isdecimal() else 0.0
 
 
-def _memory_error() -> FriendlyError:
-    # Every platform's probe fails the same way: guessing 0 GB would silently filter
-    # the curated list down to nothing, and a raw ValueError is a traceback.
-    return FriendlyError(
-        "Could not detect system memory.",
-        # Not `lepika doctor`: it detects memory as well, and would fail the same way.
-        f"Re-run the command; if it keeps happening, report it at {ISSUES_URL}.",
-    )
-
-
-def _windows_ram_gb(status: Callable[[], tuple[bool, int]] | None = None) -> float:
-    # GlobalMemoryStatusEx signals failure through its BOOL return, leaving the
-    # struct untouched. Ignoring it reported a 0 GB machine, which silently
-    # filtered the curated list down to nothing.
-    reader = status if status is not None else _global_memory_status
-    ok, total_bytes = reader()
-    if not ok:
-        raise _memory_error()
+def detect_ram_gb(sys: System) -> float:
+    total_bytes = sys.ram_bytes()
+    if total_bytes is None:
+        # Guessing 0 GB would silently filter the curated list down to nothing.
+        raise FriendlyError(
+            "Could not detect system memory.",
+            # Not `lepika doctor`: it detects memory as well, and would fail the same way.
+            f"Re-run the command; if it keeps happening, report it at {ISSUES_URL}.",
+        )
     return float(total_bytes) / 2**30
-
-
-def detect_ram_gb(
-    os_name: OsName,
-    run: RunFn = proc.run_logged,
-    meminfo: Path = Path("/proc/meminfo"),
-) -> float:
-    if os_name == "macos":
-        # A pure read of the machine: nothing changed, so nothing is logged.
-        result = run(["sysctl", "-n", "hw.memsize"], log=False)
-        try:
-            return float(int(result.stdout.strip())) / 2**30
-        except ValueError as exc:
-            raise _memory_error() from exc
-    if os_name == "linux":
-        try:
-            text = meminfo.read_text()
-        except OSError as exc:
-            raise _memory_error() from exc
-        for line in text.splitlines():
-            if line.startswith("MemTotal:"):
-                try:
-                    kb = int(line.split()[1])
-                except (IndexError, ValueError) as exc:
-                    raise _memory_error() from exc
-                return float(kb) / 2**20
-        raise _memory_error()
-    return _windows_ram_gb()
 
 
 def api_up(
@@ -175,21 +129,18 @@ def api_up(
     return True
 
 
-def detect(
-    which: Callable[[str], str | None] = shutil.which,
-    run: RunFn = proc.run_logged,
-    urlopen: UrlOpenFn | None = None,
-) -> SystemInfo:
+def detect(sys: System) -> SystemInfo:
+    """The machine as LePika needs it, read without starting a process (rule 6)."""
     os_name = detect_os()
     arch = _platform.machine().lower()
     return SystemInfo(
         os=os_name,
         arch=arch,
-        gpu=detect_gpu(os_name, arch, which),
-        ram_gb=detect_ram_gb(os_name, run),
-        has_docker=which("docker") is not None,
-        has_ollama=which("ollama") is not None,
-        ollama_running=api_up(OLLAMA_URL, urlopen=urlopen),
+        gpu=detect_gpu(os_name, arch, sys),
+        ram_gb=detect_ram_gb(sys),
+        has_docker=sys.which("docker") is not None,
+        has_ollama=sys.which("ollama") is not None,
+        ollama_running=api_up(config.DEFAULT_ENGINE_URL, urlopen=sys.open_url),
     )
 
 

@@ -19,7 +19,7 @@ from typing import Any
 
 from lepika import detect, fsio, log, proc
 from lepika.backend import UpdateStep
-from lepika.config import DEFAULT_CONTEXT_LENGTH, Config, config_path
+from lepika.config import DEFAULT_CONTEXT_LENGTH, DEFAULT_ENGINE_URL, Config, config_path
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.paths import lepika_home, logs_dir, openwebui_data_dir, pid_file
@@ -304,7 +304,7 @@ def ensure_ollama(
     api_up: Callable[..., bool] = detect.api_up,
     sleep: SleepFn = time.sleep,
     call: CallFn = proc.call,
-    url: str = detect.OLLAMA_URL,
+    url: str = DEFAULT_ENGINE_URL,
     kill: Callable[[int, int], None] = os.kill,
     environ: Mapping[str, str] | None = None,
 ) -> None:

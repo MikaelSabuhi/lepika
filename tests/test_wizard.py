@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fakes import FakeSystem
 from typer.testing import CliRunner
 
 from lepika import acquire, cli, config, detect, engine, express, gguf, models, wizard
@@ -29,7 +29,9 @@ CURATED = [
 
 
 def test_choose_model_by_number_picks_fitting_curated() -> None:
-    ref = wizard.choose_model(INFO, config.Config(), ask=lambda *a, **k: "1", curated=CURATED)
+    ref = wizard.choose_model(
+        INFO, config.Config(), ask=lambda *a, **k: "1", curated=CURATED, sys=FakeSystem()
+    )
     assert ref.raw == "llama3.2:3b"
     assert ref.kind == "ollama"
 
@@ -45,6 +47,7 @@ def test_choose_model_free_form_survives_an_offline_hub(capsys: pytest.CaptureFi
         ask=lambda *a, **k: "hf.co/unsloth/gemma-3-4b-it-GGUF",
         curated=CURATED,
         urlopen=_offline,
+        sys=FakeSystem(),
     )
     assert ref == models.ModelRef(raw="hf.co/unsloth/gemma-3-4b-it-GGUF", kind="hf_gguf")
     # Collapsed: rich wraps the notice at 80 columns, between "Ollama" and "pick".
@@ -61,13 +64,16 @@ def test_choose_model_rejects_hf_repo_with_gguf_hint_where_nothing_can_serve_it(
             config.Config(),
             ask=lambda *a, **k: "meta-llama/Llama-3.3-70B-Instruct",
             curated=CURATED,
+            sys=FakeSystem(),
         )
     assert "GGUF" in exc.value.fix
 
 
 def test_choose_model_non_decimal_digit_is_a_model_ref_not_a_crash() -> None:
     """`str.isdigit()` is true for "²", which `int()` refuses — that must not traceback."""
-    ref = wizard.choose_model(INFO, config.Config(), ask=lambda *a, **k: "²", curated=CURATED)
+    ref = wizard.choose_model(
+        INFO, config.Config(), ask=lambda *a, **k: "²", curated=CURATED, sys=FakeSystem()
+    )
     assert ref.raw == "²"
     assert ref.kind == "ollama"
 
@@ -92,7 +98,7 @@ TINY = detect.SystemInfo(
 def test_choose_model_explains_an_empty_curated_list(capsys: pytest.CaptureFixture[str]) -> None:
     """An empty table is a dead end; say why it's empty and what still works."""
     ref = wizard.choose_model(
-        TINY, config.Config(), ask=lambda *a, **k: "qwen3:0.6b", curated=CURATED
+        TINY, config.Config(), ask=lambda *a, **k: "qwen3:0.6b", curated=CURATED, sys=FakeSystem()
     )
     assert ref.raw == "qwen3:0.6b"
     out = capsys.readouterr().out
@@ -106,7 +112,7 @@ def test_choose_model_reprompts_once_on_an_out_of_range_number(
     """A 99 against 3 rows is a mistyped pick, not a model called 99."""
     answers = iter(["99", "3"])
     ref = wizard.choose_model(
-        INFO, config.Config(), ask=lambda *a, **k: next(answers), curated=THREE
+        INFO, config.Config(), ask=lambda *a, **k: next(answers), curated=THREE, sys=FakeSystem()
     )
     assert ref.raw == "gemma3:4b"
     assert "only 3" in capsys.readouterr().out
@@ -116,7 +122,7 @@ def test_choose_model_second_bad_number_falls_through_as_a_model_ref() -> None:
     """The re-prompt is bounded: one explanation, then the flow moves on."""
     answers = iter(["99", "77"])
     ref = wizard.choose_model(
-        INFO, config.Config(), ask=lambda *a, **k: next(answers), curated=THREE
+        INFO, config.Config(), ask=lambda *a, **k: next(answers), curated=THREE, sys=FakeSystem()
     )
     assert ref.raw == "77"
 
@@ -126,7 +132,9 @@ def test_choose_model_without_a_terminal_is_a_friendly_error() -> None:
         raise EOFError("stdin is not a terminal")
 
     with pytest.raises(FriendlyError) as exc:
-        wizard.choose_model(INFO, config.Config(), ask=no_terminal, curated=CURATED)
+        wizard.choose_model(
+            INFO, config.Config(), ask=no_terminal, curated=CURATED, sys=FakeSystem()
+        )
     assert exc.value.problem == (
         "Choosing a model needs an answer, and there is no terminal to ask."
     )
@@ -212,6 +220,7 @@ def test_choose_model_prompt_lists_all_three_model_ref_shapes() -> None:
         config.Config(),
         ask=lambda prompt, **k: bool(prompts.append(prompt)) or "1",
         curated=CURATED,
+        sys=FakeSystem(),
     )
     assert "qwen3:8b" in prompts[0]
     assert "hf.co/<org>/<repo>-GGUF" in prompts[0]
@@ -295,7 +304,7 @@ def test_choose_quant_enter_takes_the_recommended_build(
         prompts.append((prompt, kwargs))
         return ""
 
-    ref = wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=ask)
+    ref = wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=ask, sys=FakeSystem())
     assert ref == models.ModelRef(raw="hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS", kind="hf_gguf")
     assert prompts == [("Pick a number", {"default": "2"})]
     out = capsys.readouterr().out
@@ -308,7 +317,9 @@ def test_choose_quant_enter_takes_the_recommended_build(
 
 def test_choose_quant_number_picks_another_build(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
-    ref = wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=lambda *a, **k: "3")
+    ref = wizard.choose_quant(
+        GGUF_REF, config.Config(), INFO, ask=lambda *a, **k: "3", sys=FakeSystem()
+    )
     assert ref.raw == "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M"
 
 
@@ -317,7 +328,9 @@ def test_choose_quant_reprompts_once_then_takes_the_recommendation(
 ) -> None:
     monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
     answers = iter(["9", "banana"])
-    ref = wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=lambda *a, **k: next(answers))
+    ref = wizard.choose_quant(
+        GGUF_REF, config.Config(), INFO, ask=lambda *a, **k: next(answers), sys=FakeSystem()
+    )
     assert ref.raw == "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS"
     assert "Pick 1 to 3." in capsys.readouterr().out
 
@@ -333,7 +346,7 @@ def test_choose_quant_sends_the_saved_token(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.delenv("HF_TOKEN", raising=False)
     cfg = config.Config()
     cfg.hf_token = "hf_saved"
-    wizard.choose_quant(GGUF_REF, cfg, INFO, ask=lambda *a, **k: "")
+    wizard.choose_quant(GGUF_REF, cfg, INFO, ask=lambda *a, **k: "", sys=FakeSystem())
     assert seen["token"] == "hf_saved"
 
 
@@ -347,7 +360,7 @@ def test_choose_quant_leaves_an_explicit_tag_alone_without_asking_anyone(
     def never(*a: Any, **k: Any) -> str:
         raise AssertionError("no prompt for a tagged ref")
 
-    assert wizard.choose_quant(tagged, config.Config(), INFO, ask=never) == tagged
+    assert wizard.choose_quant(tagged, config.Config(), INFO, ask=never, sys=FakeSystem()) == tagged
     assert listing.calls == []
 
 
@@ -355,7 +368,7 @@ def test_choose_quant_ignores_refs_that_are_not_hf_gguf(monkeypatch: pytest.Monk
     listing = _listing(BUILDS)
     monkeypatch.setattr(gguf, "list_builds", listing)
     for ref in (models.parse_model_ref("qwen3:8b"), models.parse_model_ref("Qwen/Qwen3.5-2B")):
-        assert wizard.choose_quant(ref, config.Config(), INFO) == ref
+        assert wizard.choose_quant(ref, config.Config(), INFO, sys=FakeSystem()) == ref
     assert listing.calls == []
 
 
@@ -364,7 +377,7 @@ def test_choose_quant_falls_through_silently_on_a_repo_without_gguf(
 ) -> None:
     monkeypatch.setattr(gguf, "list_builds", _listing([]))
     ref = models.ModelRef(raw="hf.co/Qwen/Qwen3.5-2B", kind="hf_gguf")
-    assert wizard.choose_quant(ref, config.Config(), INFO) == ref
+    assert wizard.choose_quant(ref, config.Config(), INFO, sys=FakeSystem()) == ref
     assert capsys.readouterr().out == ""
 
 
@@ -374,7 +387,7 @@ def test_choose_quant_skips_a_malformed_repo_id_silently(
     listing = _listing(BUILDS)
     monkeypatch.setattr(gguf, "list_builds", listing)
     ref = models.ModelRef(raw="hf.co/../etc", kind="hf_gguf")
-    assert wizard.choose_quant(ref, config.Config(), INFO) == ref
+    assert wizard.choose_quant(ref, config.Config(), INFO, sys=FakeSystem()) == ref
     assert listing.calls == []
     assert capsys.readouterr().out == ""
 
@@ -387,7 +400,10 @@ def test_choose_quant_says_so_when_nothing_fits(
     def never(*a: Any, **k: Any) -> str:
         raise AssertionError("nothing to pick from")
 
-    assert wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=never) == GGUF_REF
+    assert (
+        wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=never, sys=FakeSystem())
+        == GGUF_REF
+    )
     assert "None of the 1 builds fits in your 16 GB RAM" in capsys.readouterr().out
 
 
@@ -395,7 +411,9 @@ def test_choose_quant_names_the_ram_budget_without_a_gpu(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q4_K_M", int(4e9))]))
-    wizard.choose_quant(GGUF_REF, config.Config(), CPU_ONLY, ask=lambda *a, **k: "")
+    wizard.choose_quant(
+        GGUF_REF, config.Config(), CPU_ONLY, ask=lambda *a, **k: "", sys=FakeSystem()
+    )
     out = capsys.readouterr().out
     assert "Fit (16 GB RAM)" in out and "CPU only — slow" in out
 
@@ -406,11 +424,10 @@ def test_choose_quant_probes_nvidia_memory_only_when_it_lists(
     monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q4_K_M", int(4e9))]))
     nvidia = detect.SystemInfo("linux", "x86_64", "nvidia", 32.0, False, True, True)
 
-    def run(cmd: list[str], **kwargs: Any) -> Any:
-        return SimpleNamespace(stdout="16303\n")
-
-    wizard.choose_quant(GGUF_REF, config.Config(), nvidia, ask=lambda *a, **k: "", run=run)
+    sys = FakeSystem(stdout={"nvidia-smi": "16303\n"})
+    wizard.choose_quant(GGUF_REF, config.Config(), nvidia, sys, ask=lambda *a, **k: "")
     assert "Fit (16 GB GPU)" in capsys.readouterr().out
+    assert [cmd[0] for cmd in sys.ran] == ["nvidia-smi"]
 
 
 def test_choose_quant_budgets_no_gpu_for_a_container_on_apple_silicon(
@@ -420,11 +437,9 @@ def test_choose_quant_budgets_no_gpu_for_a_container_on_apple_silicon(
     cfg = config.Config()
     cfg.mode = "server"
 
-    def run(cmd: list[str], **kwargs: Any) -> Any:
-        assert cmd[:2] == ["docker", "info"], f"no GPU probe: {cmd}"
-        return SimpleNamespace(stdout="")  # Docker's memory unknown: the Mac's RAM
-
-    wizard.choose_quant(GGUF_REF, cfg, INFO, ask=lambda *a, **k: "", run=run)
+    sys = FakeSystem(stdout={"docker info": ""})  # Docker's memory unknown: the Mac's RAM
+    wizard.choose_quant(GGUF_REF, cfg, INFO, sys, ask=lambda *a, **k: "")
+    assert sys.ran == [DOCKER_INFO], "no GPU probe"
     out = capsys.readouterr().out
     assert "Fit (16 GB RAM)" in out and "CPU only — slow" in out
 
@@ -436,7 +451,7 @@ def test_choose_quant_says_a_remote_engine_is_sized_against_this_machine(
     cfg = config.Config()
     cfg.engine_managed = False
     cfg.engine_url = "http://box:11434"
-    ref = wizard.choose_quant(GGUF_REF, cfg, INFO, ask=lambda *a, **k: "")
+    ref = wizard.choose_quant(GGUF_REF, cfg, INFO, ask=lambda *a, **k: "", sys=FakeSystem())
     out = " ".join(capsys.readouterr().out.split())
     assert "Sized against this machine — the engine at http://box:11434 is what runs it." in out
     assert ref.raw.endswith(":UD-IQ4_XS")
@@ -451,10 +466,9 @@ def test_choose_quant_never_probes_the_gpu_when_the_listing_fails(
     monkeypatch.setattr(gguf, "list_builds", unavailable)
     nvidia = detect.SystemInfo("linux", "x86_64", "nvidia", 32.0, False, True, True)
 
-    def run(cmd: list[str], **kwargs: Any) -> Any:
-        raise AssertionError("no probe")
-
-    assert wizard.choose_quant(GGUF_REF, config.Config(), nvidia, run=run) == GGUF_REF
+    sys = FakeSystem()
+    assert wizard.choose_quant(GGUF_REF, config.Config(), nvidia, sys) == GGUF_REF
+    assert sys.ran == [], "no probe"
 
 
 def test_choose_quant_enter_lets_ollama_pick_when_nothing_is_recommended(
@@ -469,7 +483,9 @@ def test_choose_quant_enter_lets_ollama_pick_when_nothing_is_recommended(
             raise AssertionError("asked twice")
         return ""
 
-    assert wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=ask) == GGUF_REF
+    assert (
+        wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=ask, sys=FakeSystem()) == GGUF_REF
+    )
     assert "Letting Ollama pick." in capsys.readouterr().out
 
 
@@ -481,7 +497,7 @@ def test_choose_quant_takes_the_recommendation_when_there_is_no_terminal(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
-    ref = wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=_no_terminal)
+    ref = wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=_no_terminal, sys=FakeSystem())
     assert ref.raw == "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS"
     assert "No terminal to ask — taking UD-IQ4_XS." in " ".join(capsys.readouterr().out.split())
 
@@ -491,21 +507,21 @@ def test_choose_quant_lets_ollama_pick_without_a_terminal_or_a_recommendation(
 ) -> None:
     # BF16 fits, but `recommend` never returns an unquantized build: no ★ to fall back to.
     monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("BF16", int(4e9))]))
-    assert wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=_no_terminal) == GGUF_REF
+    assert (
+        wizard.choose_quant(GGUF_REF, config.Config(), INFO, ask=_no_terminal, sys=FakeSystem())
+        == GGUF_REF
+    )
     assert "letting Ollama pick" in " ".join(capsys.readouterr().out.split())
 
 
-def _docker_vm(memtotal: str) -> Any:
-    """`docker info` reporting the VM's MemTotal; any other probe is a test failure."""
-
-    def run(cmd: list[str], **kwargs: Any) -> Any:
-        assert cmd[:2] == ["docker", "info"], f"unexpected probe: {cmd}"
-        return SimpleNamespace(stdout=memtotal)
-
-    return run
+def _docker_vm(memtotal: str) -> FakeSystem:
+    """`docker info` reporting the VM's MemTotal. Each test asserts it was the only
+    probe: `sys.ran == [DOCKER_INFO]`."""
+    return FakeSystem(stdout={"docker info": memtotal})
 
 
 DOCKER_DESKTOP_DEFAULT = "8320299008\n"  # 7.75 GiB: a 16 GB Mac's Docker Desktop VM
+DOCKER_INFO = ["docker", "info", "--format", "{{.MemTotal}}"]
 
 
 def _server() -> config.Config:
@@ -520,9 +536,9 @@ def test_choose_quant_sizes_a_server_engine_against_dockers_memory(
     """The engine container cannot use the Mac's 16 GB, only the VM's 7.75: 80 % of
     that is 6.2 GB, so only UD-IQ2_M (6.0 GB) can load and it has to be the ★."""
     monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
-    ref = wizard.choose_quant(
-        GGUF_REF, _server(), INFO, ask=lambda *a, **k: "", run=_docker_vm(DOCKER_DESKTOP_DEFAULT)
-    )
+    sys = _docker_vm(DOCKER_DESKTOP_DEFAULT)
+    ref = wizard.choose_quant(GGUF_REF, _server(), INFO, sys, ask=lambda *a, **k: "")
+    assert sys.ran == [DOCKER_INFO]
     assert ref.raw == "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_M"
     out = " ".join(capsys.readouterr().out.split())  # Rich wraps at 80 columns
     assert "Fit (Docker's 8 GB)" in out
@@ -537,9 +553,9 @@ def test_choose_quant_in_server_mode_keeps_ram_wording_when_docker_has_it_all(
     """Linux: containers share the host's memory, so there is nothing to explain."""
     monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q4_K_M", int(4e9))]))
     linux = f"{int(16.0 * 2**30)}\n"
-    wizard.choose_quant(
-        GGUF_REF, _server(), CPU_ONLY, ask=lambda *a, **k: "", run=_docker_vm(linux)
-    )
+    sys = _docker_vm(linux)
+    wizard.choose_quant(GGUF_REF, _server(), CPU_ONLY, sys, ask=lambda *a, **k: "")
+    assert sys.ran == [DOCKER_INFO]
     out = capsys.readouterr().out
     assert "Fit (16 GB RAM)" in out
     assert "Docker" not in out
@@ -550,10 +566,9 @@ def test_choose_quant_in_express_never_asks_docker(
 ) -> None:
     monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q4_K_M", int(4e9))]))
 
-    def never(cmd: list[str], **kwargs: Any) -> Any:
-        raise AssertionError(f"no probe without a GPU in Express: {cmd}")
-
-    wizard.choose_quant(GGUF_REF, config.Config(), CPU_ONLY, ask=lambda *a, **k: "", run=never)
+    sys = FakeSystem()
+    wizard.choose_quant(GGUF_REF, config.Config(), CPU_ONLY, sys, ask=lambda *a, **k: "")
+    assert sys.ran == [], "no probe without a GPU in Express"
     assert "Fit (16 GB RAM)" in capsys.readouterr().out
 
 
@@ -567,13 +582,9 @@ def test_choose_model_lists_what_fits_dockers_memory_in_server_mode(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A 12 GB model offered to a 7.75 GiB VM is a pull that can never load."""
-    ref = wizard.choose_model(
-        INFO,
-        _server(),
-        ask=lambda *a, **k: "1",
-        curated=SIZED,
-        run=_docker_vm(DOCKER_DESKTOP_DEFAULT),
-    )
+    sys = _docker_vm(DOCKER_DESKTOP_DEFAULT)
+    ref = wizard.choose_model(INFO, _server(), sys, ask=lambda *a, **k: "1", curated=SIZED)
+    assert sys.ran == [DOCKER_INFO]
     assert ref.raw == "llama3.2:3b"
     out = " ".join(capsys.readouterr().out.split())  # Rich wraps at 80 columns
     assert "Models that fit Docker's 8 GB" in out
@@ -583,10 +594,9 @@ def test_choose_model_lists_what_fits_dockers_memory_in_server_mode(
 def test_choose_model_in_express_lists_what_fits_the_machine(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def never(cmd: list[str], **kwargs: Any) -> Any:
-        raise AssertionError(f"Express runs no probe: {cmd}")
-
-    wizard.choose_model(INFO, config.Config(), ask=lambda *a, **k: "1", curated=SIZED, run=never)
+    sys = FakeSystem()
+    wizard.choose_model(INFO, config.Config(), sys, ask=lambda *a, **k: "1", curated=SIZED)
+    assert sys.ran == [], "Express runs no probe"
     out = capsys.readouterr().out
     assert "Models that fit your 16 GB" in out
     assert "gemma3:12b" in out

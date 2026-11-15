@@ -146,6 +146,10 @@ class System(Protocol):
 
     def disk_free(self, path: Path) -> int: ...
 
+    def ram_bytes(self) -> int | None:
+        """Physical memory in bytes, or None when the machine will not say."""
+        ...
+
 
 class RealSystem:
     """The machine itself. Each method delegates to the module that owns the effect,
@@ -223,6 +227,20 @@ class RealSystem:
 
     def disk_free(self, path: Path) -> int:
         return shutil.disk_usage(path).free
+
+    def ram_bytes(self) -> int | None:
+        if sys.platform == "win32":
+            # GlobalMemoryStatusEx signals failure through its BOOL return, leaving
+            # the struct untouched: reading it anyway reported a 0 GB machine.
+            ok, total = _global_memory_status()
+            return total if ok else None
+        # Asked of the C library, so no process is started (rule 6). An unknown
+        # name is ValueError, and an answer of -1 is how sysconf says it does not know.
+        try:
+            total = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        except (ValueError, OSError):
+            return None
+        return total if total > 0 else None
 
 
 REAL: System = RealSystem()

@@ -1,20 +1,42 @@
 from __future__ import annotations
 
+import io
 import subprocess
-from pathlib import Path
+import urllib.request
+from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
 import pytest
+from fakes import FakeSystem
 
-from lepika import detect
+from lepika import config, detect
 from lepika.errors import FriendlyError
 
+_NVIDIA_SMI = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
+_DOCKER_INFO = ["docker", "info", "--format", "{{.MemTotal}}"]
+# What `gpu_memory_gb` and `docker_memory_gb` ask of `run`: a read with a timeout.
+_PROBE_KWARGS = {"check": False, "env": None, "timeout": 15, "log": False, "ok": (0,)}
 
-def fake_run(stdout: str) -> Any:
-    def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
 
-    return _run
+class HungSystem(FakeSystem):
+    """A `run` that times out, the way `proc.run_logged` reports a wedged program."""
+
+    def run(
+        self,
+        cmd: Sequence[str],
+        *,
+        check: bool = True,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        log: bool = True,
+        ok: Collection[int] = (0,),
+    ) -> subprocess.CompletedProcess[str]:
+        self.ran.append(list(cmd))
+        raise FriendlyError(f"{cmd[0]} timed out.", "Check that it still answers.")
+
+
+def _engine_answers(request: urllib.request.Request) -> Any:
+    return io.BytesIO(b'{"version": "0.33.2"}')
 
 
 def test_detect_os_maps_platform_names() -> None:
@@ -26,70 +48,55 @@ def test_detect_os_maps_platform_names() -> None:
 
 
 def test_detect_gpu_apple_silicon() -> None:
-    assert detect.detect_gpu("macos", "arm64", which=lambda name: None) == "apple"
+    assert detect.detect_gpu("macos", "arm64", FakeSystem()) == "apple"
 
 
 def test_detect_gpu_nvidia_via_nvidia_smi() -> None:
-    def which(name: str) -> str | None:
-        return "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None
-
-    assert detect.detect_gpu("linux", "x86_64", which=which) == "nvidia"
+    sys = FakeSystem(which={"nvidia-smi": "/usr/bin/nvidia-smi"})
+    assert detect.detect_gpu("linux", "x86_64", sys) == "nvidia"
 
 
 def test_detect_gpu_none() -> None:
-    assert detect.detect_gpu("linux", "x86_64", which=lambda name: None) == "none"
+    assert detect.detect_gpu("linux", "x86_64", FakeSystem()) == "none"
 
 
-def test_ram_macos_uses_sysctl() -> None:
-    ram = detect.detect_ram_gb("macos", run=fake_run(str(32 * 2**30)))
-    assert ram == pytest.approx(32.0)
+def test_ram_comes_from_the_system_in_gib() -> None:
+    sys = FakeSystem(ram_bytes=32 * 2**30)
+    assert detect.detect_ram_gb(sys) == 32.0
+    assert sys.ran == []
 
 
-def test_ram_linux_reads_meminfo(tmp_path: Path) -> None:
-    meminfo = tmp_path / "meminfo"
-    meminfo.write_text("MemTotal:       16384000 kB\nMemFree: 1 kB\n")
-    ram = detect.detect_ram_gb("linux", meminfo=meminfo)
-    assert ram == pytest.approx(16384000 / 2**20)
-
-
-def test_garbled_sysctl_is_a_friendly_error() -> None:
+def test_unknown_memory_is_a_friendly_error() -> None:
+    """Guessing 0 GB would silently filter the curated list down to nothing."""
     with pytest.raises(FriendlyError) as exc:
-        detect.detect_ram_gb("macos", run=fake_run("sysctl: unknown oid"))
+        detect.detect_ram_gb(FakeSystem(ram_bytes=None))
     assert exc.value.problem == "Could not detect system memory."
-
-
-def test_unreadable_meminfo_is_a_friendly_error(tmp_path: Path) -> None:
-    with pytest.raises(FriendlyError) as exc:
-        detect.detect_ram_gb("linux", meminfo=tmp_path / "missing")
-    assert exc.value.problem == "Could not detect system memory."
-    garbled = tmp_path / "meminfo"
-    garbled.write_text("MemTotal: lots kB\n")
-    with pytest.raises(FriendlyError):
-        detect.detect_ram_gb("linux", meminfo=garbled)
-
-
-def test_meminfo_without_memtotal_is_a_friendly_error(tmp_path: Path) -> None:
-    meminfo = tmp_path / "meminfo"
-    meminfo.write_text("MemFree: 1 kB\n")
-    with pytest.raises(FriendlyError) as exc:
-        detect.detect_ram_gb("linux", meminfo=meminfo)
-    assert exc.value.problem == "Could not detect system memory."
-
-
-def test_windows_ram_converts_bytes_to_gb() -> None:
-    assert detect._windows_ram_gb(status=lambda: (True, 16 * 2**30)) == pytest.approx(16.0)
-
-
-def test_windows_ram_raises_when_the_memory_api_fails() -> None:
-    """GlobalMemoryStatusEx returns a BOOL; ignoring it reports a 0 GB machine."""
-    with pytest.raises(FriendlyError) as exc:
-        detect._windows_ram_gb(status=lambda: (False, 0))
-    assert "memory" in exc.value.problem
     # Not `lepika doctor`: it detects memory too, and would fail the same way.
     assert exc.value.fix == (
         "Re-run the command; if it keeps happening, report it at "
         "https://github.com/MikaelSabuhi/lepika/issues."
     )
+
+
+def test_detect_makes_no_subprocess_call() -> None:
+    """Rule 6: detecting the machine starts no process, whatever is installed."""
+    sys = FakeSystem(
+        which={"nvidia-smi": "/usr/bin/nvidia-smi", "docker": "/usr/bin/docker"},
+        urls=_engine_answers,
+    )
+    info = detect.detect(sys=sys)
+    assert sys.ran == []
+    assert sys.called == []
+    assert info.ram_gb == 16.0
+    assert info.has_docker is True
+    assert info.has_ollama is False
+    assert info.ollama_running is True
+
+
+def test_detect_probes_the_default_engine_url() -> None:
+    sys = FakeSystem(urls=_engine_answers)
+    detect.detect(sys=sys)
+    assert [r.full_url for r in sys.requested] == [config.DEFAULT_ENGINE_URL + "/api/version"]
 
 
 def test_api_up_true_and_false() -> None:
@@ -179,62 +186,50 @@ def _info(gpu: detect.Gpu, ram_gb: float) -> detect.SystemInfo:
 def test_gpu_memory_sums_every_nvidia_card_in_gib() -> None:
     """GiB, like RAM and the Metal share: a 16 GB card (16303 MiB) must read as 16,
     not the 17 decimal GB the picker once showed on a card sold as 16."""
-    calls: list[list[str]] = []
-
-    def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        calls.append(cmd)
-        assert kwargs == {"check": False, "log": False, "timeout": 15}
-        return subprocess.CompletedProcess(cmd, 0, stdout="16303\n24576\n", stderr="")
-
-    total = detect.gpu_memory_gb(_info("nvidia", 64.0), run=run)
+    sys = FakeSystem(stdout={"nvidia-smi": "16303\n24576\n"})
+    total = detect.gpu_memory_gb(_info("nvidia", 64.0), sys)
     assert total == pytest.approx((16303 + 24576) / 1024)
-    assert calls == [["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]]
+    assert sys.ran == [_NVIDIA_SMI]
+    assert sys.ran_kwargs == [_PROBE_KWARGS]
 
 
 def test_gpu_memory_is_zero_when_nvidia_smi_fails_or_babbles() -> None:
-    def hang(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        raise FriendlyError("nvidia-smi timed out.", "Check the driver.")
-
-    assert detect.gpu_memory_gb(_info("nvidia", 64.0), run=hang) == 0.0
-    assert detect.gpu_memory_gb(_info("nvidia", 64.0), run=fake_run("NVIDIA-SMI has failed")) == 0.0
-    assert detect.gpu_memory_gb(_info("nvidia", 64.0), run=fake_run("")) == 0.0
+    nvidia = _info("nvidia", 64.0)
+    hung = HungSystem()
+    assert detect.gpu_memory_gb(nvidia, hung) == 0.0
+    assert hung.ran == [_NVIDIA_SMI]
+    babble = FakeSystem(stdout={"nvidia-smi": "NVIDIA-SMI has failed"})
+    assert detect.gpu_memory_gb(nvidia, babble) == 0.0
+    assert detect.gpu_memory_gb(nvidia, FakeSystem(stdout={"nvidia-smi": ""})) == 0.0
 
 
 def test_gpu_memory_on_apple_silicon_is_metals_share_of_ram() -> None:
-    def never(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        raise AssertionError("no subprocess on Apple Silicon")
-
-    assert detect.gpu_memory_gb(_info("apple", 16.0), run=never) == pytest.approx(16 * 2 / 3)
-    assert detect.gpu_memory_gb(_info("apple", 36.0), run=never) == pytest.approx(27.0)
-    assert detect.gpu_memory_gb(_info("apple", 128.0), run=never) == pytest.approx(96.0)
+    sys = FakeSystem()
+    assert detect.gpu_memory_gb(_info("apple", 16.0), sys) == pytest.approx(16 * 2 / 3)
+    assert detect.gpu_memory_gb(_info("apple", 36.0), sys) == pytest.approx(27.0)
+    assert detect.gpu_memory_gb(_info("apple", 128.0), sys) == pytest.approx(96.0)
+    assert sys.ran == []  # no subprocess on Apple Silicon
 
 
 def test_gpu_memory_without_a_gpu_is_zero() -> None:
-    def never(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        raise AssertionError("no subprocess without a GPU")
-
-    assert detect.gpu_memory_gb(_info("none", 16.0), run=never) == 0.0
+    sys = FakeSystem()
+    assert detect.gpu_memory_gb(_info("none", 16.0), sys) == 0.0
+    assert sys.ran == []  # no subprocess without a GPU
 
 
 def test_docker_memory_reads_what_the_engine_container_can_use_in_gib() -> None:
     """Docker Desktop runs containers in a VM with its own, smaller memory."""
-    calls: list[list[str]] = []
-
-    def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        calls.append(cmd)
-        assert kwargs == {"check": False, "log": False, "timeout": 15}
-        return subprocess.CompletedProcess(cmd, 0, stdout="8320299008\n", stderr="")
-
-    assert detect.docker_memory_gb(run=run) == pytest.approx(7.749, abs=0.001)
-    assert calls == [["docker", "info", "--format", "{{.MemTotal}}"]]
+    sys = FakeSystem(stdout={"docker info": "8320299008\n"})
+    assert detect.docker_memory_gb(sys) == pytest.approx(7.749, abs=0.001)
+    assert sys.ran == [_DOCKER_INFO]
+    assert sys.ran_kwargs == [_PROBE_KWARGS]
 
 
 def test_docker_memory_is_zero_when_docker_fails_or_babbles() -> None:
     """Zero means unknown: callers fall back to the machine's own RAM."""
-
-    def hang(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        raise FriendlyError("docker timed out.", "Start Docker.")
-
-    assert detect.docker_memory_gb(run=hang) == 0.0
-    assert detect.docker_memory_gb(run=fake_run("Cannot connect to the Docker daemon")) == 0.0
-    assert detect.docker_memory_gb(run=fake_run("")) == 0.0
+    hung = HungSystem()
+    assert detect.docker_memory_gb(hung) == 0.0
+    assert hung.ran == [_DOCKER_INFO]
+    babble = FakeSystem(stdout={"docker info": "Cannot connect to the Docker daemon"})
+    assert detect.docker_memory_gb(babble) == 0.0
+    assert detect.docker_memory_gb(FakeSystem(stdout={"docker info": ""})) == 0.0

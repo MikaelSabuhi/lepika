@@ -92,6 +92,7 @@ class FakeSystem:
         free: int = 10**12,
         bindable: bool = True,
         missing: set[str] | None = None,
+        ram_bytes: int | None = 16 * 2**30,
     ) -> None:
         self.stdout = stdout or {}
         self.codes = codes or {}
@@ -104,6 +105,7 @@ class FakeSystem:
         self.free = free
         self.bindable = bindable
         self.missing = missing or set()
+        self.memory = ram_bytes
         self.ran: list[list[str]] = []
         self.ran_kwargs: list[dict[str, Any]] = []
         self.called: list[list[str]] = []
@@ -197,3 +199,6 @@ class FakeSystem:
 
     def disk_free(self, path: Path) -> int:
         return self.free
+
+    def ram_bytes(self) -> int | None:
+        return self.memory

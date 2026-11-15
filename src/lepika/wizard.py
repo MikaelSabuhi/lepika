@@ -207,11 +207,11 @@ def resolve(
     info: SystemInfo,
     ask: AskFn | None = None,
     urlopen: UrlOpenFn | None = None,
+    *,
+    sys: System,
 ) -> ModelRef:
     """Validate a typed ref, then settle the one choice it may have left open."""
-    return choose_quant(
-        _validate(ref, cfg, info), cfg, info, sys=system.REAL, ask=ask, urlopen=urlopen
-    )
+    return choose_quant(_validate(ref, cfg, info), cfg, info, ask=ask, urlopen=urlopen, sys=sys)
 
 
 def choose_model(
@@ -280,7 +280,7 @@ def choose_model(
         chosen = picked(answer)
         if chosen is not None:
             return chosen
-    return resolve(models.parse_model_ref(answer), cfg, info, ask=ask_fn, urlopen=urlopen)
+    return resolve(models.parse_model_ref(answer), cfg, info, ask=ask_fn, urlopen=urlopen, sys=sys)
 
 
 def choose_mode(info: SystemInfo, current: str, ask: AskFn | None = None) -> str:

@@ -600,3 +600,21 @@ def test_choose_model_in_express_lists_what_fits_the_machine(
     out = capsys.readouterr().out
     assert "Models that fit your 16 GB" in out
     assert "gemma3:12b" in out
+
+
+def test_choose_model_carries_its_system_into_the_quant_picker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A typed tagless GGUF repo goes on to the quant picker, and the GPU it sizes
+    against must be the one the caller's System reports, not the real machine's."""
+    monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
+    nvidia = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, False, True, True)
+    # 8 GiB of GPU: 80 % of it is 6.9 GB, so only UD-IQ2_M (6.0 GB) can be the ★. With
+    # no GPU figure the ★ would be a CPU build sized against the 64 GB of RAM.
+    sys = FakeSystem(stdout={"nvidia-smi": "8192\n"})
+    answers = iter([GGUF_REF.raw, ""])  # the repo, then Enter at the quant prompt
+    ref = wizard.choose_model(
+        nvidia, config.Config(), ask=lambda *a, **k: next(answers), curated=SIZED, sys=sys
+    )
+    assert sys.ran == [["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]]
+    assert ref.raw == "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_M"

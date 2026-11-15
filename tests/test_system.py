@@ -327,6 +327,25 @@ def test_fake_system_reports_a_missing_program_from_every_launcher(tmp_path: Pat
     assert fake.call(["uv", "--version"]) == 0
 
 
+def test_fake_system_raises_what_it_was_told_to_for_a_command() -> None:
+    hang = FriendlyError("docker timed out.", "Start Docker.")
+    fake = FakeSystem(raises={"docker info": hang}, stdout={"docker ps": "up"})
+    launchers = [
+        lambda: fake.run(["docker", "info"], check=False, timeout=15),
+        lambda: fake.call(["docker", "info"]),
+        lambda: fake.stream(["docker", "info", "--format", "x"]),
+    ]
+    for launch in launchers:
+        with pytest.raises(FriendlyError) as exc:
+            launch()
+        assert exc.value is hang
+    # Each call was recorded before it raised, and other commands still answer.
+    assert fake.ran == [["docker", "info"]]
+    assert fake.called == [["docker", "info"]]
+    assert [cmd for cmd, _ in fake.streamed] == [["docker", "info", "--format", "x"]]
+    assert fake.run(["docker", "ps"]).stdout == "up"
+
+
 def test_fake_system_records_every_effect_in_order(tmp_path: Path) -> None:
     seen: list[str] = []
 

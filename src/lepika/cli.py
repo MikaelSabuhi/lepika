@@ -430,7 +430,7 @@ def model_add(
         model_ref = wizard.choose_model(info, cfg, sys=system.REAL)
     else:
         # Same rejection — and the same quant picker — as the wizard's, by reusing it.
-        model_ref = wizard.resolve(models.parse_model_ref(ref), cfg, info)
+        model_ref = wizard.resolve(models.parse_model_ref(ref), cfg, info, sys=system.REAL)
     if models.uses_vllm(model_ref.raw) and server.vllm_allowed(cfg, info):
         # Nothing to pull: vLLM downloads the weights itself when it starts, and it
         # only starts once the config names the model compose interpolates.

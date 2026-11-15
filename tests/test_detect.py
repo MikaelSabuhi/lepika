@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import io
-import subprocess
 import urllib.request
-from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -18,21 +16,10 @@ _DOCKER_INFO = ["docker", "info", "--format", "{{.MemTotal}}"]
 _PROBE_KWARGS = {"check": False, "env": None, "timeout": 15, "log": False, "ok": (0,)}
 
 
-class HungSystem(FakeSystem):
-    """A `run` that times out, the way `proc.run_logged` reports a wedged program."""
-
-    def run(
-        self,
-        cmd: Sequence[str],
-        *,
-        check: bool = True,
-        env: Mapping[str, str] | None = None,
-        timeout: float | None = None,
-        log: bool = True,
-        ok: Collection[int] = (0,),
-    ) -> subprocess.CompletedProcess[str]:
-        self.ran.append(list(cmd))
-        raise FriendlyError(f"{cmd[0]} timed out.", "Check that it still answers.")
+def _hung(program: str) -> FakeSystem:
+    """A `program` that times out, the way `proc.run_logged` reports a wedged one."""
+    timeout = FriendlyError(f"{program} timed out.", "Check that it still answers.")
+    return FakeSystem(raises={program: timeout})
 
 
 def _engine_answers(request: urllib.request.Request) -> Any:
@@ -87,6 +74,8 @@ def test_detect_makes_no_subprocess_call() -> None:
     info = detect.detect(sys=sys)
     assert sys.ran == []
     assert sys.called == []
+    assert sys.spawned == []
+    assert sys.streamed == []
     assert info.ram_gb == 16.0
     assert info.has_docker is True
     assert info.has_ollama is False
@@ -195,7 +184,7 @@ def test_gpu_memory_sums_every_nvidia_card_in_gib() -> None:
 
 def test_gpu_memory_is_zero_when_nvidia_smi_fails_or_babbles() -> None:
     nvidia = _info("nvidia", 64.0)
-    hung = HungSystem()
+    hung = _hung("nvidia-smi")
     assert detect.gpu_memory_gb(nvidia, sys=hung) == 0.0
     assert hung.ran == [_NVIDIA_SMI]
     babble = FakeSystem(stdout={"nvidia-smi": "NVIDIA-SMI has failed"})
@@ -227,7 +216,7 @@ def test_docker_memory_reads_what_the_engine_container_can_use_in_gib() -> None:
 
 def test_docker_memory_is_zero_when_docker_fails_or_babbles() -> None:
     """Zero means unknown: callers fall back to the machine's own RAM."""
-    hung = HungSystem()
+    hung = _hung("docker")
     assert detect.docker_memory_gb(sys=hung) == 0.0
     assert hung.ran == [_DOCKER_INFO]
     babble = FakeSystem(stdout={"docker info": "Cannot connect to the Docker daemon"})

@@ -19,11 +19,10 @@ jobs:
   canary:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
@@ -32,7 +31,7 @@ jobs:
       - name: Wait for the Ollama API
         run: |
           for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:11434/api/version; then exit 0; fi
+            if curl -fsS --max-time 2 http://127.0.0.1:11434/api/version; then exit 0; fi
             sleep 2
           done
           echo "Ollama did not answer on 127.0.0.1:11434 within two minutes" >&2
@@ -41,8 +40,17 @@ jobs:
         run: uv sync --dev
       - name: Canary
         run: uv run pytest -m canary tests/canary -v
+
+  # Its own job so the token that can write issues never shares a runner with the
+  # third-party installer or the test code above.
+  report:
+    needs: canary
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
       - name: Report the failure
-        if: failure() && github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
           TITLE: Upstream canary failed

@@ -189,7 +189,7 @@ def doctor() -> None:
     from lepika import doctor as doctor_mod
 
     info = detect.detect(sys=system.REAL)
-    results = doctor_mod.run_checks(info)
+    results = doctor_mod.run_checks(info, sys=system.REAL)
     core_failed = False
     for r in results:
         mark = "[green]✓[/green]" if r.ok else "[red]✗[/red]"

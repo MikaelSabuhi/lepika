@@ -2,24 +2,16 @@
 
 from __future__ import annotations
 
-import functools
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
-from lepika import config, health, proc, server, serving, system
+from lepika import config, health, server, serving
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
+from lepika.system import System
 
 # Advisory, not a hard failure: `cli.doctor` matches on this name, not a literal.
 RAM_CHECK = "RAM"
-
-# The default probes, bound once at import as the bare functions used to be: a test
-# that patches `health.api_up`, `health.vllm_up` or `health.webui_up` does not reach a default.
-_REAL_API_UP = functools.partial(health.api_up, sys=system.REAL)
-_REAL_VLLM_UP = functools.partial(health.vllm_up, sys=system.REAL)
-_REAL_WEBUI_UP = functools.partial(health.webui_up, sys=system.REAL)
 
 
 @dataclass(frozen=True)
@@ -42,27 +34,19 @@ def _finding(probe: Callable[[], bool]) -> bool:
         return False
 
 
-def _answers(run: Callable[..., Any], cmd: list[str]) -> bool:
+def _answers(cmd: list[str], *, sys: System) -> bool:
     """Does `cmd` exit 0 — and does it answer at all?"""
-    return _finding(lambda: bool(run(cmd, check=False, timeout=20, log=False).returncode == 0))
+    return _finding(lambda: bool(sys.run(cmd, check=False, timeout=20, log=False).returncode == 0))
 
 
-def run_checks(
-    info: SystemInfo,
-    which: Callable[[str], str | None] = shutil.which,
-    api_up: Callable[..., bool] = _REAL_API_UP,
-    vllm_up: Callable[..., bool] | None = None,
-    webui_up: Callable[..., bool] = _REAL_WEBUI_UP,
-    run: Callable[..., Any] = proc.run_logged,
-) -> list[CheckResult]:
-    vllm_probe = vllm_up if vllm_up is not None else _REAL_VLLM_UP
+def run_checks(info: SystemInfo, *, sys: System) -> list[CheckResult]:
     cfg = config.load()
     checks: list[CheckResult] = []
     if cfg.mode == "server":
         # Server mode installs nothing natively, so uv and a local Ollama are
         # irrelevant; Docker is the whole prerequisite. `and` short-circuits, so a
         # machine with no docker binary is never probed with one.
-        docker_ok = bool(which("docker") is not None and _answers(run, ["docker", "info"]))
+        docker_ok = bool(sys.which("docker") is not None and _answers(["docker", "info"], sys=sys))
         checks += [
             CheckResult(
                 "Docker running",
@@ -72,7 +56,7 @@ def run_checks(
             ),
             CheckResult(
                 "docker compose available",
-                bool(docker_ok and _answers(run, ["docker", "compose", "version"])),
+                bool(docker_ok and _answers(["docker", "compose", "version"], sys=sys)),
                 "Docker Compose v2 ships with Docker Desktop; on Linux: docker-compose-plugin",
             ),
         ]
@@ -82,7 +66,7 @@ def run_checks(
             checks.append(
                 CheckResult(
                     "NVIDIA GPU visible to Docker",
-                    _finding(lambda: server.nvidia_in_docker(info, run=run)),
+                    _finding(lambda: server.nvidia_in_docker(info, run=sys.run)),
                     "Install the NVIDIA Container Toolkit: https://docs.nvidia.com/"
                     "datacenter/cloud-native/container-toolkit/install-guide.html",
                 )
@@ -91,7 +75,7 @@ def run_checks(
         checks.append(
             CheckResult(
                 "uv installed",
-                which("uv") is not None,
+                sys.which("uv") is not None,
                 "Install uv: https://docs.astral.sh/uv/getting-started/installation/",
             )
         )
@@ -108,7 +92,9 @@ def run_checks(
     checks += [
         CheckResult(
             "Engine (vLLM) responding" if vllm else "Engine responding",
-            vllm_probe(server.VLLM_URL) if vllm else api_up(cfg.engine_url, key=cfg.engine_key),
+            health.vllm_up(server.VLLM_URL, sys=sys)
+            if vllm
+            else health.api_up(cfg.engine_url, key=cfg.engine_key, sys=sys),
             "Run `lepika up` to start it; logs: `lepika logs`"
             if cfg.engine_managed
             # A rotated key and a dead box look identical from here, so name both.
@@ -118,7 +104,7 @@ def run_checks(
         ),
         CheckResult(
             "OpenWebUI responding",
-            webui_up(cfg.webui_port),
+            health.webui_up(cfg.webui_port, sys=sys),
             "Run `lepika up`; if it fails, `lepika logs` shows openwebui.log; "
             f"if the port is busy, change webui_port in {config.config_path()}",
         ),

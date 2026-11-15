@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import urllib.error
 from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import FakeResponse, FakeSystem, Runner, routes
+from fakes import FakeResponse, FakeSystem, routes
 from typer.testing import CliRunner
 
 from lepika import (
@@ -227,16 +228,24 @@ def test_status_labels_and_probes_vllm(
 
 def test_doctor_checks_vllm_when_the_model_needs_it(isolated_home: Path) -> None:
     config.save(config.Config(mode="server", model=REPO))
-    results = doctor.run_checks(
-        LINUX_NVIDIA,
-        which=lambda n: f"/usr/bin/{n}",
-        api_up=lambda url, **k: pytest.fail("Ollama is not the engine"),
-        vllm_up=lambda url, **k: False,
-        webui_up=lambda port, **k: True,
-        run=Runner({"docker info": '{"nvidia": {}}'}),
+    # Only vLLM and OpenWebUI answer: probing Ollama's URL would raise, unanswered.
+    fake = FakeSystem(
+        which={"docker": "/usr/bin/docker"},
+        stdout={"docker info": '{"nvidia": {}}'},
+        urls=routes(
+            {
+                "http://127.0.0.1:8000/health": urllib.error.URLError("refused"),
+                "http://127.0.0.1:3000/health": FakeResponse(),
+            }
+        ),
     )
+    results = doctor.run_checks(LINUX_NVIDIA, sys=fake)
     failed = {r.name: r for r in results if not r.ok}
     assert "Engine (vLLM) responding" in failed
+    assert [r.full_url for r in fake.requested] == [
+        "http://127.0.0.1:8000/health",
+        "http://127.0.0.1:3000/health",
+    ]
 
 
 def test_model_list_on_a_vllm_stack_says_there_is_no_ollama_list(isolated_home: Path) -> None:

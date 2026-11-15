@@ -29,7 +29,12 @@ if ! command -v lepika >/dev/null 2>&1; then
   exit 0
 fi
 
-echo "Starting setup…"
 # < /dev/tty: piped from curl, this script's stdin is the (now exhausted) pipe,
-# so the wizard's prompts would read EOF. Read from the terminal instead.
-exec lepika < /dev/tty
+# so the wizard's prompts would read EOF. Read from the terminal instead — when
+# there is one: under CI or a container build /dev/tty cannot be opened.
+if (exec </dev/tty) 2>/dev/null; then
+  echo "Starting setup…"
+  exec lepika </dev/tty
+fi
+echo "No terminal to run setup in — run: lepika"
+exit 0

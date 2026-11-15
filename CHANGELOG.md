@@ -16,6 +16,13 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A gated Hugging Face repo asks for a token again. Newer `hf` releases word the
   refusal differently, so LePika now asks the Hub's model API why a listing failed
   instead of reading the CLI's error text.
+- `lepika` without a terminal (CI, cron, `< /dev/null`) no longer fails with a
+  traceback: a question with a default takes it and says so, and the model question,
+  which has none, explains itself in two lines. An unexpected error, a home that
+  cannot be written, or a garbled memory reading is now two lines too (the
+  traceback goes to `lepika.log`), and Ctrl-C exits quietly. The mode question also
+  accepts `express` or `server` by name. `install.sh` starts the wizard only when
+  there is a terminal to run it in.
 
 ## [0.2.0] - 2026-11-10
 

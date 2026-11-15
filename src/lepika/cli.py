@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import importlib.metadata
 import io
+import os
 import sys
+import traceback
 import webbrowser
 from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
-from typing import TextIO
+from typing import NoReturn, TextIO
 
 import typer
 from rich.console import Console
@@ -535,12 +538,54 @@ def _utf8_stdio(streams: Iterable[TextIO] | None = None) -> None:
             stream.reconfigure(encoding="utf-8")
 
 
+ISSUES_URL = "https://github.com/MikaelSabuhi/lepika/issues"
+
+
+def _home_path() -> Path:
+    """Where LePika's home is, without creating it — creating it may be what failed."""
+    return Path(os.environ.get("LEPIKA_HOME", str(Path.home() / ".lepika")))
+
+
+def _fail(problem: str, fix: str) -> None:
+    err_console.print(f"[red]✗ {escape(problem)}[/red]")
+    err_console.print(f"[yellow]→ {escape(fix)}[/yellow]")
+
+
+def _unexpected(exc: Exception) -> NoReturn:
+    """A bug: the traceback goes to the log, the user gets where to find it."""
+    fix = f"Please report it: {ISSUES_URL}"
+    # The log itself may be the broken part (a read-only home, a full disk): then the
+    # user still gets the two lines, just without a file to look in.
+    with contextlib.suppress(Exception):
+        log.get_logger().error("cli.crash", error=repr(exc), traceback=traceback.format_exc())
+        fix = f"Details are in {_home_path() / 'logs' / log.LOG_FILE}. {fix}"
+    _fail(f"LePika hit an unexpected error: {type(exc).__name__}: {exc}", fix)
+    raise SystemExit(1) from exc
+
+
 def run() -> None:
-    """Console-script entry point."""
+    """Console-script entry point.
+
+    The last line of defence for rule 2: whatever escapes a command becomes two
+    lines and an exit code, never a traceback. `typer.Exit` and `SystemExit` are
+    BaseExceptions and pass through untouched.
+    """
     _utf8_stdio()
     try:
         app()
     except FriendlyError as exc:
-        err_console.print(f"[red]✗ {escape(exc.problem)}[/red]")
-        err_console.print(f"[yellow]→ {escape(exc.fix)}[/yellow]")
+        _fail(exc.problem, exc.fix)
         raise SystemExit(1) from exc
+    except KeyboardInterrupt:
+        # The user asked to stop; they know why. 130 is the shell's code for SIGINT.
+        raise SystemExit(130) from None
+    except OSError as exc:
+        if exc.filename is None:
+            _unexpected(exc)
+        _fail(
+            f"Could not write {exc.filename}: {exc.strerror}",
+            f"Check that {_home_path()} is writable and the disk is not full.",
+        )
+        raise SystemExit(1) from exc
+    except Exception as exc:
+        _unexpected(exc)

@@ -125,6 +125,19 @@ def test_hf_token_from_the_shell_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     assert values["HF_TOKEN"] == "from-shell"
 
 
+def test_token_prompt_without_a_terminal_skips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+
+    def no_terminal(*a: Any, **k: Any) -> str:
+        raise EOFError
+
+    env = tmp_path / ".env"
+    server.hf_token_prompt(env, ask=no_terminal)
+    assert server.read_env(env).get("HF_TOKEN", "") == ""
+
+
 def test_api_key_is_generated_once_and_reused(tmp_path: Path) -> None:
     env = tmp_path / ".env"
     first = server.api_key(env)

@@ -463,3 +463,11 @@ def test_ask_token_empty_answer_saves_nothing(isolated_home: Path) -> None:
     cfg = config.Config()
     assert hf.ask_token(cfg, ask=lambda *a, **k: "") == ""
     assert not config.config_path().exists()
+
+
+def test_token_prompt_without_a_terminal_skips(isolated_home: Path) -> None:
+    def no_terminal(*a: Any, **k: Any) -> str:
+        raise EOFError
+
+    assert hf.ask_token(config.Config(), ask=no_terminal) == ""
+    assert not config.config_path().exists()

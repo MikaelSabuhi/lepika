@@ -121,6 +121,18 @@ def test_choose_model_second_bad_number_falls_through_as_a_model_ref() -> None:
     assert ref.raw == "77"
 
 
+def test_choose_model_without_a_terminal_is_a_friendly_error() -> None:
+    def no_terminal(*a: Any, **k: Any) -> str:
+        raise EOFError("stdin is not a terminal")
+
+    with pytest.raises(FriendlyError) as exc:
+        wizard.choose_model(INFO, config.Config(), ask=no_terminal, curated=CURATED)
+    assert exc.value.problem == (
+        "Choosing a model needs an answer, and there is no terminal to ask."
+    )
+    assert "lepika model add <model>" in exc.value.fix
+
+
 def test_run_wizard_orders_engine_then_pull_then_ui_then_browser(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:

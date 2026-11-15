@@ -568,8 +568,9 @@ def run() -> None:
     """Console-script entry point.
 
     The last line of defence for rule 2: whatever escapes a command becomes two
-    lines and an exit code, never a traceback. `typer.Exit` and `SystemExit` are
-    BaseExceptions and pass through untouched.
+    lines and an exit code, never a traceback. `typer.Exit` never reaches the
+    handlers: Click's standalone mode turns it into `SystemExit`, a BaseException
+    that passes through untouched.
     """
     _utf8_stdio()
     try:

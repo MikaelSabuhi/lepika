@@ -49,6 +49,9 @@ class Seq:
                     code, out = answer
                 else:
                     code, out = 0, answer
+                # As run_logged: a code outside `ok` fails a checked call.
+                if kwargs.get("check", True) and code not in kwargs.get("ok", (0,)):
+                    raise FriendlyError(f"Command failed: {joined}", "see the log")
                 return subprocess.CompletedProcess(cmd, code, stdout=out, stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
@@ -76,6 +79,18 @@ def restarts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return seen
 
 
+def _answers(values: list[Any]) -> Callable[..., Any]:
+    """Each call takes the next value (the last one repeats); an exception is raised."""
+
+    def answer(*args: Any, **kwargs: Any) -> Any:
+        value = values.pop(0) if len(values) > 1 else values[0]
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    return answer
+
+
 def _update(
     info: detect.SystemInfo,
     run: Seq,
@@ -83,8 +98,12 @@ def _update(
     cfg: config.Config | None = None,
     which: Callable[[str], str | None] | None = None,
     call: Caller | None = None,
-    running: str | None = None,
+    running: str | list[Any] | None = None,
+    up: list[bool] | None = None,
 ) -> list[UpdateStep]:
+    """`running` is what the engine reports (None: nothing answers); `up` overrides
+    the answers to `api_up` in order, for an engine that comes and goes."""
+    versions = running if isinstance(running, list) else [running or ""]
     return express.update(
         info,
         cfg or config.Config(),
@@ -92,10 +111,10 @@ def _update(
         which=which or _which("systemctl", "brew"),
         call=call or Caller(),
         popen=lambda *a, **k: pytest.fail("popen must go through start_ollama"),
-        api_up=lambda url, **k: running is not None,
+        api_up=_answers(up if up is not None else [running is not None]),
         sleep=lambda s: None,
         kill=lambda pid, sig: pytest.fail("kill must go through stop_ollama"),
-        running_version=lambda url, **k: running or "",
+        running_version=_answers(versions),
     )
 
 
@@ -118,7 +137,7 @@ def test_update_leaves_an_enabled_systemd_unit_enabled(restarts: list[str]) -> N
 
 def test_update_disables_again_a_unit_that_was_disabled(restarts: list[str]) -> None:
     call = Caller()
-    _update(_info("linux"), _linux_run(1, 1), call=call, running="0.34.0")
+    _update(_info("linux"), _linux_run(1, 3), call=call, running="0.34.0")
     restores = [c for c in call.calls if "systemctl" in c]
     # `--now` is what stops it: one verb, one sudo prompt.
     assert restores == [["sudo", "systemctl", "disable", "--now", "ollama.service"]]
@@ -126,7 +145,7 @@ def test_update_disables_again_a_unit_that_was_disabled(restarts: list[str]) -> 
 
 def test_update_restores_only_what_the_script_changed(restarts: list[str]) -> None:
     call = Caller()
-    _update(_info("linux"), _linux_run(0, 1), call=call, running="0.34.0")
+    _update(_info("linux"), _linux_run(0, 3), call=call, running="0.34.0")
     assert [c for c in call.calls if "systemctl" in c] == [
         ["sudo", "systemctl", "stop", "ollama.service"]
     ]
@@ -135,7 +154,7 @@ def test_update_restores_only_what_the_script_changed(restarts: list[str]) -> No
 def test_update_restores_the_unit_even_when_the_script_fails(restarts: list[str]) -> None:
     call = Caller(code=1)
     with pytest.raises(FriendlyError) as exc:
-        _update(_info("linux"), _linux_run(1, 1, ["0.33.2"]), call=call, running="0.33.2")
+        _update(_info("linux"), _linux_run(1, 3, ["0.33.2"]), call=call, running="0.33.2")
     assert exc.value.problem == "Ollama upgrade failed."
     assert ["sudo", "systemctl", "disable", "--now", "ollama.service"] in call.calls
     assert "ui" not in restarts
@@ -153,7 +172,7 @@ def test_update_accepts_a_failed_optional_step_once_the_binary_moved(
 
 def test_update_without_systemctl_touches_no_unit(restarts: list[str]) -> None:
     call = Caller()
-    run = _linux_run(1, 1)
+    run = _linux_run(1, 3)
     _update(_info("linux"), run, which=_which(), call=call, running="0.34.0")
     assert any("install.sh" in " ".join(c) for c in call.calls)
     assert not any("systemctl" in " ".join(c) for c in call.calls + run.argvs())
@@ -169,9 +188,78 @@ def test_update_restarts_the_engine_lepika_started_onto_the_new_binary(
     _pid_file()
     run = _linux_run(0, 0, ["0.33.2", "0.34.0"])
     run.answers["ps -p 4242"] = "ollama\n"
-    steps = _update(_info("linux"), run, running="0.33.2")
+    steps = _update(_info("linux"), run, running=["0.33.2", "0.34.0"])
     assert restarts == ["stop", "start", "ui"]
     assert steps[0] == UpdateStep("Ollama", "upgraded", "0.33.2 → 0.34.0")
+
+
+def test_update_does_not_start_a_second_engine_when_the_stop_was_refused(
+    restarts: list[str], isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pid_file()
+    run = _linux_run(0, 0, ["0.33.2", "0.34.0"])
+    run.answers["ps -p 4242"] = "ollama\n"
+    monkeypatch.setattr(
+        express, "stop_ollama", lambda os_name, url, **k: bool(restarts.append("stop"))
+    )
+    steps = _update(_info("linux"), run, running="0.33.2")
+    assert "stop" in restarts and "start" not in restarts
+    assert steps[0].outcome == "stale"
+
+
+def test_update_brings_back_its_own_engine_when_the_upgrade_stopped_it(
+    restarts: list[str], isolated_home: Path
+) -> None:
+    """winget may stop a running Ollama to replace it: ours is started again."""
+    _pid_file()
+    run = Seq(
+        {
+            "winget upgrade": (0, ""),
+            "ollama --version": [_version("0.33.2"), _version("0.34.0")],
+            "tasklist": '"ollama.exe","4242"\n',
+        }
+    )
+    steps = _update(_info("windows"), run, running="0.34.0", up=[True, False, True])
+    assert restarts == ["start", "ui"]
+    assert steps[0] == UpdateStep("Ollama", "upgraded", "0.33.2 → 0.34.0")
+
+
+def test_update_never_starts_an_adopted_engine_the_upgrade_stopped(restarts: list[str]) -> None:
+    run = Seq({"winget upgrade": (0, ""), "ollama --version": _version("0.34.0")})
+    _update(_info("windows"), run, running="0.34.0", up=[True, False])
+    assert "start" not in restarts and "stop" not in restarts
+
+
+def test_update_survives_an_unreadable_running_version(restarts: list[str]) -> None:
+    run = _linux_run(0, 0, ["0.33.2", "0.34.0"])
+    unreadable = FriendlyError("Can't reach the engine", "start it")
+    steps = _update(_info("linux"), run, running=[unreadable])
+    assert steps[0] == UpdateStep("Ollama", "upgraded", "0.33.2 → 0.34.0")
+    assert restarts == ["ui"]
+
+
+def test_update_restores_nothing_when_systemd_does_not_answer(
+    restarts: list[str], isolated_home: Path
+) -> None:
+    """`systemctl` on PATH with no running systemd answers outside its documented codes."""
+    call = Caller()
+    _update(_info("linux"), _linux_run(1, 1), call=call, running="0.34.0")
+    assert any("install.sh" in " ".join(c) for c in call.calls)
+    assert not any("systemctl" in c for c in call.calls)
+    log_text = (paths.logs_dir() / "lepika.log").read_text()
+    assert "ollama.update.unit_state_unknown" in log_text
+
+
+def test_update_treats_a_missing_unit_as_disabled_and_inactive(restarts: list[str]) -> None:
+    call = Caller()
+    run = _linux_run(4, 4)
+    _update(_info("linux"), run, call=call, running="0.34.0")
+    assert [c for c in call.calls if "systemctl" in c] == [
+        ["sudo", "systemctl", "disable", "--now", "ollama.service"]
+    ]
+    # The documented answers are expected, so a disabled unit writes nothing to the log.
+    probes = [kw for c, kw in run.calls if c[0] == "systemctl"]
+    assert probes and all(4 in kw["ok"] and kw["log"] is False for kw in probes)
 
 
 def test_update_never_restarts_an_adopted_engine(restarts: list[str]) -> None:
@@ -270,3 +358,9 @@ def test_ollama_binary_version_reads_both_spellings() -> None:
     assert express.ollama_binary_version(Seq({"ollama": ""})) is None
     missing = Seq({"ollama": FriendlyError("Command not found: ollama", "install it")})
     assert express.ollama_binary_version(missing) is None
+
+
+def test_ollama_binary_version_reads_the_client_line_when_both_are_printed() -> None:
+    """A running engine older than the binary prints both: the client line is the binary."""
+    both = "ollama version is 0.33.2\nWarning: client version is 0.34.0\n"
+    assert express.ollama_binary_version(Seq({"ollama": both})) == "0.34.0"

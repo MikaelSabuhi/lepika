@@ -95,10 +95,10 @@ def test_update_prints_what_happened(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(express, "update", lambda info, cfg, **k: steps)
     result = runner.invoke(cli.app, ["update"])
     assert result.exit_code == 0, result.output
-    assert "✓ Ollama upgraded (0.33.2 → 0.34.0)" in result.output
-    assert "✓ OpenWebUI is up to date (0.6.5)" in result.output
+    assert "✓ Ollama: upgraded (0.33.2 → 0.34.0)" in result.output
+    assert "✓ OpenWebUI: up to date (0.6.5)" in result.output
     assert "! Ollama: running 0.33.2, installed 0.34.0 — restart Ollama" in result.output
-    assert "✓ Container images is up to date\n" in result.output
+    assert "✓ Container images: up to date\n" in result.output
     assert "Everything is up to date" not in result.output
 
 

@@ -198,8 +198,8 @@ def update() -> None:
             console.print(f"[yellow]! {step.component}: {detail}[/yellow]")
             continue
         suffix = f" ({detail})" if detail else ""
-        verb = "upgraded" if step.outcome == "upgraded" else "is up to date"
-        console.print(f"[green]✓ {step.component} {verb}{suffix}[/green]")
+        verb = "upgraded" if step.outcome == "upgraded" else "up to date"
+        console.print(f"[green]✓ {step.component}: {verb}{suffix}[/green]")
 
 
 def _apply_engine_change(cfg: config.Config) -> bool:

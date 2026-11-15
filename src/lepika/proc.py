@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -26,8 +26,13 @@ def run_logged(
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
     log: bool = True,
+    ok: Collection[int] = (0,),
 ) -> subprocess.CompletedProcess[str]:
-    """Run `cmd` captured. Pass `log=False` for a pure read: only failures are recorded."""
+    """Run `cmd` captured. Pass `log=False` for a pure read: only failures are recorded.
+
+    `ok` names the exit codes that are an answer rather than a failure — `systemctl
+    is-active` exiting 3 for an inactive unit — and they are treated exactly like 0.
+    """
     logger = get_logger()
     try:
         result = subprocess.run(
@@ -54,11 +59,12 @@ def run_logged(
             f"Command timed out after {timeout}s: {' '.join(cmd)}",
             f"Try again; details in {_log_path()}",
         ) from exc
-    if result.returncode == 0:
+    expected = result.returncode in ok
+    if expected:
         # Success is one line: what ran and that it worked. Output is noise here.
         # A read-only command changed nothing, so it earns no line at all.
         if log:
-            logger.info("proc.run", cmd=list(cmd), exit=0)
+            logger.info("proc.run", cmd=list(cmd), exit=result.returncode)
     else:
         # Failures are always recorded, whether or not the caller asked for logging.
         logger.warning(
@@ -67,7 +73,7 @@ def run_logged(
             exit=result.returncode,
             output=_tail(result.stdout + result.stderr),
         )
-    if check and result.returncode != 0:
+    if check and not expected:
         raise FriendlyError(
             f"Command failed: {' '.join(cmd)}",
             f"Details were logged to {_log_path()}",

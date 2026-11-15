@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from lepika import config, detect, server
+from lepika import config, detect, server, serving, stack_env
 
 INFO = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
 
@@ -24,8 +24,8 @@ def test_install_stack_copies_the_bundled_files_and_overwrites(isolated_home: Pa
 
 def test_write_env_round_trips_and_quotes_values(tmp_path: Path) -> None:
     env = tmp_path / ".env"
-    server.write_env(env, {"A": "1", "JSON": '{"0": {"key": "x"}}', "EMPTY": ""})
-    assert server.read_env(env) == {"A": "1", "JSON": '{"0": {"key": "x"}}', "EMPTY": ""}
+    stack_env.write_env(env, {"A": "1", "JSON": '{"0": {"key": "x"}}', "EMPTY": ""})
+    assert stack_env.read_env(env) == {"A": "1", "JSON": '{"0": {"key": "x"}}', "EMPTY": ""}
     text = env.read_text()
     assert 'JSON=\'{"0": {"key": "x"}}\'' in text
 
@@ -33,8 +33,8 @@ def test_write_env_round_trips_and_quotes_values(tmp_path: Path) -> None:
 def test_write_env_preserves_keys_it_does_not_manage(tmp_path: Path) -> None:
     env = tmp_path / ".env"
     env.write_text("OLLAMA_IMAGE='ollama/ollama:0.11.4'\nMY_NOTE='keep me'\n")
-    server.write_env(env, {"WEBUI_PORT": "3000"})
-    loaded = server.read_env(env)
+    stack_env.write_env(env, {"WEBUI_PORT": "3000"})
+    loaded = stack_env.read_env(env)
     assert loaded["OLLAMA_IMAGE"] == "ollama/ollama:0.11.4"
     assert loaded["MY_NOTE"] == "keep me"
     assert loaded["WEBUI_PORT"] == "3000"
@@ -43,7 +43,7 @@ def test_write_env_preserves_keys_it_does_not_manage(tmp_path: Path) -> None:
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 def test_env_file_is_private(tmp_path: Path) -> None:
     env = tmp_path / ".env"
-    server.write_env(env, {"LEPIKA_API_KEY": "secret"})
+    stack_env.write_env(env, {"LEPIKA_API_KEY": "secret"})
     assert stat.S_IMODE(os.stat(env).st_mode) == 0o600
 
 
@@ -52,9 +52,9 @@ def test_write_env_tightens_a_world_readable_file(tmp_path: Path) -> None:
     env = tmp_path / ".env"
     env.write_text("MY_NOTE='keep me'\n")
     os.chmod(env, 0o644)
-    server.write_env(env, {"LEPIKA_API_KEY": "secret"})
+    stack_env.write_env(env, {"LEPIKA_API_KEY": "secret"})
     assert stat.S_IMODE(os.stat(env).st_mode) == 0o600
-    assert server.read_env(env)["MY_NOTE"] == "keep me"
+    assert stack_env.read_env(env)["MY_NOTE"] == "keep me"
 
 
 def test_env_values_for_a_managed_engine() -> None:
@@ -135,28 +135,28 @@ def test_token_prompt_without_a_terminal_skips(
 
     env = tmp_path / ".env"
     server.hf_token_prompt(env, ask=no_terminal)
-    assert server.read_env(env).get("HF_TOKEN", "") == ""
+    assert stack_env.read_env(env).get("HF_TOKEN", "") == ""
 
 
 def test_api_key_is_generated_once_and_reused(tmp_path: Path) -> None:
     env = tmp_path / ".env"
-    first = server.api_key(env)
+    first = stack_env.api_key(env)
     assert len(first) >= 32
-    assert server.api_key(env) == first
-    assert server.read_env(env)["LEPIKA_API_KEY"] == first
+    assert stack_env.api_key(env) == first
+    assert stack_env.read_env(env)["LEPIKA_API_KEY"] == first
 
 
 def test_api_key_rotate_replaces_it(tmp_path: Path) -> None:
     env = tmp_path / ".env"
-    first = server.api_key(env)
-    assert server.api_key(env, rotate=True) != first
+    first = stack_env.api_key(env)
+    assert stack_env.api_key(env, rotate=True) != first
 
 
 def test_api_key_keeps_the_rest_of_the_env(tmp_path: Path) -> None:
     env = tmp_path / ".env"
-    server.write_env(env, {"OLLAMA_IMAGE": "ollama/ollama:0.11.4"})
-    server.api_key(env, rotate=True)
-    assert server.read_env(env)["OLLAMA_IMAGE"] == "ollama/ollama:0.11.4"
+    stack_env.write_env(env, {"OLLAMA_IMAGE": "ollama/ollama:0.11.4"})
+    stack_env.api_key(env, rotate=True)
+    assert stack_env.read_env(env)["OLLAMA_IMAGE"] == "ollama/ollama:0.11.4"
 
 
 def test_lan_ip_reports_the_address_the_socket_picked() -> None:
@@ -176,8 +176,8 @@ def test_write_env_round_trips_values_containing_quotes(tmp_path: Path) -> None:
     """`lepika connect --key "it's"` reaches .env: an unescaped `'` ends the value early."""
     env = tmp_path / ".env"
     values = {"SINGLE": "it's", "DOUBLE": 'say "hi"', "BOTH": 'it\'s "x"', "BACKSLASH": "a\\b"}
-    server.write_env(env, values)
-    assert server.read_env(env) == values
+    stack_env.write_env(env, values)
+    assert stack_env.read_env(env) == values
     text = env.read_text()
     # A value with a `'` is written double-quoted, which compose's parser unescapes.
     assert 'SINGLE="it\'s"' in text
@@ -186,8 +186,8 @@ def test_write_env_round_trips_values_containing_quotes(tmp_path: Path) -> None:
 def test_write_env_keeps_a_dollar_literal_in_a_double_quoted_value(tmp_path: Path) -> None:
     """Compose interpolates `$VAR` inside double quotes, so the escape has to survive."""
     env = tmp_path / ".env"
-    server.write_env(env, {"KEY": "it's $HOME", "PLAIN": "no $HOME here"})
-    assert server.read_env(env) == {"KEY": "it's $HOME", "PLAIN": "no $HOME here"}
+    stack_env.write_env(env, {"KEY": "it's $HOME", "PLAIN": "no $HOME here"})
+    assert stack_env.read_env(env) == {"KEY": "it's $HOME", "PLAIN": "no $HOME here"}
     text = env.read_text()
     assert 'KEY="it\'s $$HOME"' in text
     # A value with no `'` stays single-quoted, where `$` is already literal.
@@ -197,9 +197,9 @@ def test_write_env_keeps_a_dollar_literal_in_a_double_quoted_value(tmp_path: Pat
 def test_engine_label_says_remote_when_the_engine_is_not_ours() -> None:
     """`lepika up` and the wizard both hand it a config: a remote engine is not "Ollama"."""
     remote = config.Config(mode="server", engine_managed=False, engine_url="http://gpu-box:11435")
-    assert server.engine_label(remote) == "a remote engine"
-    assert server.engine_label(config.Config(mode="server")) == "Ollama"
-    assert server.engine_label(config.Config(mode="express", engine_managed=False)) == (
+    assert serving.engine_label(remote) == "a remote engine"
+    assert serving.engine_label(config.Config(mode="server")) == "Ollama"
+    assert serving.engine_label(config.Config(mode="express", engine_managed=False)) == (
         "a remote engine"
     )
 

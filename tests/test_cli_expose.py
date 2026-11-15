@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, paths, server
+from lepika import cli, config, detect, paths, server, stack_env
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
@@ -29,7 +29,7 @@ def test_expose_turns_on_generates_a_key_and_prints_the_connect_line(
     assert result.exit_code == 0, result.output
     cfg = config.load()
     assert cfg.exposed is True
-    key = server.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"]
+    key = stack_env.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"]
     assert key and key in result.output
     assert f"lepika connect http://192.168.1.20:11435 --key {key}" in result.output
     assert "http://192.168.1.20:3000" in result.output
@@ -46,10 +46,10 @@ def test_expose_show_reprints_without_restarting(exposed_box: list[str]) -> None
 
 def test_expose_rotate_changes_the_key_and_restarts(exposed_box: list[str]) -> None:
     runner.invoke(cli.app, ["expose"])
-    before = server.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"]
+    before = stack_env.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"]
     result = runner.invoke(cli.app, ["expose", "--rotate"])
     assert result.exit_code == 0
-    assert server.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"] != before
+    assert stack_env.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"] != before
     assert exposed_box == ["start", "start"]
 
 
@@ -72,7 +72,7 @@ def test_expose_in_express_mode_is_friendly(
 
 def test_the_key_never_reaches_the_log(exposed_box: list[str]) -> None:
     runner.invoke(cli.app, ["expose"])
-    key = server.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"]
+    key = stack_env.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"]
     assert key not in (paths.logs_dir() / "lepika.log").read_text()
 
 
@@ -87,10 +87,10 @@ def test_show_before_exposing_says_it_is_off(exposed_box: list[str]) -> None:
 
 def test_show_with_rotate_restarts_so_caddy_gets_the_new_key(exposed_box: list[str]) -> None:
     runner.invoke(cli.app, ["expose"])
-    before = server.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"]
+    before = stack_env.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"]
     result = runner.invoke(cli.app, ["expose", "--show", "--rotate"])
     assert result.exit_code == 0, result.output
-    assert server.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"] != before
+    assert stack_env.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"] != before
     assert exposed_box == ["start", "start"]
 
 
@@ -105,19 +105,21 @@ def test_the_key_is_in_the_env_before_the_stack_starts(
     monkeypatch.setattr(server, "lan_ips", lambda **k: ["192.168.1.20"])
 
     def record_start(info: detect.SystemInfo, cfg: config.Config, **kwargs: object) -> str:
-        seen.append(server.read_env(paths.stack_dir() / server.ENV_FILE).get("LEPIKA_API_KEY", ""))
+        seen.append(
+            stack_env.read_env(paths.stack_dir() / stack_env.ENV_FILE).get("LEPIKA_API_KEY", "")
+        )
         return "u"
 
     monkeypatch.setattr(server, "start_stack", record_start)
     result = runner.invoke(cli.app, ["expose"])
     assert result.exit_code == 0, result.output
-    assert seen == [server.read_env(paths.stack_dir() / server.ENV_FILE)["LEPIKA_API_KEY"]]
+    assert seen == [stack_env.read_env(paths.stack_dir() / stack_env.ENV_FILE)["LEPIKA_API_KEY"]]
     assert seen[0]
 
 
 def test_expose_off_does_not_reprint_the_key(exposed_box: list[str]) -> None:
     runner.invoke(cli.app, ["expose"])
-    key = server.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"]
+    key = stack_env.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"]
     result = runner.invoke(cli.app, ["expose", "--off"])
     assert key not in result.output
     assert "localhost" in result.output
@@ -130,7 +132,7 @@ def test_rotate_tells_machines_that_already_connected_to_reconnect(
     runner.invoke(cli.app, ["expose"])
     result = runner.invoke(cli.app, ["expose", "--rotate"])
     assert result.exit_code == 0, result.output
-    key = server.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"]
+    key = stack_env.read_env(paths.stack_dir() / ".env")["LEPIKA_API_KEY"]
     assert "connected before" in result.output
     assert key in result.output
 

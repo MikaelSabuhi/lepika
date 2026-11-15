@@ -9,7 +9,20 @@ import pytest
 from fakes import FakeResponse, FakeSystem, Runner, routes
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, doctor, engine, health, models, paths, server, wizard
+from lepika import (
+    cli,
+    config,
+    detect,
+    doctor,
+    engine,
+    health,
+    models,
+    paths,
+    server,
+    serving,
+    stack_env,
+    wizard,
+)
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
@@ -26,26 +39,26 @@ def test_uses_vllm_only_for_full_weight_repos() -> None:
 
 
 def test_vllm_allowed_needs_server_linux_nvidia_and_our_own_engine() -> None:
-    assert server.vllm_allowed(config.Config(mode="server"), LINUX_NVIDIA) is True
-    assert server.vllm_allowed(config.Config(mode="express"), LINUX_NVIDIA) is False
-    assert server.vllm_allowed(config.Config(mode="server"), MAC) is False
+    assert serving.vllm_allowed(config.Config(mode="server"), LINUX_NVIDIA) is True
+    assert serving.vllm_allowed(config.Config(mode="express"), LINUX_NVIDIA) is False
+    assert serving.vllm_allowed(config.Config(mode="server"), MAC) is False
     # `lepika connect` pointed us at someone else's Ollama: we start no vLLM at all,
     # so accepting a repo here would save a model the stack never serves.
     assert (
-        server.vllm_allowed(config.Config(mode="server", engine_managed=False), LINUX_NVIDIA)
+        serving.vllm_allowed(config.Config(mode="server", engine_managed=False), LINUX_NVIDIA)
         is False
     )
 
 
 def test_vllm_active_is_the_one_predicate_for_a_running_vllm() -> None:
-    assert server.vllm_active(config.Config(mode="server", model=REPO)) is True
-    assert server.vllm_active(config.Config(mode="server", model="qwen3:8b")) is False
+    assert serving.vllm_active(config.Config(mode="server", model=REPO)) is True
+    assert serving.vllm_active(config.Config(mode="server", model="qwen3:8b")) is False
     assert (
-        server.vllm_active(config.Config(mode="server", model=REPO, engine_managed=False)) is False
+        serving.vllm_active(config.Config(mode="server", model=REPO, engine_managed=False)) is False
     )
     # There is no vLLM container in Express mode, so a leftover repo ref (a switch
     # that failed halfway) must not make status/doctor/model list report one.
-    assert server.vllm_active(config.Config(mode="express", model=REPO)) is False
+    assert serving.vllm_active(config.Config(mode="express", model=REPO)) is False
 
 
 CPU_LINUX = detect.SystemInfo("linux", "x86_64", "none", 64.0, True, False, False)
@@ -125,7 +138,7 @@ def test_hf_token_prompt_writes_once_and_skips_when_present(
     env = tmp_path / ".env"
     asked: list[str] = []
     server.hf_token_prompt(env, ask=lambda *a, **k: asked.append("?") or "hf_abc")
-    assert server.read_env(env)["HF_TOKEN"] == "hf_abc"
+    assert stack_env.read_env(env)["HF_TOKEN"] == "hf_abc"
     server.hf_token_prompt(env, ask=lambda *a, **k: pytest.fail("asked twice"))
     assert asked == ["?"]
 
@@ -141,7 +154,7 @@ def test_hf_token_prompt_accepts_empty(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.delenv("HF_TOKEN", raising=False)
     env = tmp_path / ".env"
     server.hf_token_prompt(env, ask=lambda *a, **k: "")
-    assert server.read_env(env).get("HF_TOKEN", "") == ""
+    assert stack_env.read_env(env).get("HF_TOKEN", "") == ""
 
 
 def test_model_add_hf_repo_in_server_mode_saves_without_pulling(
@@ -255,7 +268,7 @@ def test_expose_on_a_vllm_box_prints_an_openai_url_not_a_connect_line(
     monkeypatch.setattr(server, "lan_ips", lambda **k: ["192.168.1.20"])
     result = runner.invoke(cli.app, ["expose"])
     assert result.exit_code == 0, result.output
-    key = server.read_env(paths.stack_dir() / server.ENV_FILE)["LEPIKA_API_KEY"]
+    key = stack_env.read_env(paths.stack_dir() / stack_env.ENV_FILE)["LEPIKA_API_KEY"]
     assert key in result.output
     assert "http://192.168.1.20:11435/v1" in result.output
     assert "lepika connect http" not in result.output
@@ -336,9 +349,9 @@ def test_rotate_on_a_vllm_box_stays_off_the_ollama_connect_line(
 
 
 def test_engine_label_follows_the_model() -> None:
-    assert server.engine_label(config.Config(mode="server", model=REPO)) == "vLLM"
-    assert server.engine_label(config.Config(mode="server", model="qwen3:8b")) == "Ollama"
-    assert server.engine_label(config.Config(mode="express", model=REPO)) == "Ollama"
+    assert serving.engine_label(config.Config(mode="server", model=REPO)) == "vLLM"
+    assert serving.engine_label(config.Config(mode="server", model="qwen3:8b")) == "Ollama"
+    assert serving.engine_label(config.Config(mode="express", model=REPO)) == "Ollama"
 
 
 def test_up_says_vllm_in_the_plan_sentence(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.resources
 import json
 import os
-import secrets
 import socket
 from collections.abc import Callable
 from pathlib import Path
@@ -14,7 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from rich.console import Console
 
-from lepika import fsio, health, log, models, proc, prompts
+from lepika import health, log, proc, prompts, serving, stack_env
 from lepika.backend import UpdateStep
 from lepika.config import Config
 from lepika.detect import SystemInfo
@@ -28,7 +27,6 @@ AskFn = Callable[..., str]
 console = Console()
 
 STACK_FILES = ("compose.yml", "compose.nvidia.yml", "Caddyfile")
-ENV_FILE = ".env"
 VLLM_URL = "http://127.0.0.1:8000"
 _TOOLKIT_URL = (
     "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
@@ -64,75 +62,6 @@ def install_stack() -> Path:
         text = bundle.joinpath(name).read_text(encoding="utf-8")
         (target / name).write_text(text, encoding="utf-8")
     return target
-
-
-def read_env(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if not path.exists():
-        return values
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-            quote, value = value[0], value[1:-1]
-            if quote == '"':
-                value = _unescape(value)
-        values[key.strip()] = value
-    return values
-
-
-def _unescape(text: str) -> str:
-    """Undo `_quote`'s double-quoted escapes: `\\"`, `\\\\`, and `$$` — nothing else."""
-    out: list[str] = []
-    i = 0
-    while i < len(text):
-        if text[i] == "\\" and i + 1 < len(text) and text[i + 1] in '\\"':
-            out.append(text[i + 1])
-            i += 2
-        elif text[i] == "$" and i + 1 < len(text) and text[i + 1] == "$":
-            out.append("$")
-            i += 2
-        else:
-            out.append(text[i])
-            i += 1
-    return "".join(out)
-
-
-def _quote(value: str) -> str:
-    """Single quotes keep JSON and `$` literal — but they cannot hold a `'`.
-
-    A value containing one (an API key from `lepika connect --key`) is written
-    double-quoted instead, with the escapes compose's .env parser expects — `$`
-    included, because compose interpolates `$VAR` inside double quotes.
-    """
-    if "'" not in value:
-        return f"'{value}'"
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "$$")
-    return f'"{escaped}"'
-
-
-def write_env(path: Path, values: dict[str, str]) -> None:
-    """Merge `values` into .env, keep everything else, write privately and atomically."""
-    merged = read_env(path) | values
-    body = "".join(f"{k}={_quote(v)}\n" for k, v in merged.items())
-    # Private, because the file holds the API key and an HF token.
-    fsio.write_private(path, body)
-    # Key names only: the values are exactly what must never reach the log.
-    log.get_logger().info("env.write", path=str(path), keys=sorted(values))
-
-
-def api_key(env_path: Path, rotate: bool = False) -> str:
-    """The key Caddy checks. Generated once, kept in .env (0600), never in LePika's log."""
-    current = read_env(env_path).get("LEPIKA_API_KEY", "")
-    if current and not rotate:
-        return current
-    key = secrets.token_urlsafe(32)
-    write_env(env_path, {"LEPIKA_API_KEY": key})
-    log.get_logger().info("expose.key", rotated=rotate)
-    return key
 
 
 def lan_ip(connect: Callable[[socket.socket], None] | None = None) -> str:
@@ -229,7 +158,7 @@ def env_values(cfg: Config, info: SystemInfo, existing: dict[str, str]) -> dict[
         "API_PORT": str(cfg.api_port),
         "LEPIKA_UPSTREAM": upstream,
     }
-    if vllm_active(cfg):
+    if serving.vllm_active(cfg):
         # OLLAMA_BASE_URL is left pointing at the stopped ollama service on purpose:
         # OpenWebUI then lists no Ollama models, so the only model offered is vLLM's.
         values |= {
@@ -242,42 +171,10 @@ def env_values(cfg: Config, info: SystemInfo, existing: dict[str, str]) -> dict[
     return values
 
 
-def vllm_allowed(cfg: Config, info: SystemInfo) -> bool:
-    """Could this machine serve a full-weight repo? vLLM is a CUDA container we start.
-
-    `engine_managed` is part of it: with a remote engine we start no containers at
-    all, so accepting a repo would save a model nothing in the stack ever serves.
-    """
-    return (
-        cfg.engine_managed and cfg.mode == "server" and info.os == "linux" and info.gpu == "nvidia"
-    )
-
-
-def vllm_active(cfg: Config) -> bool:
-    """Is vLLM the engine right now? The one predicate every caller shares.
-
-    The mode is part of the answer: vLLM is a container in the Server stack, so an
-    Express config still naming a repo (a switch that failed halfway) has no vLLM
-    behind it for `status`, `doctor`, or `model list` to report.
-    """
-    return cfg.mode == "server" and cfg.engine_managed and models.uses_vllm(cfg.model)
-
-
-def engine_label(cfg: Config) -> str:
-    """What to call the engine in a sentence: the model picks it (rule 10).
-
-    A remote engine is nameless on purpose — `lepika connect` never asks what runs
-    over there, so calling it "Ollama" would be a guess printed as a fact.
-    """
-    if vllm_active(cfg):
-        return "vLLM"
-    return "Ollama" if cfg.engine_managed else "a remote engine"
-
-
 def profiles(cfg: Config) -> list[str]:
     active: list[str] = []
     if cfg.engine_managed:
-        active.append("vllm" if vllm_active(cfg) else "engine")
+        active.append("vllm" if serving.vllm_active(cfg) else "engine")
     if cfg.exposed:
         active.append("expose")
     return active
@@ -289,7 +186,7 @@ def hf_token_prompt(env_path: Path, ask: AskFn | None = None) -> None:
     Gated repos (Llama, Gemma…) 401 without one. The answer goes straight to .env
     (0600) — never onto the command line, and never into LePika's log.
     """
-    if os.environ.get("HF_TOKEN") or read_env(env_path).get("HF_TOKEN"):
+    if os.environ.get("HF_TOKEN") or stack_env.read_env(env_path).get("HF_TOKEN"):
         return
     # No terminal skips, as Enter does.
     token = prompts.ask(
@@ -298,7 +195,7 @@ def hf_token_prompt(env_path: Path, ask: AskFn | None = None) -> None:
         default="",
         reader=ask,
     ).strip()
-    write_env(env_path, {"HF_TOKEN": token})
+    stack_env.write_env(env_path, {"HF_TOKEN": token})
 
 
 def nvidia_in_docker(info: SystemInfo, run: RunFn = proc.run_logged) -> bool:
@@ -403,8 +300,8 @@ def start_stack(
             "(Linux), or quit it from the tray (Windows); if LePika started it, "
             '`pkill -f "ollama serve"`.',
         )
-    env_path = stack / ENV_FILE
-    values = env_values(cfg, info, read_env(env_path))
+    env_path = stack / stack_env.ENV_FILE
+    values = env_values(cfg, info, stack_env.read_env(env_path))
     active = profiles(cfg)
     gpu = nvidia_in_docker(info, run=sys.run)
     # Both refusals come before anything is written or started.
@@ -422,7 +319,7 @@ def start_stack(
             "vLLM needs the GPU inside Docker, and Docker can't see it.",
             f"Install the NVIDIA Container Toolkit: {_TOOLKIT_URL}",
         )
-    write_env(env_path, values)
+    stack_env.write_env(env_path, values)
     base = compose_cmd(stack, active, gpu_overlay=gpu)
     log.get_logger().info("stack.up", mode="server", profiles=active, gpu=info.gpu)
     # Streamed, not captured: the first run pulls gigabytes of images and a silent

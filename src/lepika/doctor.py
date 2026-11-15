@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from lepika import config, health, proc, server, system
+from lepika import config, health, proc, server, serving, system
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 
@@ -104,7 +104,7 @@ def run_checks(
                     "Run `lepika` to install it, or see https://ollama.com/download",
                 )
             )
-    vllm = server.vllm_active(cfg)
+    vllm = serving.vllm_active(cfg)
     checks += [
         CheckResult(
             "Engine (vLLM) responding" if vllm else "Engine responding",

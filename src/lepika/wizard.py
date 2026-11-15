@@ -25,6 +25,7 @@ from lepika import (
     prompts,
     server,
     serving,
+    stack_env,
     system,
 )
 from lepika.detect import SystemInfo
@@ -41,7 +42,7 @@ _ask: AskFn = Prompt.ask
 def _validate(ref: ModelRef, cfg: config.Config, info: SystemInfo) -> ModelRef:
     if ref.kind != "hf_repo":
         return ref
-    if server.vllm_allowed(cfg, info) or serving.import_allowed(cfg, info):
+    if serving.vllm_allowed(cfg, info) or serving.import_allowed(cfg, info):
         return ref
     if not cfg.engine_managed:
         raise FriendlyError(
@@ -388,7 +389,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         server.ensure_docker(info)
     if cfg.mode != previous and not dry_run:
         info = leave_mode(info, previous, cfg)
-    console.print(detect.plan_sentence(info, cfg.mode, engine=server.engine_label(cfg)))
+    console.print(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))
     # The quant picker may read the Hub and ask nvidia-smi here, dry run or not: both are
     # reads, and the dry-run report then names the tag it would pull.
     ref = choose_model(info, cfg, sys=system.REAL)
@@ -397,12 +398,12 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         # in a state the run said it would only describe.
         if cfg.mode == "server":
             # Built from lepika_home(), not stack_dir(): a dry run creates nothing.
-            env_path = paths.lepika_home() / "stack" / server.ENV_FILE
+            env_path = paths.lepika_home() / "stack" / stack_env.ENV_FILE
             console.print(f"would: write {escape(str(env_path))}")
             console.print("would: run docker compose up -d")
         else:
             console.print("would: ensure Ollama is installed and running")
-        if models.uses_vllm(ref.raw) and server.vllm_allowed(cfg, info):
+        if models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info):
             console.print(f"would: start vLLM with {escape(ref.raw)}")
         elif ref.kind == "hf_repo":
             console.print(f"would: import {escape(ref.raw)} into Ollama ({engine.IMPORT_QUANT})")
@@ -411,8 +412,8 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         console.print(f"would: start OpenWebUI on port {cfg.webui_port}")
         console.print(f"would: open {health.webui_url(cfg.webui_port)}")
         return
-    if models.uses_vllm(ref.raw) and server.vllm_allowed(cfg, info):
-        server.hf_token_prompt(paths.stack_dir() / server.ENV_FILE)
+    if models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info):
+        server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE)
         # compose interpolates VLLM_MODEL from the config, so this one has to be
         # saved before the stack starts rather than after. A start that then fails
         # is fixed by `lepika model add`, not by a stale config.
@@ -420,7 +421,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         config.save(cfg)
 
     def pull_then_save() -> None:
-        if models.uses_vllm(ref.raw) and server.vllm_allowed(cfg, info):
+        if models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info):
             return  # vLLM downloads its own weights while starting; nothing to pull
         # The mode is saved here, not before `start_stack`: this hook runs only once
         # the engine is up, so a pre-flight that refuses can no longer leave a config

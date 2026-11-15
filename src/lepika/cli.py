@@ -34,6 +34,7 @@ from lepika import (
     paths,
     server,
     serving,
+    stack_env,
     system,
 )
 from lepika.backend import UpdateStep
@@ -109,7 +110,7 @@ def up() -> None:
     """Start the local AI stack and open the browser."""
     info = detect.detect(sys=system.REAL)
     cfg = config.load()
-    console.print(detect.plan_sentence(info, cfg.mode, engine=server.engine_label(cfg)))
+    console.print(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))
     # A CPU-bound container on a GPU machine is a mystery worth one line up front.
     # `has_docker` first: gpu_note runs `docker info`, and without the binary that
     # would replace Server mode's Express hint with a generic "command not found".
@@ -141,7 +142,7 @@ def status() -> None:
     table.add_column("State")
     # First row: every other row means something different in each mode.
     table.add_row("Mode", cfg.mode)
-    vllm = server.vllm_active(cfg)
+    vllm = serving.vllm_active(cfg)
     engine_ok = (
         health.vllm_up(server.VLLM_URL, sys=system.REAL)
         if vllm
@@ -319,7 +320,7 @@ def expose(
         )
     # Written before the stack starts: `start_stack` refuses to run the `expose`
     # profile with an empty key, because Caddy would then match a bare `Bearer `.
-    key = server.api_key(paths.stack_dir() / server.ENV_FILE, rotate=rotate)
+    key = stack_env.api_key(paths.stack_dir() / stack_env.ENV_FILE, rotate=rotate)
     # A rotation always restarts, --show or not: Caddy reads the key once, at
     # startup, so skipping the restart would leave the old key the working one.
     if not show or rotate:
@@ -343,7 +344,7 @@ def expose(
         console.print(f"Also reachable on: {others}", markup=False, soft_wrap=True)
     console.print("The chat UI asks for a sign-in; the engine API wants the key below.")
     # soft_wrap on the copied lines: an 80-column wrap breaks a URL or a key.
-    if server.vllm_active(cfg):
+    if serving.vllm_active(cfg):
         # `lepika connect` probes Ollama's /api/version, which Caddy in front of vLLM
         # never answers — so point at the OpenAI-compatible URL OpenWebUI can add.
         console.print(f"Engine API is vLLM (OpenAI-compatible): http://{ip}:{cfg.api_port}/v1")
@@ -385,7 +386,7 @@ def _refuse_ollama_only(cfg: config.Config, detail: str) -> None:
     Without this the engine looks unreachable and the hint is `lepika up` — which
     starts the stack it is already in, leaving the user in a loop.
     """
-    if server.vllm_active(cfg):
+    if serving.vllm_active(cfg):
         raise FriendlyError(
             f"'{cfg.model}' is served by vLLM — {detail}",
             "Switch models with `lepika model add <ref>`; vLLM keeps its weights in "
@@ -448,10 +449,10 @@ def model_add(
     else:
         # Same rejection — and the same quant picker — as the wizard's, by reusing it.
         model_ref = wizard.resolve(models.parse_model_ref(ref), cfg, info, sys=system.REAL)
-    if models.uses_vllm(model_ref.raw) and server.vllm_allowed(cfg, info):
+    if models.uses_vllm(model_ref.raw) and serving.vllm_allowed(cfg, info):
         # Nothing to pull: vLLM downloads the weights itself when it starts, and it
         # only starts once the config names the model compose interpolates.
-        server.hf_token_prompt(paths.stack_dir() / server.ENV_FILE)
+        server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE)
         cfg.model = model_ref.raw
         config.save(cfg)
         console.print(f"[green]✓ Set:[/green] {escape(model_ref.raw)} — starting vLLM…")

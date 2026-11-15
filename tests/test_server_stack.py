@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from fakes import FakeResponse, FakeSystem, Runner, routes
 
-from lepika import config, detect, log, paths, server
+from lepika import config, detect, log, paths, server, stack_env
 from lepika.backend import UpdateStep
 from lepika.errors import FriendlyError
 
@@ -87,7 +87,7 @@ def test_start_stack_writes_env_ups_and_waits(isolated_home: Path) -> None:
     assert up_cmd[-3:] == ["up", "-d", "--remove-orphans"]
     assert "--profile" in up_cmd and "engine" in up_cmd
     assert str(isolated_home / "stack" / "compose.nvidia.yml") in up_cmd
-    env = server.read_env(isolated_home / "stack" / ".env")
+    env = stack_env.read_env(isolated_home / "stack" / ".env")
     assert env["OLLAMA_BASE_URL"] == "http://ollama:11434"
     # The engine is probed before the hook runs, and the UI after it.
     assert _probed(machine) == [_ENGINE, _UI]

@@ -32,7 +32,6 @@ from lepika.system import System
 ProgressFn = Callable[[int, int], None]
 
 _TAGS_TIMEOUT = 5.0
-_HEALTH_TIMEOUT = 1.0
 _DELETE_TIMEOUT = 30.0
 # A pull streams for as long as the download takes; only silence is a failure.
 _PULL_IDLE_TIMEOUT = 300.0
@@ -114,15 +113,6 @@ def _canonical(name: str) -> str:
 def same_model(a: str, b: str) -> bool:
     """Do two refs name the same Ollama model, tag or no tag?"""
     return _canonical(a) == _canonical(b)
-
-
-def vllm_up(url: str, *, sys: System) -> bool:
-    """Is the vLLM server answering? `GET /health` — a probe, so nothing is logged."""
-    try:
-        sys.open_url(urllib.request.Request(f"{url}/health"), timeout=_HEALTH_TIMEOUT)
-    except Exception:
-        return False
-    return True
 
 
 def list_models(

@@ -17,11 +17,14 @@ from lepika import (
     engine,
     express,
     gguf,
+    health,
     hf,
     models,
+    ollama,
     paths,
     prompts,
     server,
+    serving,
     system,
 )
 from lepika.detect import SystemInfo
@@ -38,7 +41,7 @@ _ask: AskFn = Prompt.ask
 def _validate(ref: ModelRef, cfg: config.Config, info: SystemInfo) -> ModelRef:
     if ref.kind != "hf_repo":
         return ref
-    if server.vllm_allowed(cfg, info) or express.import_allowed(cfg, info):
+    if server.vllm_allowed(cfg, info) or serving.import_allowed(cfg, info):
         return ref
     if not cfg.engine_managed:
         raise FriendlyError(
@@ -361,7 +364,7 @@ def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> SystemInf
     # which is what `engine_managed` short-circuits before the call.
     if previous == "express" and old_cfg.engine_managed:
         try:
-            if express.stop_ollama(info.os, old_cfg.engine_url, key=old_cfg.engine_key):
+            if ollama.stop_ollama(info.os, old_cfg.engine_url, key=old_cfg.engine_key):
                 console.print("Stopped the Ollama LePika had started.")
                 # True means the API went quiet, not just that a signal was sent: the
                 # snapshot is corrected from what was verified, never re-probed.
@@ -404,7 +407,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         else:
             console.print(f"would: pull model {escape(ref.raw)}")
         console.print(f"would: start OpenWebUI on port {cfg.webui_port}")
-        console.print(f"would: open {express.webui_url(cfg.webui_port)}")
+        console.print(f"would: open {health.webui_url(cfg.webui_port)}")
         return
     if models.uses_vllm(ref.raw) and server.vllm_allowed(cfg, info):
         server.hf_token_prompt(paths.stack_dir() / server.ENV_FILE)

@@ -15,7 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from rich.console import Console
 
-from lepika import detect, engine, express, fsio, log, models, proc, prompts, system
+from lepika import fsio, health, log, models, proc, prompts, system
 from lepika.backend import UpdateStep
 from lepika.config import Config
 from lepika.detect import SystemInfo
@@ -385,7 +385,7 @@ def gpu_note(info: SystemInfo, run: RunFn = proc.run_logged) -> str | None:
 
 
 def _real_vllm_up(url: str) -> bool:
-    return engine.vllm_up(url, sys=system.REAL)
+    return health.vllm_up(url, sys=system.REAL)
 
 
 def start_stack(
@@ -394,9 +394,9 @@ def start_stack(
     after_engine: Callable[[], None] | None = None,
     run: RunFn = proc.run_logged,
     call: CallFn = proc.call,
-    api_up: Callable[..., bool] = detect.api_up,
+    api_up: Callable[..., bool] = health.api_up,
     vllm_up: Callable[..., bool] | None = None,
-    up: Callable[..., bool] = express.webui_up,
+    up: Callable[..., bool] = health.webui_up,
     sleep: SleepFn = time.sleep,
 ) -> str:
     """Reconcile the stack with config and return the URL to open.
@@ -460,15 +460,15 @@ def start_stack(
             "vLLM is loading the model — the first time this downloads the full "
             "weights; watch with `lepika logs`."
         )
-        express.wait_for(lambda: vllm_probe(VLLM_URL), _VLLM_READY_SECONDS, "vLLM", sleep=sleep)
+        health.wait_for(lambda: vllm_probe(VLLM_URL), _VLLM_READY_SECONDS, "vLLM", sleep=sleep)
     elif cfg.engine_managed:
-        express.wait_for(lambda: api_up(cfg.engine_url), 120, "Ollama (container)", sleep=sleep)
+        health.wait_for(lambda: api_up(cfg.engine_url), 120, "Ollama (container)", sleep=sleep)
     else:
-        express.check_remote_engine(cfg, api_up=api_up)
+        health.check_remote_engine(cfg, api_up=api_up)
     if after_engine is not None:
         after_engine()
-    express.wait_for(lambda: up(cfg.webui_port), 180, "OpenWebUI", sleep=sleep)
-    return express.webui_url(cfg.webui_port)
+    health.wait_for(lambda: up(cfg.webui_port), 180, "OpenWebUI", sleep=sleep)
+    return health.webui_url(cfg.webui_port)
 
 
 def stop(info: SystemInfo, cfg: Config, run: RunFn = proc.run_logged) -> bool:

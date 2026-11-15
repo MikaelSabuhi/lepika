@@ -63,6 +63,29 @@ def _bind_address(address: str, port: int) -> bool:
     return True
 
 
+def _global_memory_status() -> tuple[bool, int]:  # pragma: no cover - Windows only
+    """Call GlobalMemoryStatusEx, returning (succeeded, total physical bytes)."""
+    import ctypes
+
+    class MemoryStatusEx(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    stat = MemoryStatusEx()
+    stat.dwLength = ctypes.sizeof(MemoryStatusEx)
+    ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))  # type: ignore[attr-defined]
+    return bool(ok), int(stat.ullTotalPhys)
+
+
 class Response(Protocol):
     """What `open_url` hands back: the part of an HTTP response LePika reads."""
 
@@ -122,6 +145,10 @@ class System(Protocol):
         ...
 
     def disk_free(self, path: Path) -> int: ...
+
+    def ram_bytes(self) -> int | None:
+        """Physical memory in bytes, or None when the machine will not say."""
+        ...
 
 
 class RealSystem:
@@ -200,6 +227,20 @@ class RealSystem:
 
     def disk_free(self, path: Path) -> int:
         return shutil.disk_usage(path).free
+
+    def ram_bytes(self) -> int | None:
+        if sys.platform == "win32":
+            # GlobalMemoryStatusEx signals failure through its BOOL return, leaving
+            # the struct untouched: reading it anyway reported a 0 GB machine.
+            ok, total = _global_memory_status()
+            return total if ok else None
+        # Asked of the C library, so no process is started (rule 6). An unknown
+        # name is ValueError, and an answer of -1 is how sysconf says it does not know.
+        try:
+            total = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        except (ValueError, OSError):
+            return None
+        return total if total > 0 else None
 
 
 REAL: System = RealSystem()

@@ -20,7 +20,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from lepika import acquire, config, detect, engine, express, log, models, paths, server
+from lepika import acquire, config, detect, engine, express, log, models, paths, server, system
 from lepika.backend import UpdateStep
 from lepika.errors import ISSUES_URL, CommandNotFound, FriendlyError
 
@@ -92,7 +92,7 @@ def _ready(cfg: config.Config, url: str) -> None:
 @app.command()
 def up() -> None:
     """Start the local AI stack and open the browser."""
-    info = detect.detect()
+    info = detect.detect(sys=system.REAL)
     cfg = config.load()
     console.print(detect.plan_sentence(info, cfg.mode, engine=server.engine_label(cfg)))
     # A CPU-bound container on a GPU machine is a mystery worth one line up front.
@@ -111,7 +111,7 @@ def up() -> None:
 def down() -> None:
     """Stop the stack (Express: OpenWebUI only; Server: every container, models kept)."""
     cfg = config.load()
-    if _backend(cfg).stop(detect.detect(), cfg):
+    if _backend(cfg).stop(detect.detect(sys=system.REAL), cfg):
         console.print("[green]✓ Stopped.[/green]")
     else:
         console.print("Nothing was running.")
@@ -172,7 +172,7 @@ def doctor() -> None:
     # Imported here, not at module scope: this command function shadows the name.
     from lepika import doctor as doctor_mod
 
-    info = detect.detect()
+    info = detect.detect(sys=system.REAL)
     results = doctor_mod.run_checks(info)
     core_failed = False
     for r in results:
@@ -191,7 +191,7 @@ def update() -> None:
     """Upgrade the engine and OpenWebUI to their latest versions."""
     console.print("Upgrading…")
     cfg = config.load()
-    steps: list[UpdateStep] = _backend(cfg).update(detect.detect(), cfg)
+    steps: list[UpdateStep] = _backend(cfg).update(detect.detect(sys=system.REAL), cfg)
     for step in steps:
         detail = escape(step.detail)
         if step.outcome in ("stale", "note"):
@@ -213,11 +213,11 @@ def _apply_engine_change(cfg: config.Config) -> bool:
     if cfg.mode == "server":
         # `compose up -d` is the Server-mode reconciler: it rewrites .env and
         # recreates whatever the new engine URL changed, so it needs no probe.
-        server.start_stack(detect.detect(), cfg)
+        server.start_stack(detect.detect(sys=system.REAL), cfg)
         return True
     if not express.webui_up(cfg.webui_port):
         return False
-    express.restart_openwebui(cfg, detect.detect().os)
+    express.restart_openwebui(cfg, detect.detect(sys=system.REAL).os)
     return True
 
 
@@ -286,7 +286,7 @@ def expose(
     if off:
         cfg.exposed = False
         config.save(cfg)
-        server.start_stack(detect.detect(), cfg)
+        server.start_stack(detect.detect(sys=system.REAL), cfg)
         log.get_logger().info("expose.off")
         console.print("[green]✓ Back to localhost only.[/green]")
         return
@@ -308,7 +308,7 @@ def expose(
     if not show or rotate:
         cfg.exposed = True
         config.save(cfg)
-        server.start_stack(detect.detect(), cfg)
+        server.start_stack(detect.detect(sys=system.REAL), cfg)
         log.get_logger().info("expose.on", api_port=cfg.api_port)
     ips = server.lan_ips()
     # Nothing resolved at all (offline, or a locked-down host): say so in words
@@ -424,13 +424,13 @@ def model_add(
     # Imported here, not at module scope: `wizard` imports `cli._open_browser`.
     from lepika import wizard
 
-    info = detect.detect()
+    info = detect.detect(sys=system.REAL)
     cfg = config.load()
     if ref is None:
-        model_ref = wizard.choose_model(info, cfg)
+        model_ref = wizard.choose_model(info, cfg, sys=system.REAL)
     else:
         # Same rejection — and the same quant picker — as the wizard's, by reusing it.
-        model_ref = wizard.resolve(models.parse_model_ref(ref), cfg, info)
+        model_ref = wizard.resolve(models.parse_model_ref(ref), cfg, info, sys=system.REAL)
     if models.uses_vllm(model_ref.raw) and server.vllm_allowed(cfg, info):
         # Nothing to pull: vLLM downloads the weights itself when it starts, and it
         # only starts once the config names the model compose interpolates.
@@ -468,7 +468,7 @@ def model_import(
 ) -> None:
     """Import safetensors weights already on disk into Ollama."""
     quant = _checked_quant(quant)
-    info = detect.detect()
+    info = detect.detect(sys=system.REAL)
     cfg = config.load()
     if not express.import_allowed(cfg, info):
         # Before any engine call: a Server-mode config must not have an Ollama

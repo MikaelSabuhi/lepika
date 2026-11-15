@@ -6,7 +6,8 @@ from typing import Any
 
 import pytest
 
-from lepika import detect, proc
+from lepika import detect, system
+from lepika.system import System
 
 # Saved before any fixture patches it, so the guard's own test can tell the two apart.
 REAL_URLOPEN = urllib.request.urlopen
@@ -60,11 +61,11 @@ def no_real_network(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPa
 @pytest.fixture(autouse=True)
 def no_real_docker_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep `docker info` a fake: a real one is slow and answers with the developer's own
-    Docker Desktop memory. A test that does not fake `run` gets "unknown" — what a
-    stopped daemon answers — and sizes against its own SystemInfo, as before."""
+    Docker Desktop memory. A test that hands it the real `System` gets "unknown" — what
+    a stopped daemon answers — and sizes against its own SystemInfo, as before."""
     real = detect.docker_memory_gb
 
-    def probe(run: Any = proc.run_logged) -> float:
-        return 0.0 if run is proc.run_logged else real(run)
+    def probe(*, sys: System) -> float:
+        return 0.0 if sys is system.REAL else real(sys=sys)
 
     monkeypatch.setattr(detect, "docker_memory_gb", probe)

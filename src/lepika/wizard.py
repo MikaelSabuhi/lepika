@@ -21,16 +21,16 @@ from lepika import (
     hf,
     models,
     paths,
-    proc,
     prompts,
     server,
+    system,
 )
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import CuratedModel, ModelRef
+from lepika.system import System
 
 AskFn = Callable[..., str]
-RunFn = Callable[..., Any]
 UrlOpenFn = Callable[..., Any]
 console = Console()
 
@@ -76,9 +76,7 @@ class EngineMemory:
 _MORE_FOR_DOCKER = "Docker Desktop → Settings → Resources gives it more."
 
 
-def engine_memory(
-    info: SystemInfo, cfg: config.Config, run: RunFn = proc.run_logged
-) -> EngineMemory:
+def engine_memory(info: SystemInfo, cfg: config.Config, *, sys: System) -> EngineMemory:
     """Server mode's engine is a container: on Docker Desktop it gets the VM's memory,
     not the machine's. Sized against the Mac's 16 GB, a 12 GB build looks fine and
     then never loads in the 7.75 GiB the VM really has. Anything else — Express, a
@@ -86,7 +84,7 @@ def engine_memory(
     not answer — is sized against this machine.
     """
     if cfg.mode == "server" and cfg.engine_managed:
-        docker = detect.docker_memory_gb(run)
+        docker = detect.docker_memory_gb(sys=sys)
         # 95 %: Linux reports the same kernel MemTotal; only a real VM is smaller.
         if 0 < docker < info.ram_gb * 0.95:
             return EngineMemory(docker, docker=True)
@@ -99,7 +97,8 @@ def choose_quant(
     info: SystemInfo,
     ask: AskFn | None = None,
     urlopen: UrlOpenFn | None = None,
-    run: RunFn = proc.run_logged,
+    *,
+    sys: System,
 ) -> ModelRef:
     """Turn a tagless `hf.co/<org>/<repo>` into `…:<TAG>` by asking, with a ★ default.
 
@@ -129,8 +128,8 @@ def choose_quant(
         # A container never sees Metal: Server mode on a Mac is a CPU engine.
         gpu_gb = 0.0
     else:
-        gpu_gb = detect.gpu_memory_gb(info, run)
-    memory = engine_memory(info, cfg, run)
+        gpu_gb = detect.gpu_memory_gb(info, sys=sys)
+    memory = engine_memory(info, cfg, sys=sys)
     more = f" {_MORE_FOR_DOCKER}" if memory.docker else ""
     shown = [b for b in builds if gguf.tier(b, gpu_gb, memory.gb) != "none"]
     if not shown:
@@ -208,9 +207,11 @@ def resolve(
     info: SystemInfo,
     ask: AskFn | None = None,
     urlopen: UrlOpenFn | None = None,
+    *,
+    sys: System,
 ) -> ModelRef:
     """Validate a typed ref, then settle the one choice it may have left open."""
-    return choose_quant(_validate(ref, cfg, info), cfg, info, ask=ask, urlopen=urlopen)
+    return choose_quant(_validate(ref, cfg, info), cfg, info, ask=ask, urlopen=urlopen, sys=sys)
 
 
 def choose_model(
@@ -219,11 +220,12 @@ def choose_model(
     ask: AskFn | None = None,
     curated: list[CuratedModel] | None = None,
     urlopen: UrlOpenFn | None = None,
-    run: RunFn = proc.run_logged,
+    *,
+    sys: System,
 ) -> ModelRef:
     ask_fn: AskFn = ask if ask is not None else _ask
     candidates = curated if curated is not None else models.load_curated()
-    memory = engine_memory(info, cfg, run)
+    memory = engine_memory(info, cfg, sys=sys)
     fitting = models.fitting(candidates, memory.gb)
     if not fitting:
         # A bare empty table reads as a broken program. Name the reason and the
@@ -278,7 +280,7 @@ def choose_model(
         chosen = picked(answer)
         if chosen is not None:
             return chosen
-    return resolve(models.parse_model_ref(answer), cfg, info, ask=ask_fn, urlopen=urlopen)
+    return resolve(models.parse_model_ref(answer), cfg, info, ask=ask_fn, urlopen=urlopen, sys=sys)
 
 
 def choose_mode(info: SystemInfo, current: str, ask: AskFn | None = None) -> str:
@@ -375,7 +377,7 @@ def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> SystemInf
 
 
 def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
-    info = detect.detect()
+    info = detect.detect(sys=system.REAL)
     cfg = config.load()
     previous = cfg.mode
     cfg.mode = mode if mode is not None else choose_mode(info, cfg.mode)
@@ -389,7 +391,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     console.print(detect.plan_sentence(info, cfg.mode, engine=server.engine_label(cfg)))
     # The quant picker may read the Hub and ask nvidia-smi here, dry run or not: both are
     # reads, and the dry-run report then names the tag it would pull.
-    ref = choose_model(info, cfg)
+    ref = choose_model(info, cfg, sys=system.REAL)
     if dry_run:
         # Nothing is written: a dry run that saved the config would leave the machine
         # in a state the run said it would only describe.

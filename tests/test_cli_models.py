@@ -933,7 +933,7 @@ def test_model_add_tagless_gguf_ref_goes_through_the_quant_picker(
 ) -> None:
     builds = [gguf.Build("Q4_K_M", int(4e9)), gguf.Build("Q8_0", int(8e9))]
     monkeypatch.setattr(gguf, "list_builds", lambda repo, token="", urlopen=None: builds)
-    monkeypatch.setattr(detect, "gpu_memory_gb", lambda info, run=None: 16.0)
+    monkeypatch.setattr(detect, "gpu_memory_gb", lambda info, *, sys: 16.0)
     # Enter at the prompt: `choose_quant` reads `wizard._ask` at call time.
     from lepika import wizard
 

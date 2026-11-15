@@ -38,6 +38,7 @@ _METHODS = (
     "open_browser",
     "euid",
     "disk_free",
+    "ram_bytes",
 )
 
 
@@ -184,6 +185,57 @@ def test_euid_is_none_where_the_platform_has_none(monkeypatch: pytest.MonkeyPatc
     assert REAL.euid() is None
 
 
+def _sysconf(answers: dict[str, int]) -> Any:
+    def sysconf(name: str) -> int:
+        return answers[name]
+
+    return sysconf
+
+
+def test_ram_bytes_is_physical_pages_times_page_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    # `raising=False`: Windows has no `os.sysconf`, and the suite runs there too.
+    answers = {"SC_PHYS_PAGES": 4 * 2**20, "SC_PAGE_SIZE": 4096}
+    monkeypatch.setattr(os, "sysconf", _sysconf(answers), raising=False)
+    assert REAL.ram_bytes() == 16 * 2**30
+
+
+def test_ram_bytes_is_none_when_sysconf_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    for error in (ValueError("unknown name"), OSError("not supported")):
+
+        def failing(name: str, error: Exception = error) -> int:
+            raise error
+
+        monkeypatch.setattr(os, "sysconf", failing, raising=False)
+        assert REAL.ram_bytes() is None, type(error).__name__
+
+
+def test_ram_bytes_is_none_for_a_non_positive_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    # sysconf answers -1 for a value the platform does not know, without raising.
+    for pages in (-1, 0):
+        answers = {"SC_PHYS_PAGES": pages, "SC_PAGE_SIZE": 4096}
+        monkeypatch.setattr(os, "sysconf", _sysconf(answers), raising=False)
+        assert REAL.ram_bytes() is None, pages
+
+
+def test_ram_bytes_on_windows_reads_global_memory_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(system, "_global_memory_status", lambda: (True, 16 * 2**30))
+    assert REAL.ram_bytes() == 16 * 2**30
+
+
+def test_ram_bytes_on_windows_is_none_when_the_call_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GlobalMemoryStatusEx signals failure through its BOOL return and leaves the
+    struct untouched: reading it anyway reported a 0 GB machine."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(system, "_global_memory_status", lambda: (False, 0))
+    assert REAL.ram_bytes() is None
+
+
 def test_can_bind_is_false_for_a_port_already_taken() -> None:
     # A listening socket with no options, as a server holding the port would be.
     # The probe sets SO_REUSEADDR on POSIX and SO_EXCLUSIVEADDRUSE on Windows; a
@@ -273,6 +325,25 @@ def test_fake_system_reports_a_missing_program_from_every_launcher(tmp_path: Pat
         assert exc.value.problem == "Command not found: ollama"
     # The other programs on the box are still there.
     assert fake.call(["uv", "--version"]) == 0
+
+
+def test_fake_system_raises_what_it_was_told_to_for_a_command() -> None:
+    hang = FriendlyError("docker timed out.", "Start Docker.")
+    fake = FakeSystem(raises={"docker info": hang}, stdout={"docker ps": "up"})
+    launchers = [
+        lambda: fake.run(["docker", "info"], check=False, timeout=15),
+        lambda: fake.call(["docker", "info"]),
+        lambda: fake.stream(["docker", "info", "--format", "x"]),
+    ]
+    for launch in launchers:
+        with pytest.raises(FriendlyError) as exc:
+            launch()
+        assert exc.value is hang
+    # Each call was recorded before it raised, and other commands still answer.
+    assert fake.ran == [["docker", "info"]]
+    assert fake.called == [["docker", "info"]]
+    assert [cmd for cmd, _ in fake.streamed] == [["docker", "info", "--format", "x"]]
+    assert fake.run(["docker", "ps"]).stdout == "up"
 
 
 def test_fake_system_records_every_effect_in_order(tmp_path: Path) -> None:

@@ -74,8 +74,9 @@ def _no_url(request: urllib.request.Request) -> Response:
 class FakeSystem:
     """Implements `lepika.system.System` without touching the machine; records every call.
 
-    `stdout` and `codes` answer by the leading words of the argv, and a program
-    named in `missing` is not installed for every launcher alike.
+    `stdout`, `codes` and `raises` answer by the leading words of the argv: a
+    matching `run`, `call` or `stream` is recorded, then raises (a timeout, say).
+    A program named in `missing` is not installed for every launcher alike.
     """
 
     def __init__(
@@ -92,6 +93,8 @@ class FakeSystem:
         free: int = 10**12,
         bindable: bool = True,
         missing: set[str] | None = None,
+        ram_bytes: int | None = 16 * 2**30,
+        raises: dict[str, BaseException] | None = None,
     ) -> None:
         self.stdout = stdout or {}
         self.codes = codes or {}
@@ -104,6 +107,8 @@ class FakeSystem:
         self.free = free
         self.bindable = bindable
         self.missing = missing or set()
+        self.memory = ram_bytes
+        self.raises = raises or {}
         self.ran: list[list[str]] = []
         self.ran_kwargs: list[dict[str, Any]] = []
         self.called: list[list[str]] = []
@@ -117,6 +122,13 @@ class FakeSystem:
     def _launch(self, cmd: Sequence[str]) -> None:
         if cmd and cmd[0] in self.missing:
             raise CommandNotFound(cmd[0])
+
+    def _start(self, cmd: Sequence[str]) -> None:
+        """`_launch`, then whatever `raises` holds for this command."""
+        self._launch(cmd)
+        error = _leading(self.raises, cmd, None)
+        if error is not None:
+            raise error
 
     def run(
         self,
@@ -138,7 +150,7 @@ class FakeSystem:
                 "ok": ok,
             }
         )
-        self._launch(cmd)
+        self._start(cmd)
         code = _leading(self.codes, cmd, 0)
         if check and code not in ok:
             # The same error `proc.run_logged` raises for an unexpected exit code.
@@ -151,7 +163,7 @@ class FakeSystem:
 
     def call(self, cmd: Sequence[str]) -> int:
         self.called.append(list(cmd))
-        self._launch(cmd)
+        self._start(cmd)
         code: int = _leading(self.codes, cmd, 0)
         return code
 
@@ -165,7 +177,7 @@ class FakeSystem:
         self.streamed.append(
             (list(cmd), {"env": dict(env) if env is not None else None, "cwd": cwd})
         )
-        self._launch(cmd)
+        self._start(cmd)
         return self.stream_answer
 
     def spawn(self, cmd: Sequence[str], *, env: Mapping[str, str], log: Path) -> int:
@@ -197,3 +209,6 @@ class FakeSystem:
 
     def disk_free(self, path: Path) -> int:
         return self.free
+
+    def ram_bytes(self) -> int | None:
+        return self.memory

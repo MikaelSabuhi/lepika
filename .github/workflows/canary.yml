@@ -31,13 +31,22 @@ jobs:
           enable-cache: true
       - name: Install Ollama
         run: curl -fsSL https://ollama.com/install.sh | sh
-      - name: Wait for the Ollama API
+      - name: Start the Ollama API
         run: |
-          for _ in $(seq 1 60); do
-            if curl -fsS --max-time 2 http://127.0.0.1:11434/api/version; then exit 0; fi
+          up() { curl -fsS --max-time 2 http://127.0.0.1:11434/api/version; }
+          # The installer starts a systemd service where systemd is running. Give
+          # that a moment; a runner without systemd has no service, so start one.
+          for _ in $(seq 1 5); do
+            if up; then exit 0; fi
             sleep 2
           done
-          echo "Ollama did not answer on 127.0.0.1:11434 after 60 tries (about four minutes)" >&2
+          nohup ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            if up; then exit 0; fi
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/ollama.log" >&2 || true
+          echo "Ollama did not answer on 127.0.0.1:11434 after 65 tries (about four minutes)" >&2
           exit 1
       - name: Sync dependencies
         run: uv sync --dev

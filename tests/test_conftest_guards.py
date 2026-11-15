@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import importlib
 import inspect
 import os
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import tomllib
 import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -57,8 +59,10 @@ _REAL_EFFECTS = (subprocess.Popen, subprocess.run, subprocess.call, os.kill)
 
 
 def test_the_real_system_cannot_stream_a_real_child() -> None:
-    with pytest.raises(RealProcessCall, match=re.escape(sys.executable)):
-        system.REAL.stream([sys.executable, "-c", "pass"])
+    # Matched on the payload, not the interpreter: the message carries the argv as
+    # a list repr, which doubles every backslash of a Windows path.
+    with pytest.raises(RealProcessCall, match="lepika_guard_stream_probe"):
+        system.REAL.stream([sys.executable, "-c", "lepika_guard_stream_probe = 1"])
 
 
 def test_a_launcher_captured_before_the_guard_is_still_refused() -> None:
@@ -77,18 +81,39 @@ _KNOWN_CAPTURES = {
 }
 
 
+def _defined_in(module: Any) -> Iterator[tuple[str, Any]]:
+    """Every function, method and partial `module` itself defines, by qualified name."""
+    for name, obj in vars(module).items():
+        own_function = inspect.isfunction(obj) and obj.__module__ == module.__name__
+        if own_function or isinstance(obj, functools.partial):
+            yield name, obj
+        elif inspect.isclass(obj) and obj.__module__ == module.__name__:
+            for attr, member in vars(obj).items():
+                if isinstance(member, (staticmethod, classmethod)):
+                    member = member.__func__
+                if inspect.isfunction(member):
+                    yield f"{name}.{attr}", member
+
+
 def test_no_function_captures_a_real_launcher_or_signal_as_a_default() -> None:
     # A module first imported under the guard captures the guard's stand-ins
-    # instead, so those count too: the finding must not depend on import order.
+    # instead, so those count too: the result must not depend on import order.
     effects = (*_REAL_EFFECTS, subprocess.Popen, subprocess.run, subprocess.call, os.kill)
+
+    def real(value: object) -> bool:
+        return any(value is effect for effect in effects)
+
     found: set[tuple[str, str, str]] = set()
     for info in pkgutil.walk_packages(lepika.__path__, "lepika."):
         module = importlib.import_module(info.name)
-        for name, func in inspect.getmembers(module, inspect.isfunction):
-            if func.__module__ != module.__name__:
+        for name, obj in _defined_in(module):
+            if isinstance(obj, functools.partial):
+                # A partial binds its effect in its arguments, not in a default.
+                bound = [obj.func, *obj.args, *obj.keywords.values()]
+                found.update((module.__name__, name, "<bound>") for v in bound if real(v))
                 continue
-            for param in inspect.signature(func).parameters.values():
-                if any(param.default is effect for effect in effects):
+            for param in inspect.signature(obj).parameters.values():
+                if real(param.default):
                     found.add((module.__name__, name, param.name))
     assert found == _KNOWN_CAPTURES
 

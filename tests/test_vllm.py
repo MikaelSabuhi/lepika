@@ -196,12 +196,11 @@ def test_wizard_saves_the_vllm_model_before_starting_the_stack(
     config.save(config.Config(mode="server"))
     seen: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
-    monkeypatch.setattr(system, "REAL", FakeSystem(which=DOCKER))
+    machine = FakeSystem(which=DOCKER)
     monkeypatch.setattr(models, "load_curated", lambda **k: [])
-    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: REPO))
+    face = FakeUI(reader=lambda *a, **k: REPO)
     monkeypatch.setattr(server, "hf_token_prompt", lambda env, **k: seen.append("token"))
     monkeypatch.setattr(engine, "pull_model", lambda *a, **k: pytest.fail("no pull for vLLM"))
-    monkeypatch.setattr(cli, "_open_browser", lambda url: None)
 
     def fake_start(info: Any, cfg: Any, after_engine: Any = None, **k: Any) -> str:
         seen.append(f"start:{config.load().model}")
@@ -210,7 +209,9 @@ def test_wizard_saves_the_vllm_model_before_starting_the_stack(
         return "http://localhost:3000"
 
     monkeypatch.setattr(backend, "backend_for", Backends(server=FakeBackend(on_start=fake_start)))
-    wizard.run_wizard(mode="server")
+    result = wizard.run_wizard(mode="server", sys=machine, ui=face)
+    # The wizard hands the URL back; the CLI is what opens it.
+    assert result is not None and result[1] == "http://localhost:3000"
     assert seen == ["token", f"start:{REPO}"]
     assert config.load().model == REPO
 
@@ -350,11 +351,10 @@ def test_wizard_starts_the_stack_for_the_ollama_model_it_is_about_to_pull(
     config.save(config.Config(mode="server", model=REPO))
     started: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
-    monkeypatch.setattr(system, "REAL", FakeSystem(which=DOCKER))
+    machine = FakeSystem(which=DOCKER)
     monkeypatch.setattr(models, "load_curated", lambda **k: [])
-    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: "qwen3:8b"))
+    face = FakeUI(reader=lambda *a, **k: "qwen3:8b")
     monkeypatch.setattr(engine, "pull_model", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "_open_browser", lambda url: None)
 
     def fake_start(info: Any, cfg: Any, after_engine: Any = None, **k: Any) -> str:
         started.append(cfg.model)
@@ -363,7 +363,9 @@ def test_wizard_starts_the_stack_for_the_ollama_model_it_is_about_to_pull(
         return "http://localhost:3000"
 
     monkeypatch.setattr(backend, "backend_for", Backends(server=FakeBackend(on_start=fake_start)))
-    wizard.run_wizard(mode="server")
+    result = wizard.run_wizard(mode="server", sys=machine, ui=face)
+    # The wizard hands the URL back; the CLI is what opens it.
+    assert result is not None and result[1] == "http://localhost:3000"
     assert started == ["qwen3:8b"]
     assert config.load().model == "qwen3:8b"
 

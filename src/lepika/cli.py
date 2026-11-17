@@ -36,6 +36,7 @@ from lepika import (
     stack_env,
     system,
     ui,
+    wizard,
 )
 from lepika.errors import ISSUES_URL, CommandNotFound, FriendlyError
 from lepika.updates import UpdateStep
@@ -74,10 +75,9 @@ def main(
                 "--mode applies to the wizard only; run `lepika --mode server` (no subcommand)."
             )
     if ctx.invoked_subcommand is None:
-        # Imported here, not at module scope: `wizard` imports `cli._open_browser`.
-        from lepika import wizard
-
-        wizard.run_wizard(dry_run=dry_run, mode=mode)
+        result = wizard.run_wizard(dry_run=dry_run, mode=mode, sys=system.REAL, ui=ui.REAL)
+        if result is not None:
+            _ready(*result)
 
 
 def _open_browser(url: str) -> None:
@@ -439,9 +439,6 @@ def model_add(
     # an `hf.co/…` ref can still fall through to an import, so the flag is not wrong
     # there — it is simply ignored when the pull succeeds.
     quant = _checked_quant(quant)
-    # Imported here, not at module scope: `wizard` imports `cli._open_browser`.
-    from lepika import wizard
-
     info = detect.detect(sys=system.REAL)
     cfg = config.load()
     if ref is None:

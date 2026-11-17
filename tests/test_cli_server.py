@@ -80,9 +80,7 @@ def _docker_host(containers: str) -> FakeSystem:
     )
 
 
-def test_down_in_server_mode_says_stopped_when_it_removed_containers(
-    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
-) -> None:
+def test_down_in_server_mode_says_stopped_when_it_removed_containers(isolated_home: Path) -> None:
     config.save(config.Config(mode="server"))
     result = runner.invoke(
         cli.app, ["down"], obj=fakes.deps(sys=_docker_host("3f2a9c\n"), machine=DOCKER)
@@ -92,7 +90,7 @@ def test_down_in_server_mode_says_stopped_when_it_removed_containers(
 
 
 def test_down_in_server_mode_says_nothing_was_running_when_there_were_no_containers(
-    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+    isolated_home: Path,
 ) -> None:
     config.save(config.Config(mode="server"))
     result = runner.invoke(cli.app, ["down"], obj=fakes.deps(sys=_docker_host(""), machine=DOCKER))

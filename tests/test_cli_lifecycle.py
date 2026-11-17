@@ -257,7 +257,7 @@ def test_up_notes_the_context_length_of_the_engine_the_config_names(
     monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
     config.save(config.Config(engine_url="http://127.0.0.1:11500"))
-    # What detecting this machine over `engine` found before it was handed in.
+    # The machine `engine` describes: Linux on x86_64, no GPU, 16 GB.
     found = detect.Machine("linux", "x86_64", "none", 16.0)
     result = runner.invoke(cli.app, ["up"], obj=fakes.deps(sys=engine, machine=found))
     assert result.exit_code == 0, result.output

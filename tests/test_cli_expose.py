@@ -73,9 +73,7 @@ def test_expose_off_binds_back_to_localhost(exposed_box: Starts) -> None:
     assert exposed_box == ["start", "start"]
 
 
-def test_expose_in_express_mode_is_friendly(
-    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
-) -> None:
+def test_expose_in_express_mode_is_friendly(isolated_home: Path) -> None:
     result = runner.invoke(cli.app, ["expose"], obj=fakes.deps(machine=DOCKER))
     assert result.exit_code != 0
     assert "Server mode" in str(result.exception)
@@ -152,9 +150,7 @@ def test_a_plain_expose_does_not_talk_about_reconnecting(exposed_box: Starts) ->
     assert "connected before" not in result.output
 
 
-def test_expose_refuses_an_engine_that_needs_its_own_key(
-    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
-) -> None:
+def test_expose_refuses_an_engine_that_needs_its_own_key(isolated_home: Path) -> None:
     """Caddy forwards the caller's key upstream, where a keyed remote engine rejects it."""
     starts: list[str] = []
     config.save(
@@ -177,9 +173,7 @@ def test_expose_refuses_an_engine_that_needs_its_own_key(
     assert config.load().exposed is False
 
 
-def test_expose_off_still_works_with_a_keyed_remote_engine(
-    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
-) -> None:
+def test_expose_off_still_works_with_a_keyed_remote_engine(isolated_home: Path) -> None:
     starts: list[str] = []
     config.save(
         config.Config(
@@ -259,7 +253,7 @@ def test_exposed_is_saved_once_the_stack_started_with_the_proxy(
 
 @pytest.mark.parametrize("args", [["expose"], ["expose", "--rotate"]])
 def test_a_failed_expose_leaves_the_machine_saved_as_not_exposed(
-    monkeypatch: pytest.MonkeyPatch, isolated_home: Path, args: list[str]
+    isolated_home: Path, args: list[str]
 ) -> None:
     """A proxy that never started must not be what the next `lepika up` starts."""
     config.save(config.Config(mode="server"))
@@ -275,9 +269,7 @@ def test_a_failed_expose_leaves_the_machine_saved_as_not_exposed(
     assert "Exposed" not in result.output
 
 
-def test_expose_off_is_saved_even_when_the_restart_fails(
-    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
-) -> None:
+def test_expose_off_is_saved_even_when_the_restart_fails(isolated_home: Path) -> None:
     """Closing the port is a withdrawal: a failed restart must not reopen it next `up`."""
     config.save(config.Config(mode="server", exposed=True))
     seen: list[bool] = []

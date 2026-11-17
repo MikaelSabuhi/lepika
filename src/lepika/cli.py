@@ -477,7 +477,7 @@ def model_add(
     else:
         # A remote engine is someone else's to run: check it, never install for it.
         health.check_remote_engine(cfg, sys=system.REAL)
-    served = acquire.acquire(info, cfg, model_ref, quant=quant, ui=ui.REAL)
+    served = acquire.acquire(info, cfg, model_ref, quant=quant, sys=system.REAL, ui=ui.REAL)
     if served is None:
         ui.REAL.say("Nothing added.")
         return
@@ -516,7 +516,9 @@ def model_import(
     )
     # Resolved from here on: the "Importing … from …" line and the `source=` log field
     # name the folder unambiguously, whatever the shell was sitting in.
-    served = acquire.import_local(info, cfg, path.resolve(), name, quant, ui=ui.REAL)
+    served = acquire.import_local(
+        info, cfg, path.resolve(), name, quant, sys=system.REAL, ui=ui.REAL
+    )
     cfg.model = served
     config.save(cfg)
     ui.REAL.say(f"[green]✓ Imported:[/green] {escape(served)}")

@@ -415,7 +415,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         # The model is saved only once it is actually there: recording a model the
         # machine failed to download or import leaves the config pointing at
         # something that isn't.
-        served = acquire.acquire(info, cfg, ref, ui=ui.REAL)
+        served = acquire.acquire(info, cfg, ref, sys=system.REAL, ui=ui.REAL)
         if served is None:
             return  # declined: the stack is up, the model is chosen next time
         cfg.model = served

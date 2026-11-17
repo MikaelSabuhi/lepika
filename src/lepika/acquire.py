@@ -16,10 +16,11 @@ from pathlib import Path
 
 from rich.markup import escape
 
-from lepika import config, engine, gguf, hf, mlx, models, paths, serving, system
+from lepika import config, engine, gguf, hf, mlx, models, paths, serving
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
+from lepika.system import System
 from lepika.ui import UI, NoTerminal
 
 
@@ -38,16 +39,18 @@ def _confirm(question: str, *, ui: UI) -> bool:
         ) from exc
 
 
-def preflight_with_token(repo: str, cfg: config.Config, *, ui: UI) -> tuple[hf.Preflight, str]:
+def preflight_with_token(
+    repo: str, cfg: config.Config, *, sys: System, ui: UI
+) -> tuple[hf.Preflight, str]:
     """List the repo; on a gated answer ask for a token once and try again."""
-    token = hf.token_for(cfg, sys=system.REAL)
+    token = hf.token_for(cfg, sys=sys)
     try:
-        return hf.preflight(repo, token, sys=system.REAL), token
+        return hf.preflight(repo, token, sys=sys), token
     except hf.GatedRepo:
         token = hf.ask_token(cfg, ui=ui)
         if not token:
             raise
-        return hf.preflight(repo, token, sys=system.REAL), token
+        return hf.preflight(repo, token, sys=sys), token
 
 
 def _ram_advisory(label: str, quantized: int, info: SystemInfo, *, ui: UI) -> None:
@@ -65,19 +68,20 @@ def import_repo(
     ref: ModelRef,
     quant: str = engine.IMPORT_QUANT,
     *,
+    sys: System,
     ui: UI,
 ) -> str | None:
     """Download a full-weight repo and import it into Ollama; the name it now serves."""
     repo = ref.raw
     installed = engine.list_models(
-        cfg.engine_url, key=cfg.engine_key, managed=cfg.engine_managed, sys=system.REAL
+        cfg.engine_url, key=cfg.engine_key, managed=cfg.engine_managed, sys=sys
     )
     if any(engine.same_model(name, repo) for name, _size in installed):
         # Ollama already serves it: downloading the weights again to rebuild the same
         # model is minutes and gigabytes for nothing.
         ui.say(f"{escape(repo)} is already imported.")
         return repo
-    pre, token = preflight_with_token(repo, cfg, ui=ui)
+    pre, token = preflight_with_token(repo, cfg, sys=sys, ui=ui)
     if pre.has_gguf and not pre.has_safetensors:
         # A GGUF build typed without `hf.co/`: Ollama pulls those itself.
         gguf = models.parse_model_ref(f"hf.co/{repo}")
@@ -86,7 +90,7 @@ def import_repo(
             gguf,
             key=cfg.engine_key,
             managed=cfg.engine_managed,
-            sys=system.REAL,
+            sys=sys,
             ui=ui,
         )
         return gguf.raw
@@ -100,7 +104,7 @@ def import_repo(
     # The one small file that says so is fetched into the staging dir up front, so
     # the confirm question, the disk math and the RAM advisory all tell the truth.
     dest = hf.download_dir(repo)
-    method = hf.quant_method(hf.fetch_config(repo, dest, token, sys=system.REAL))
+    method = hf.quant_method(hf.fetch_config(repo, dest, token, sys=sys))
     # Only what download fetches (download_bytes skips the GGUF/PyTorch twins), plus
     # the copy Ollama writes — a quarter of a raw source, all of a quantized one.
     # Two filesystems can be involved: the download lands under ~/.lepika, while
@@ -110,10 +114,10 @@ def import_repo(
     store_bytes = pre.download_bytes if method is not None else pre.download_bytes // 4
     need = int((pre.download_bytes + store_bytes) * 1.1)
     disks = {paths.lepika_home()}  # created on access, so it is always there
-    store = mlx.ollama_store(sys=system.REAL)
+    store = mlx.ollama_store(sys=sys)
     if store.exists():
         disks.add(store)
-    free = min(shutil.disk_usage(disk).free for disk in disks)
+    free = min(sys.disk_free(disk) for disk in disks)
     if free < need:
         raise FriendlyError(
             f"Not enough disk: {repo} needs ~{engine.human_size(need)} free "
@@ -130,15 +134,15 @@ def import_repo(
         return None
     if info.os != "macos":
         ui.say("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
-    mlx.ensure_mlx(info, sys=system.REAL)
-    hf.download(repo, dest, token, sys=system.REAL)
+    mlx.ensure_mlx(info, sys=sys)
+    hf.download(repo, dest, token, sys=sys)
     engine.import_model(
         cfg.engine_url,
         ref.raw,
         dest,
         key=cfg.engine_key,
         quant=None if method is not None else quant,
-        sys=system.REAL,
+        sys=sys,
     )
     # Ollama holds its own copy now; a failed import above keeps `dest` for a resumed retry.
     shutil.rmtree(dest, ignore_errors=True)
@@ -182,7 +186,14 @@ def check_local(source: Path, name: str) -> None:
 
 
 def import_local(
-    info: SystemInfo, cfg: config.Config, source: Path, name: str, quant: str, *, ui: UI
+    info: SystemInfo,
+    cfg: config.Config,
+    source: Path,
+    name: str,
+    quant: str,
+    *,
+    sys: System,
+    ui: UI,
 ) -> str:
     """Import weights the user already has on disk; the name Ollama now serves.
 
@@ -192,7 +203,7 @@ def import_local(
     check_local(source, name)
     weights = _local_weights(source)
     installed = engine.list_models(
-        cfg.engine_url, key=cfg.engine_key, managed=cfg.engine_managed, sys=system.REAL
+        cfg.engine_url, key=cfg.engine_key, managed=cfg.engine_managed, sys=sys
     )
     if any(engine.same_model(served, name) for served, _size in installed):
         # Same reasoning as `import_repo`: rebuilding what Ollama already serves is
@@ -205,8 +216,8 @@ def import_local(
     quantized = raw_bytes if method is not None else raw_bytes // 4
     # Only Ollama's store is at stake: the weights are already on disk and stay there,
     # so the copy Ollama writes is the one thing that needs room.
-    store = mlx.ollama_store(sys=system.REAL)
-    free = shutil.disk_usage(store if store.exists() else paths.lepika_home()).free
+    store = mlx.ollama_store(sys=sys)
+    free = sys.disk_free(store if store.exists() else paths.lepika_home())
     if free < quantized:
         raise FriendlyError(
             f"Not enough disk: importing {name} writes ~{engine.human_size(quantized)} "
@@ -223,7 +234,7 @@ def import_local(
     ui.say(f"Importing {escape(name)} from {escape(str(source))} {how}…")
     if info.os != "macos":
         ui.say("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
-    mlx.ensure_mlx(info, sys=system.REAL)
+    mlx.ensure_mlx(info, sys=sys)
     engine.import_model(
         cfg.engine_url,
         name,
@@ -231,7 +242,7 @@ def import_local(
         key=cfg.engine_key,
         quant=None if method is not None else quant,
         owned=False,
-        sys=system.REAL,
+        sys=sys,
     )
     return name
 
@@ -242,6 +253,7 @@ def acquire(
     ref: ModelRef,
     quant: str = engine.IMPORT_QUANT,
     *,
+    sys: System,
     ui: UI,
 ) -> str | None:
     """Get `ref` into Ollama — pulled or imported — and return the name it serves.
@@ -252,14 +264,14 @@ def acquire(
     someone else already quantized.
     """
     if ref.kind == "hf_repo":
-        return import_repo(info, cfg, ref, quant=quant, ui=ui)
+        return import_repo(info, cfg, ref, quant=quant, sys=sys, ui=ui)
     try:
         engine.pull_model(
             cfg.engine_url,
             ref,
             key=cfg.engine_key,
             managed=cfg.engine_managed,
-            sys=system.REAL,
+            sys=sys,
             ui=ui,
         )
     except engine.NotGGUF:
@@ -268,24 +280,24 @@ def acquire(
         # `hf.co/<org>/<repo>:tag` — the tag is Ollama's, not part of the repo id.
         repo, _tag = gguf.split_tag(ref.raw)
         ui.say(f"{escape(ref.raw)} ships full weights — importing it into Ollama instead.")
-        return import_repo(info, cfg, models.parse_model_ref(repo), quant=quant, ui=ui)
+        return import_repo(info, cfg, models.parse_model_ref(repo), quant=quant, sys=sys, ui=ui)
     if ref.kind == "hf_gguf" and cfg.engine_managed:
         # Registry models are Ollama-curated; only hf.co pulls carry community
         # templates — sometimes stripped of their tool handling, which turns every
         # request that carries tools into a 400. A managed engine only: `ollama
         # create` cannot send a remote engine's key (rule 9: not ours to fix).
-        _ensure_tools(cfg, ref.raw, ui=ui)
+        _ensure_tools(cfg, ref.raw, sys=sys, ui=ui)
     return ref.raw
 
 
-def _ensure_tools(cfg: config.Config, name: str, *, ui: UI) -> None:
+def _ensure_tools(cfg: config.Config, name: str, *, sys: System, ui: UI) -> None:
     """Rebuild a pulled ChatML model whose template lost its tool handling.
 
     Best effort at every step: the pull already succeeded, so nothing here is
     allowed to fail it — an engine that won't answer skips the repair, a template
     in a format LePika does not curate gets one line naming the limitation.
     """
-    shown = engine.show(cfg.engine_url, name, key=cfg.engine_key, sys=system.REAL)
+    shown = engine.show(cfg.engine_url, name, key=cfg.engine_key, sys=sys)
     if shown is None:
         return
     capabilities, template = shown
@@ -304,7 +316,7 @@ def _ensure_tools(cfg: config.Config, name: str, *, ui: UI) -> None:
             name,
             engine.chatml_tools_template(),
             key=cfg.engine_key,
-            sys=system.REAL,
+            sys=sys,
         )
     except FriendlyError as exc:
         ui.say(f"[yellow]{escape(exc.problem)} {escape(exc.fix)}[/yellow]")

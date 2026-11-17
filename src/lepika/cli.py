@@ -111,7 +111,14 @@ def main(
                 "--mode applies to the wizard only; run `lepika --mode server` (no subcommand)."
             )
     if ctx.invoked_subcommand is None:
-        result = wizard.run_wizard(dry_run=dry_run, mode=mode, sys=deps.sys, ui=deps.ui)
+        result = wizard.run_wizard(
+            deps.machine(),
+            dry_run=dry_run,
+            mode=mode,
+            sys=deps.sys,
+            ui=deps.ui,
+            backends=deps.backends,
+        )
         if result is not None:
             _ready(*result, ui=deps.ui)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fakes import FakeSystem, FakeUI
@@ -231,3 +232,63 @@ def test_connect_local_is_unaffected_by_exposure(
     result = runner.invoke(cli.app, ["connect", "--local"])
     assert result.exit_code == 0, result.output
     assert config.load().engine_managed is True
+
+
+def _logged(event: str) -> bool:
+    written = paths.logs_dir() / log.LOG_FILE
+    return written.exists() and event in written.read_text()
+
+
+def _server_start(monkeypatch: pytest.MonkeyPatch, start: Any) -> None:
+    """Server mode, where `start` stands in for the `compose up` that switches the stack."""
+    config.save(config.Config(mode="server"))
+    monkeypatch.setattr(health, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(system, "REAL", FakeSystem())
+    monkeypatch.setattr(ServerBackend, "start", start)
+
+
+def _compose_fails(self: ServerBackend, info: detect.Machine, cfg: config.Config, **k: Any) -> str:
+    raise FriendlyError("`docker compose up` failed.", "Run `lepika logs`.")
+
+
+def test_connect_saves_the_engine_once_the_stack_has_switched_to_it(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    seen: list[tuple[str, str, bool]] = []
+
+    def start(self: ServerBackend, info: detect.Machine, cfg: config.Config, **k: Any) -> str:
+        seen.append((cfg.engine_url, config.load().engine_url, _logged("engine.connect")))
+        return ""
+
+    _server_start(monkeypatch, start)
+    result = runner.invoke(cli.app, ["connect", "http://gpu-box:11435"])
+    assert result.exit_code == 0, result.output
+    # The stack is switched to the new engine while the file still names the old one.
+    assert seen == [("http://gpu-box:11435", config.DEFAULT_ENGINE_URL, False)]
+    assert config.load().engine_url == "http://gpu-box:11435"
+    assert _logged("engine.connect")
+
+
+def test_a_failed_switch_leaves_the_config_and_the_log_without_the_new_engine(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """A stack that never reached the new engine must not be described as using it."""
+    _server_start(monkeypatch, _compose_fails)
+    result = runner.invoke(cli.app, ["connect", "http://gpu-box:11435"])
+    assert isinstance(result.exception, FriendlyError)
+    assert config.load() == config.Config(mode="server")
+    assert not _logged("engine.connect")
+    assert "Connected" not in result.output
+
+
+def test_connect_local_is_saved_even_when_the_switch_fails(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """Going back is a withdrawal: the next `lepika up` must still use the local engine."""
+    _server_start(monkeypatch, _compose_fails)
+    config.save(config.Config(mode="server", engine_managed=False, engine_url="http://box:1"))
+    result = runner.invoke(cli.app, ["connect", "--local"])
+    assert isinstance(result.exception, FriendlyError)
+    assert config.load() == config.Config(mode="server")
+    assert _logged("engine.connect")

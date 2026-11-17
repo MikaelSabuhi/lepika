@@ -253,3 +253,44 @@ def test_load_fills_context_length_for_a_config_written_before_it_existed(
 ) -> None:
     config.config_path().write_text('schema_version = 1\nmodel = "qwen3:8b"\n')
     assert config.load().context_length == 16384
+
+
+class _Refused(Exception):
+    pass
+
+
+def test_save_after_saves_only_once_the_action_has_returned(isolated_home: Path) -> None:
+    config.save(config.Config(model="old:model"))
+    new = config.Config(model="new:model")
+    seen: list[str] = []
+    assert config.save_after(new, lambda: seen.append(config.load().model) or "done") == "done"
+    assert seen == ["old:model"]
+    assert config.load() == new
+
+
+def test_save_after_saves_nothing_when_the_action_raises(isolated_home: Path) -> None:
+    config.save(config.Config(model="old:model"))
+
+    def refuse() -> None:
+        raise _Refused
+
+    with pytest.raises(_Refused):
+        config.save_after(config.Config(model="new:model"), refuse)
+    assert config.load().model == "old:model"
+
+
+def test_save_before_saves_first_and_keeps_it_when_the_action_raises(
+    isolated_home: Path,
+) -> None:
+    config.save(config.Config(exposed=True))
+    seen: list[bool] = []
+
+    def refuse() -> None:
+        seen.append(config.load().exposed)
+        raise _Refused
+
+    with pytest.raises(_Refused):
+        config.save_before(config.Config(exposed=False), refuse)
+    assert seen == [False]
+    assert config.load().exposed is False
+    assert config.save_before(config.Config(), lambda: 7) == 7

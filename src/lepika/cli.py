@@ -215,14 +215,19 @@ def connect(
     """Use an engine running on another machine (or --local to stop doing so)."""
     cfg = config.load()
     if local:
-        cfg = dataclasses.replace(
+        local_cfg = dataclasses.replace(
             cfg, engine_managed=True, engine_url=config.DEFAULT_ENGINE_URL, engine_key=""
         )
-        config.save(cfg)
-        log.get_logger().info("engine.connect", url=cfg.engine_url, local=True)
-        if backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).apply_engine_change(
-            detect.detect(sys=system.REAL), cfg
-        ):
+
+        def go_local() -> bool:
+            log.get_logger().info("engine.connect", url=local_cfg.engine_url, local=True)
+            return backend.backend_for(local_cfg, sys=system.REAL, ui=ui.REAL).apply_engine_change(
+                detect.detect(sys=system.REAL), local_cfg
+            )
+
+        # A withdrawal: saved first, so a failed switch still leaves the next
+        # `lepika up` on the local engine.
+        if config.save_before(local_cfg, go_local):
             ui.REAL.say("[green]✓ Using the local engine again[/green] — OpenWebUI restarted.")
         else:
             ui.REAL.say("[green]✓ Using the local engine again.[/green] Run `lepika up`.")
@@ -250,12 +255,17 @@ def connect(
             "Check the address and that `lepika expose` is on over there "
             "(add --key if it printed one).",
         )
-    cfg = dataclasses.replace(cfg, engine_managed=False, engine_url=url, engine_key=key)
-    config.save(cfg)
+    remote = dataclasses.replace(cfg, engine_managed=False, engine_url=url, engine_key=key)
+    # Saved once the running stack uses it: a switch that fails must not leave the
+    # config naming an engine nothing here is connected to.
+    restarted = config.save_after(
+        remote,
+        lambda: backend.backend_for(remote, sys=system.REAL, ui=ui.REAL).apply_engine_change(
+            detect.detect(sys=system.REAL), remote
+        ),
+    )
     log.get_logger().info("engine.connect", url=url, key=key)
-    if backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).apply_engine_change(
-        detect.detect(sys=system.REAL), cfg
-    ):
+    if restarted:
         ui.REAL.say(f"[green]✓ Connected to[/green] {escape(url)} — OpenWebUI restarted.")
     else:
         ui.REAL.say(f"[green]✓ Connected to[/green] {escape(url)}. Run `lepika up`.")
@@ -275,10 +285,14 @@ def expose(
             "Run `lepika --mode server` on this machine first.",
         )
     if off:
-        cfg = dataclasses.replace(cfg, exposed=False)
-        config.save(cfg)
-        backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(
-            detect.detect(sys=system.REAL), cfg
+        closed = dataclasses.replace(cfg, exposed=False)
+        # A withdrawal: saved first, so a failed restart cannot have the next
+        # `lepika up` put this machine back on the network.
+        config.save_before(
+            closed,
+            lambda: backend.backend_for(closed, sys=system.REAL, ui=ui.REAL).start(
+                detect.detect(sys=system.REAL), closed
+            ),
         )
         log.get_logger().info("expose.off")
         ui.REAL.say("[green]✓ Back to localhost only.[/green]")
@@ -299,11 +313,16 @@ def expose(
     # A rotation always restarts, --show or not: Caddy reads the key once, at
     # startup, so skipping the restart would leave the old key the working one.
     if not show or rotate:
-        cfg = dataclasses.replace(cfg, exposed=True)
-        config.save(cfg)
-        backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(
-            detect.detect(sys=system.REAL), cfg
+        exposed = dataclasses.replace(cfg, exposed=True)
+        # Saved once the stack is up with the proxy, never on the strength of a start
+        # that failed.
+        config.save_after(
+            exposed,
+            lambda: backend.backend_for(exposed, sys=system.REAL, ui=ui.REAL).start(
+                detect.detect(sys=system.REAL), exposed
+            ),
         )
+        cfg = exposed
         log.get_logger().info("expose.on", api_port=cfg.api_port)
     ips = server.lan_ips(sys=system.REAL)
     # Nothing resolved at all (offline, or a locked-down host): say so in words
@@ -426,13 +445,23 @@ def model_add(
             models.parse_model_ref(ref), cfg, info, sys=system.REAL, ui=ui.REAL
         )
     if models.uses_vllm(model_ref.raw) and serving.vllm_allowed(cfg, info):
-        # Nothing to pull: vLLM downloads the weights itself when it starts, and it
-        # only starts once the config names the model compose interpolates.
+        # Nothing to pull: vLLM downloads the weights itself when it starts, from the
+        # model the start writes into the .env that compose interpolates.
         server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE, sys=system.REAL, ui=ui.REAL)
-        cfg = dataclasses.replace(cfg, model=model_ref.raw)
-        config.save(cfg)
-        ui.REAL.say(f"[green]✓ Set:[/green] {escape(model_ref.raw)} — starting vLLM…")
-        _ready(cfg, backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(info, cfg))
+        with_model = dataclasses.replace(cfg, model=model_ref.raw)
+
+        def compose_up_succeeded() -> None:
+            # Saved before vLLM's readiness wait, which can outlast a half-hour download:
+            # a timeout there must not unsave a model the next `lepika up` keeps fetching.
+            config.save(with_model)
+            ui.REAL.say(f"[green]✓ Set:[/green] {escape(model_ref.raw)} — starting vLLM…")
+
+        _ready(
+            with_model,
+            backend.backend_for(with_model, sys=system.REAL, ui=ui.REAL).start(
+                info, with_model, after_engine=compose_up_succeeded
+            ),
+        )
         return
     # The engine the *new* model needs: in Server mode the profile follows the ref, and
     # switching away from a full-weight repo with the old ref still in the config

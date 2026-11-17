@@ -387,23 +387,28 @@ def run_wizard(
         ui.say(f"would: start OpenWebUI on port {cfg.webui_port}")
         ui.say(f"would: open {health.webui_url(cfg.webui_port)}")
         return None
-    if models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info):
+    vllm = models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info)
+    if vllm:
         server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE, sys=sys, ui=ui)
-        # compose interpolates VLLM_MODEL from the config, so this one has to be
-        # saved before the stack starts rather than after. A start that then fails
-        # is fixed by `lepika model add`, not by a stale config.
-        cfg = dataclasses.replace(cfg, model=ref.raw)
-        config.save(cfg)
+    # Whether this run has saved its config, which is what makes a stack started in
+    # a new mode visible to `lepika down` (the sweep below).
+    saved = False
 
     def pull_then_save() -> None:
         # Rebinds the run's config, which is what `run_wizard` returns.
-        nonlocal cfg
-        if models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info):
-            return  # vLLM downloads its own weights while starting; nothing to pull
+        nonlocal cfg, saved
         # The mode is saved here, not before the start: this hook runs only once
         # the engine is up, so a pre-flight that refuses can no longer leave a config
         # claiming a mode that never started.
+        if vllm:
+            # vLLM downloads its own weights while starting, so there is nothing to
+            # pull: the model is served from here on, and is saved with the mode.
+            cfg = dataclasses.replace(cfg, model=ref.raw)
+            config.save(cfg)
+            saved = True
+            return
         config.save(cfg)
+        saved = True
         # The model is saved only once it is actually there: recording a model the
         # machine failed to download or import leaves the config pointing at
         # something that isn't.
@@ -416,7 +421,7 @@ def run_wizard(
 
     # The stack is started for the model about to be pulled, not the one still saved:
     # in Server mode the profile follows the ref, so an old full-weight repo would
-    # bring up vLLM and leave nothing to pull into. Only the pull saves it (above).
+    # bring up vLLM and leave nothing to pull into. Only the hook saves it (above).
     try:
         url = backend.backend_for(cfg, sys=sys, ui=ui).start(
             info,
@@ -428,9 +433,9 @@ def run_wizard(
         # config, so the containers `compose up` created are invisible: `lepika down`
         # (still the old mode) says "Nothing was running" while they hold the ports
         # and answer readiness checks for the next start. Sweep them before leaving.
-        # Once the on-disk mode says server they are visible, and a re-run failure
-        # must not tear down what was already running — hence the reload.
-        if cfg.mode == "server" and previous != "server" and config.load().mode != "server":
+        # Once this run has saved mode=server they are visible, and a re-run failure
+        # must not tear down what was already running.
+        if cfg.mode == "server" and previous != "server" and not saved:
             try:
                 if backend.backend_for(cfg, sys=sys, ui=ui).stop(info, cfg):
                     ui.say("Removed the containers the failed switch had created.")

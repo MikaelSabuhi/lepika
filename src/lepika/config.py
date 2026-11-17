@@ -5,8 +5,10 @@ from __future__ import annotations
 import dataclasses
 import difflib
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 from lepika import fsio
 from lepika.errors import FriendlyError
@@ -95,6 +97,30 @@ def save(cfg: Config) -> None:
     """Write atomically so an interrupted save can't leave a half-written config."""
     # Private, because the file can hold an engine key.
     fsio.write_private(config_path(), _dump_toml(dataclasses.asdict(cfg)))
+
+
+T = TypeVar("T")
+
+
+def save_after(cfg: Config, action: Callable[[], T]) -> T:
+    """Do `action`; save `cfg` only once it has returned.
+
+    For a change that claims something now exists: an action that raises leaves the
+    file describing the machine as it still is.
+    """
+    result = action()
+    save(cfg)
+    return result
+
+
+def save_before(cfg: Config, action: Callable[[], T]) -> T:
+    """Save `cfg`, then do `action`.
+
+    For a change that takes something away: the intent must survive a failed action,
+    or the next `lepika up` would quietly put back what the user withdrew.
+    """
+    save(cfg)
+    return action()
 
 
 _SECRET_KEYS = frozenset({"engine_key", "hf_token"})

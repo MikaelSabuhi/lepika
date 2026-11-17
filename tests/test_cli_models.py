@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fakes import FakeUI
+from fakes import FakeResponse, FakeSystem, FakeUI, routes
 from typer.testing import CliRunner
 
 from lepika import acquire, cli, config, detect, engine, gguf, health, hf, mlx, ollama, ui
@@ -706,9 +706,8 @@ def test_model_add_import_without_a_terminal_is_friendly(
     def no_terminal(question: str, default: bool = False) -> bool:
         raise EOFError
 
-    monkeypatch.setattr(
-        ui, "REAL", FakeUI(confirm_reader=no_terminal)
-    )  # the fixture's auto-yes, undone
+    # the fixture's auto-yes, undone
+    monkeypatch.setattr(ui, "REAL", FakeUI(confirm_reader=no_terminal))
     result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
     assert result.exit_code != 0
     assert isinstance(result.exception, FriendlyError)
@@ -913,6 +912,34 @@ def test_model_import_refuses_when_the_store_disk_is_too_small(
     assert "Not enough disk" in result.exception.problem
     assert "Free some space" in result.exception.fix
     assert fake_local["imported"] == []
+
+
+def test_import_local_asks_the_system_it_is_given_for_free_space(
+    weights: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The disk check goes through `sys.disk_free`, never straight to the real disk."""
+
+    def real_disk(path: Any) -> Any:
+        raise AssertionError(f"the real disk was asked about {path}")
+
+    monkeypatch.setattr(shutil, "disk_usage", real_disk)
+    machine = FakeSystem(
+        free=1,
+        environ={"OLLAMA_MODELS": str(tmp_path / "no-store-here")},
+        urls=routes({"http://x/api/tags": FakeResponse(b'{"models": []}')}),
+    )
+    with pytest.raises(FriendlyError) as exc:
+        acquire.import_local(
+            MAC,
+            config.Config(engine_url="http://x"),
+            weights,
+            "Qwen3.5-2B",
+            "nvfp4",
+            sys=machine,
+            ui=FakeUI(),
+        )
+    assert "Not enough disk" in exc.value.problem
+    assert "Free some space" in exc.value.fix
 
 
 def test_model_import_warns_when_it_may_not_fit_in_ram_but_proceeds(

@@ -164,7 +164,7 @@ def choose_quant(
 
     for attempt in (1, 2):
         # `or default`: Prompt.ask already returns the default on an empty line, but a
-        # caller-supplied `ask` may hand back "" — same guard as choose_mode.
+        # `UI` reader may hand back "" — same guard as choose_mode.
         # No stdin to answer with — a script or CI — is not an error: the ★ is the
         # answer Enter would give, and the line below names it rather than its number.
         try:

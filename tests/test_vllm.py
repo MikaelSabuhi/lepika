@@ -113,14 +113,14 @@ def test_vllm_up_is_false_when_nothing_answers() -> None:
 def test_start_stack_waits_for_vllm_not_ollama(isolated_home: Path) -> None:
     cfg = config.Config(mode="server", model=REPO)
     vllm = "http://127.0.0.1:8000/health"
-    ui = "http://127.0.0.1:3000/health"
+    webui = "http://127.0.0.1:3000/health"
     # No answer for Ollama's /api/version: probing it would fail the test.
     machine = FakeSystem(
         stdout={"docker info": '{"nvidia": {}}'},
-        urls=routes({vllm: FakeResponse(), ui: FakeResponse()}),
+        urls=routes({vllm: FakeResponse(), webui: FakeResponse()}),
     )
     server.start_stack(LINUX_NVIDIA, cfg, sys=machine, ui=FakeUI())
-    assert [r.full_url for r in machine.requested] == [vllm, ui]
+    assert [r.full_url for r in machine.requested] == [vllm, webui]
 
 
 def test_start_stack_vllm_without_toolkit_is_friendly(isolated_home: Path) -> None:

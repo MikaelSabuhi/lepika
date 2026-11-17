@@ -16,8 +16,8 @@ from types import ModuleType
 from typing import NoReturn, TextIO
 
 import typer
-from rich.console import Console
 from rich.markup import escape
+from rich.rule import Rule
 from rich.table import Table
 
 from lepika import (
@@ -36,6 +36,7 @@ from lepika import (
     serving,
     stack_env,
     system,
+    ui,
 )
 from lepika.backend import UpdateStep
 from lepika.errors import ISSUES_URL, CommandNotFound, FriendlyError
@@ -44,9 +45,6 @@ app = typer.Typer(
     help="One command → local AI chat in your browser.",
     add_completion=False,
 )
-
-console = Console()
-err_console = Console(stderr=True)
 
 
 def _backend(cfg: config.Config) -> ModuleType:
@@ -98,10 +96,10 @@ def _open_browser(url: str) -> None:
 
 def _ready(cfg: config.Config, url: str) -> None:
     """Announce a running stack and open it — shared by `lepika up` and the wizard."""
-    console.print(f"[green]✓ Ready:[/green] {url}")
+    ui.REAL.say(f"[green]✓ Ready:[/green] {url}")
     if not cfg.model:
         # A chat UI with no model behind it looks broken; say what's missing.
-        console.print("No model yet — run `lepika` or `lepika model add`.")
+        ui.REAL.say("No model yet — run `lepika` or `lepika model add`.")
     _open_browser(url)
 
 
@@ -110,7 +108,7 @@ def up() -> None:
     """Start the local AI stack and open the browser."""
     info = detect.detect(sys=system.REAL)
     cfg = config.load()
-    console.print(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))
+    ui.REAL.say(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))
     # A CPU-bound container on a GPU machine is a mystery worth one line up front.
     # `has_docker` first: gpu_note runs `docker info`, and without the binary that
     # would replace Server mode's Express hint with a generic "command not found".
@@ -119,12 +117,12 @@ def up() -> None:
         and info.has_docker
         and (note := server.gpu_note(info, sys=system.REAL)) is not None
     ):
-        console.print(f"[yellow]{escape(note)}[/yellow]")
+        ui.REAL.say(f"[yellow]{escape(note)}[/yellow]")
     # `info` is the pre-start snapshot: an engine running now is one `start_stack`
     # will adopt, and the context length in config.toml will not reach it.
     if (note := ollama.context_note(info, cfg, sys=system.REAL)) is not None:
-        console.print(f"[yellow]{escape(note)}[/yellow]")
-    _ready(cfg, _backend(cfg).start_stack(info, cfg, sys=system.REAL))
+        ui.REAL.say(f"[yellow]{escape(note)}[/yellow]")
+    _ready(cfg, _backend(cfg).start_stack(info, cfg, sys=system.REAL, ui=ui.REAL))
 
 
 @app.command()
@@ -132,9 +130,9 @@ def down() -> None:
     """Stop the stack (Express: OpenWebUI only; Server: every container, models kept)."""
     cfg = config.load()
     if _backend(cfg).stop(detect.detect(sys=system.REAL), cfg, sys=system.REAL):
-        console.print("[green]✓ Stopped.[/green]")
+        ui.REAL.say("[green]✓ Stopped.[/green]")
     else:
-        console.print("Nothing was running.")
+        ui.REAL.say("Nothing was running.")
 
 
 @app.command()
@@ -170,7 +168,7 @@ def status() -> None:
             f"[yellow]yes[/yellow] — API on port {cfg.api_port}" if cfg.exposed else "no",
         )
     table.add_row("Model", cfg.model or "[dim]not set[/dim]")
-    console.print(table)
+    ui.REAL.say(table)
 
 
 @app.command()
@@ -179,11 +177,11 @@ def logs(lines: int = typer.Option(50, min=1, help="Lines per log file.")) -> No
     sections = _backend(config.load()).logs(lines, sys=system.REAL)
     if not sections:
         # Silence is indistinguishable from a broken command.
-        console.print("(no logs yet)")
+        ui.REAL.say("(no logs yet)")
         return
     for title, text in sections:
-        console.rule(title)
-        console.print(text, markup=False)
+        ui.REAL.say(Rule(title))
+        ui.REAL.say(text, markup=False)
 
 
 @app.command()
@@ -197,9 +195,9 @@ def doctor() -> None:
     core_failed = False
     for r in results:
         mark = "[green]✓[/green]" if r.ok else "[red]✗[/red]"
-        console.print(f"{mark} {r.name}")
+        ui.REAL.say(f"{mark} {r.name}")
         if not r.ok:
-            console.print(f"  [yellow]→ {escape(r.hint)}[/yellow]")
+            ui.REAL.say(f"  [yellow]→ {escape(r.hint)}[/yellow]")
             if r.name != doctor_mod.RAM_CHECK:
                 core_failed = True
     if core_failed:
@@ -209,19 +207,19 @@ def doctor() -> None:
 @app.command()
 def update() -> None:
     """Upgrade the engine and OpenWebUI to their latest versions."""
-    console.print("Upgrading…")
+    ui.REAL.say("Upgrading…")
     cfg = config.load()
     steps: list[UpdateStep] = _backend(cfg).update(
-        detect.detect(sys=system.REAL), cfg, sys=system.REAL
+        detect.detect(sys=system.REAL), cfg, sys=system.REAL, ui=ui.REAL
     )
     for step in steps:
         detail = escape(step.detail)
         if step.outcome in ("stale", "note"):
-            console.print(f"[yellow]! {step.component}: {detail}[/yellow]")
+            ui.REAL.say(f"[yellow]! {step.component}: {detail}[/yellow]")
             continue
         suffix = f" ({detail})" if detail else ""
         verb = "upgraded" if step.outcome == "upgraded" else "up to date"
-        console.print(f"[green]✓ {step.component}: {verb}{suffix}[/green]")
+        ui.REAL.say(f"[green]✓ {step.component}: {verb}{suffix}[/green]")
 
 
 def _apply_engine_change(cfg: config.Config) -> bool:
@@ -235,7 +233,7 @@ def _apply_engine_change(cfg: config.Config) -> bool:
     if cfg.mode == "server":
         # `compose up -d` is the Server-mode reconciler: it rewrites .env and
         # recreates whatever the new engine URL changed, so it needs no probe.
-        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL)
+        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL, ui=ui.REAL)
         return True
     if not health.webui_up(cfg.webui_port, sys=system.REAL):
         return False
@@ -256,9 +254,9 @@ def connect(
         config.save(cfg)
         log.get_logger().info("engine.connect", url=cfg.engine_url, local=True)
         if _apply_engine_change(cfg):
-            console.print("[green]✓ Using the local engine again[/green] — OpenWebUI restarted.")
+            ui.REAL.say("[green]✓ Using the local engine again[/green] — OpenWebUI restarted.")
         else:
-            console.print("[green]✓ Using the local engine again.[/green] Run `lepika up`.")
+            ui.REAL.say("[green]✓ Using the local engine again.[/green] Run `lepika up`.")
         return
     if url is None:
         raise typer.BadParameter("Give an engine URL, or --local.")
@@ -287,9 +285,9 @@ def connect(
     config.save(cfg)
     log.get_logger().info("engine.connect", url=url, key=key)
     if _apply_engine_change(cfg):
-        console.print(f"[green]✓ Connected to[/green] {escape(url)} — OpenWebUI restarted.")
+        ui.REAL.say(f"[green]✓ Connected to[/green] {escape(url)} — OpenWebUI restarted.")
     else:
-        console.print(f"[green]✓ Connected to[/green] {escape(url)}. Run `lepika up`.")
+        ui.REAL.say(f"[green]✓ Connected to[/green] {escape(url)}. Run `lepika up`.")
 
 
 @app.command()
@@ -308,9 +306,9 @@ def expose(
     if off:
         cfg.exposed = False
         config.save(cfg)
-        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL)
+        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL, ui=ui.REAL)
         log.get_logger().info("expose.off")
-        console.print("[green]✓ Back to localhost only.[/green]")
+        ui.REAL.say("[green]✓ Back to localhost only.[/green]")
         return
     if cfg.engine_key:
         # Caddy checks LePika's key and then forwards the request — that same
@@ -330,54 +328,54 @@ def expose(
     if not show or rotate:
         cfg.exposed = True
         config.save(cfg)
-        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL)
+        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL, ui=ui.REAL)
         log.get_logger().info("expose.on", api_port=cfg.api_port)
     ips = server.lan_ips(sys=system.REAL)
     # Nothing resolved at all (offline, or a locked-down host): say so in words
     # rather than print something that reads like an address.
     ip = ips[0] if ips else server.NO_ROUTE
     if cfg.exposed:
-        console.print(f"[green]✓ Exposed.[/green] Chat UI: http://{ip}:{cfg.webui_port}")
+        ui.REAL.say(f"[green]✓ Exposed.[/green] Chat UI: http://{ip}:{cfg.webui_port}")
     else:
-        console.print("Not exposed yet — run `lepika expose` to turn it on.")
-        console.print(f"Chat UI once it is on: http://{ip}:{cfg.webui_port}")
+        ui.REAL.say("Not exposed yet — run `lepika expose` to turn it on.")
+        ui.REAL.say(f"Chat UI once it is on: http://{ip}:{cfg.webui_port}")
     if len(ips) > 1:
         # The route pick is the address this box would dial out on, which is not
         # always the one the laptop in the next room can reach.
         others = ", ".join(f"http://{other}:{cfg.webui_port}" for other in ips[1:])
-        console.print(f"Also reachable on: {others}", markup=False, soft_wrap=True)
-    console.print("The chat UI asks for a sign-in; the engine API wants the key below.")
+        ui.REAL.say(f"Also reachable on: {others}", markup=False, soft_wrap=True)
+    ui.REAL.say("The chat UI asks for a sign-in; the engine API wants the key below.")
     # soft_wrap on the copied lines: an 80-column wrap breaks a URL or a key.
     if serving.vllm_active(cfg):
         # `lepika connect` probes Ollama's /api/version, which Caddy in front of vLLM
         # never answers — so point at the OpenAI-compatible URL OpenWebUI can add.
-        console.print(f"Engine API is vLLM (OpenAI-compatible): http://{ip}:{cfg.api_port}/v1")
-        console.print(
+        ui.REAL.say(f"Engine API is vLLM (OpenAI-compatible): http://{ip}:{cfg.api_port}/v1")
+        ui.REAL.say(
             "On another machine, add that URL with the key as an OpenAI connection in "
             "OpenWebUI (Admin → Settings → Connections); `lepika connect` is for "
             "Ollama engines."
         )
-        console.print(f"  Key: {key}", markup=False, soft_wrap=True)
+        ui.REAL.say(f"  Key: {key}", markup=False, soft_wrap=True)
         if rotate:
             # Engine-neutral: reconnecting here is editing the OpenAI connection in
             # OpenWebUI, and `lepika connect` refuses a vLLM engine outright.
-            console.print("Machines using the old key need the new one above.")
+            ui.REAL.say("Machines using the old key need the new one above.")
     else:
-        console.print(f"Engine API: http://{ip}:{cfg.api_port}")
-        console.print("On another machine:")
-        console.print(
+        ui.REAL.say(f"Engine API: http://{ip}:{cfg.api_port}")
+        ui.REAL.say("On another machine:")
+        ui.REAL.say(
             f"  lepika connect http://{ip}:{cfg.api_port} --key {key}", markup=False, soft_wrap=True
         )
         if rotate:
             # Caddy only honours the new key, so every machine holding the old one is
             # locked out until it is told — silence there looks like a broken engine.
-            console.print(
+            ui.REAL.say(
                 f"Machines that connected before need `lepika connect http://{ip}:{cfg.api_port} "
                 f"--key {key}` again.",
                 markup=False,
                 soft_wrap=True,
             )
-    console.print("Keep the key private; `lepika expose --rotate` replaces it.")
+    ui.REAL.say("Keep the key private; `lepika expose --rotate` replaces it.")
 
 
 model_app = typer.Typer(help="Add, list, or remove local models.")
@@ -449,25 +447,29 @@ def model_add(
     info = detect.detect(sys=system.REAL)
     cfg = config.load()
     if ref is None:
-        model_ref = wizard.choose_model(info, cfg, sys=system.REAL)
+        model_ref = wizard.choose_model(info, cfg, sys=system.REAL, ui=ui.REAL)
     else:
         # Same rejection — and the same quant picker — as the wizard's, by reusing it.
-        model_ref = wizard.resolve(models.parse_model_ref(ref), cfg, info, sys=system.REAL)
+        model_ref = wizard.resolve(
+            models.parse_model_ref(ref), cfg, info, sys=system.REAL, ui=ui.REAL
+        )
     if models.uses_vllm(model_ref.raw) and serving.vllm_allowed(cfg, info):
         # Nothing to pull: vLLM downloads the weights itself when it starts, and it
         # only starts once the config names the model compose interpolates.
-        server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE)
+        server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE, sys=system.REAL, ui=ui.REAL)
         cfg.model = model_ref.raw
         config.save(cfg)
-        console.print(f"[green]✓ Set:[/green] {escape(model_ref.raw)} — starting vLLM…")
-        _ready(cfg, server.start_stack(info, cfg, sys=system.REAL))
+        ui.REAL.say(f"[green]✓ Set:[/green] {escape(model_ref.raw)} — starting vLLM…")
+        _ready(cfg, server.start_stack(info, cfg, sys=system.REAL, ui=ui.REAL))
         return
     if cfg.engine_managed and cfg.mode == "server":
         # In Server mode the engine is a container: it has to be up before there is
         # anything to pull into — and it has to be the engine the *new* model needs.
         # Switching away from a full-weight repo with the old ref still in the config
         # would bring up vLLM, leave ollama stopped, and fail the pull.
-        server.start_stack(info, dataclasses.replace(cfg, model=model_ref.raw), sys=system.REAL)
+        server.start_stack(
+            info, dataclasses.replace(cfg, model=model_ref.raw), sys=system.REAL, ui=ui.REAL
+        )
     elif cfg.engine_managed:
         ollama.ensure_ollama(
             info, url=cfg.engine_url, context_length=cfg.context_length, sys=system.REAL
@@ -475,13 +477,13 @@ def model_add(
     else:
         # A remote engine is someone else's to run: check it, never install for it.
         health.check_remote_engine(cfg, sys=system.REAL)
-    served = acquire.acquire(info, cfg, model_ref, quant=quant)
+    served = acquire.acquire(info, cfg, model_ref, quant=quant, sys=system.REAL, ui=ui.REAL)
     if served is None:
-        console.print("Nothing added.")
+        ui.REAL.say("Nothing added.")
         return
     cfg.model = served
     config.save(cfg)
-    console.print(f"[green]✓ Added:[/green] {escape(served)}")
+    ui.REAL.say(f"[green]✓ Added:[/green] {escape(served)}")
 
 
 @model_app.command("import")
@@ -514,10 +516,12 @@ def model_import(
     )
     # Resolved from here on: the "Importing … from …" line and the `source=` log field
     # name the folder unambiguously, whatever the shell was sitting in.
-    served = acquire.import_local(info, cfg, path.resolve(), name, quant)
+    served = acquire.import_local(
+        info, cfg, path.resolve(), name, quant, sys=system.REAL, ui=ui.REAL
+    )
     cfg.model = served
     config.save(cfg)
-    console.print(f"[green]✓ Imported:[/green] {escape(served)}")
+    ui.REAL.say(f"[green]✓ Imported:[/green] {escape(served)}")
 
 
 @model_app.command("list")
@@ -529,7 +533,7 @@ def model_list() -> None:
         cfg.engine_url, key=cfg.engine_key, managed=cfg.engine_managed, sys=system.REAL
     )
     if not installed:
-        console.print("No models yet — run `lepika model add`.", markup=False)
+        ui.REAL.say("No models yet — run `lepika model add`.", markup=False)
         return
     table = Table(title="models")
     table.add_column("Name")
@@ -537,7 +541,7 @@ def model_list() -> None:
     for name, size in installed:
         marker = " [dim](default)[/dim]" if cfg.model and engine.same_model(name, cfg.model) else ""
         table.add_row(escape(name) + marker, engine.human_size(size))
-    console.print(table)
+    ui.REAL.say(table)
 
 
 @model_app.command("rm")
@@ -550,14 +554,14 @@ def model_rm(
     engine.delete_model(
         cfg.engine_url, name, key=cfg.engine_key, managed=cfg.engine_managed, sys=system.REAL
     )
-    console.print(f"[green]✓ Removed:[/green] {escape(name)}")
+    ui.REAL.say(f"[green]✓ Removed:[/green] {escape(name)}")
     if cfg.model and engine.same_model(name, cfg.model):
         # A config still naming a model the engine no longer has makes `status`
         # and `up` claim a default that cannot answer. `_ready` says "No model
         # yet" once the field is empty.
         cfg.model = ""
         config.save(cfg)
-        console.print("That was the default model — run `lepika model add` to pick another.")
+        ui.REAL.say("That was the default model — run `lepika model add` to pick another.")
 
 
 def _utf8_stdio(streams: Iterable[TextIO] | None = None) -> None:
@@ -577,8 +581,8 @@ def _utf8_stdio(streams: Iterable[TextIO] | None = None) -> None:
 
 
 def _fail(problem: str, fix: str) -> None:
-    err_console.print(f"[red]✗ {escape(problem)}[/red]")
-    err_console.print(f"[yellow]→ {escape(fix)}[/yellow]")
+    ui.REAL.say_error(f"[red]✗ {escape(problem)}[/red]")
+    ui.REAL.say_error(f"[yellow]→ {escape(fix)}[/yellow]")
 
 
 def _unexpected(exc: Exception) -> NoReturn:

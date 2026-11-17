@@ -9,9 +9,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fakes import FakeResponse, FakeSystem, FakeUI, routes
 from typer.testing import CliRunner
 
-from lepika import acquire, cli, config, detect, engine, gguf, health, hf, mlx, ollama
+from lepika import acquire, cli, config, detect, engine, gguf, health, hf, mlx, ollama, ui
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
 
@@ -215,7 +216,9 @@ def fake_import(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> dict[st
         seen["quants"].append(k.get("quant"))
 
     monkeypatch.setattr(engine, "import_model", import_model)
-    monkeypatch.setattr(acquire, "confirm", lambda q: seen["confirms"].append(q) or True)
+    monkeypatch.setattr(
+        ui, "REAL", FakeUI(confirm_reader=lambda q, **k: seen["confirms"].append(q) or True)
+    )
     # A raw bf16 repo by default; a test overrides this to stage a pre-quantized one.
     monkeypatch.setattr(hf, "fetch_config", lambda repo, dest, token="", **k: {})
     monkeypatch.setattr(engine, "show", lambda url, name, **k: None)
@@ -332,7 +335,7 @@ def test_model_add_ignores_quant_on_a_pull(fake_engine: list[str]) -> None:
 def test_model_add_declined_import_adds_nothing(
     fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(acquire, "confirm", lambda q: False)
+    monkeypatch.setattr(ui, "REAL", FakeUI(confirms=[False]))
     result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
     assert result.exit_code == 0
     assert fake_import["downloaded"] == []
@@ -703,8 +706,8 @@ def test_model_add_import_without_a_terminal_is_friendly(
     def no_terminal(question: str, default: bool = False) -> bool:
         raise EOFError
 
-    monkeypatch.setattr(acquire.Confirm, "ask", no_terminal)
-    monkeypatch.setattr(acquire, "confirm", acquire.ask_confirm)  # the fixture's auto-yes, undone
+    # the fixture's auto-yes, undone
+    monkeypatch.setattr(ui, "REAL", FakeUI(confirm_reader=no_terminal))
     result = runner.invoke(cli.app, ["model", "add", "Qwen/Qwen3.5-2B"])
     assert result.exit_code != 0
     assert isinstance(result.exception, FriendlyError)
@@ -716,24 +719,20 @@ def _confirm_no_terminal(*a: Any, **k: Any) -> Any:
     raise EOFError("stdin is not a terminal")
 
 
-def test_ask_confirm_enter_means_no(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_import_confirm_enter_means_no() -> None:
     seen: list[dict[str, Any]] = []
 
     def enter(question: str, **kwargs: Any) -> Any:
         seen.append(kwargs)
         return kwargs["default"]
 
-    monkeypatch.setattr(acquire.Confirm, "ask", enter)
-    assert acquire.ask_confirm("Download 16 GB?") is False
+    assert acquire._confirm("Download 16 GB?", ui=FakeUI(confirm_reader=enter)) is False
     assert seen == [{"default": False}]
 
 
-def test_ask_confirm_without_a_terminal_keeps_its_friendly_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(acquire.Confirm, "ask", _confirm_no_terminal)
+def test_import_confirm_without_a_terminal_keeps_its_friendly_error() -> None:
     with pytest.raises(FriendlyError) as exc:
-        acquire.ask_confirm("Download 16 GB?")
+        acquire._confirm("Download 16 GB?", ui=FakeUI(confirm_reader=_confirm_no_terminal))
     assert exc.value.problem == (
         "Importing a full-weight repo needs a yes/no answer, and there is no terminal to ask."
     )
@@ -915,6 +914,34 @@ def test_model_import_refuses_when_the_store_disk_is_too_small(
     assert fake_local["imported"] == []
 
 
+def test_import_local_asks_the_system_it_is_given_for_free_space(
+    weights: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The disk check goes through `sys.disk_free`, never straight to the real disk."""
+
+    def real_disk(path: Any) -> Any:
+        raise AssertionError(f"the real disk was asked about {path}")
+
+    monkeypatch.setattr(shutil, "disk_usage", real_disk)
+    machine = FakeSystem(
+        free=1,
+        environ={"OLLAMA_MODELS": str(tmp_path / "no-store-here")},
+        urls=routes({"http://x/api/tags": FakeResponse(b'{"models": []}')}),
+    )
+    with pytest.raises(FriendlyError) as exc:
+        acquire.import_local(
+            MAC,
+            config.Config(engine_url="http://x"),
+            weights,
+            "Qwen3.5-2B",
+            "nvfp4",
+            sys=machine,
+            ui=FakeUI(),
+        )
+    assert "Not enough disk" in exc.value.problem
+    assert "Free some space" in exc.value.fix
+
+
 def test_model_import_warns_when_it_may_not_fit_in_ram_but_proceeds(
     fake_local: dict[str, Any], weights: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -932,10 +959,8 @@ def test_model_add_tagless_gguf_ref_goes_through_the_quant_picker(
     builds = [gguf.Build("Q4_K_M", int(4e9)), gguf.Build("Q8_0", int(8e9))]
     monkeypatch.setattr(gguf, "list_builds", lambda repo, token="", *, sys: builds)
     monkeypatch.setattr(detect, "gpu_memory_gb", lambda info, *, sys: 16.0)
-    # Enter at the prompt: `choose_quant` reads `wizard._ask` at call time.
-    from lepika import wizard
-
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "")
+    # Enter at the prompt: the CLI hands `choose_quant` the `ui.REAL` of call time.
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: ""))
     result = runner.invoke(cli.app, ["model", "add", "hf.co/unsloth/x-GGUF"])
     assert result.exit_code == 0, result.output
     assert "Quantizations of unsloth/x-GGUF" in _plain(result.output)

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import FakeResponse, FakeSystem, routes
+from fakes import FakeResponse, FakeSystem, FakeUI, routes
 
 from lepika import config, hf, paths
 from lepika.errors import FriendlyError
@@ -426,14 +426,14 @@ def test_ask_token_saves_a_non_empty_answer_privately(isolated_home: Path) -> No
         return " hf_new "
 
     cfg = config.Config()
-    assert hf.ask_token(cfg, ask=ask) == "hf_new"
+    assert hf.ask_token(cfg, ui=FakeUI(reader=ask)) == "hf_new"
     assert prompts[0]["password"] is True
     assert config.load().hf_token == "hf_new"
 
 
 def test_ask_token_empty_answer_saves_nothing(isolated_home: Path) -> None:
     cfg = config.Config()
-    assert hf.ask_token(cfg, ask=lambda *a, **k: "") == ""
+    assert hf.ask_token(cfg, ui=FakeUI(reader=lambda *a, **k: "")) == ""
     assert not config.config_path().exists()
 
 
@@ -441,5 +441,5 @@ def test_token_prompt_without_a_terminal_skips(isolated_home: Path) -> None:
     def no_terminal(*a: Any, **k: Any) -> str:
         raise EOFError
 
-    assert hf.ask_token(config.Config(), ask=no_terminal) == ""
+    assert hf.ask_token(config.Config(), ui=FakeUI(reader=no_terminal)) == ""
     assert not config.config_path().exists()

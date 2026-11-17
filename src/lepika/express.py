@@ -10,6 +10,7 @@ from lepika.config import Config
 from lepika.detect import SystemInfo
 from lepika.paths import logs_dir
 from lepika.system import System
+from lepika.ui import UI
 
 
 def start_stack(
@@ -18,13 +19,15 @@ def start_stack(
     after_engine: Callable[[], None] | None = None,
     *,
     sys: System,
+    ui: UI,
 ) -> str:
     """Bring the stack up and return the URL to open.
 
     The single source of truth for the ordering both `lepika up` and the wizard
     depend on: engine first, then whatever the caller needs the engine for (the
     wizard pulls a model here), then the UI that talks to it. `lepika up` passes no
-    hook; the wizard passes its pull.
+    hook; the wizard passes its pull. `ui` is unused: it is taken only because both
+    backends share one call site, and Server's start says something through it.
     """
     if cfg.engine_managed:
         ollama.ensure_ollama(info, url=cfg.engine_url, context_length=cfg.context_length, sys=sys)
@@ -48,8 +51,11 @@ def stop(info: SystemInfo, cfg: Config, *, sys: System) -> bool:
     return stopped
 
 
-def update(info: SystemInfo, cfg: Config, *, sys: System) -> list[UpdateStep]:
-    """`lepika update` in Express mode: upgrade the engine (if ours) and OpenWebUI."""
+def update(info: SystemInfo, cfg: Config, *, sys: System, ui: UI) -> list[UpdateStep]:
+    """`lepika update` in Express mode: upgrade the engine (if ours) and OpenWebUI.
+
+    `ui` is unused, as in `start_stack`: Server's update restarts its stack through it.
+    """
     steps = ollama.update(info, cfg, sys=sys) if cfg.engine_managed else []
     before = openwebui.openwebui_version(sys=sys)
     # Pinned like the install and the run: an upgrade that resolved a different

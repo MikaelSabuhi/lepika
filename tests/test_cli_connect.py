@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fakes import FakeSystem
+from fakes import FakeSystem, FakeUI
 from typer.testing import CliRunner
 
 from lepika import cli, config, detect, express, health, log, ollama, openwebui, paths
@@ -153,7 +153,7 @@ def test_start_stack_never_installs_a_remote_engine(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         health, "api_up", lambda url, key="", **k: bool(probed.append((url, key))) or True
     )
-    express.start_stack(info, cfg, sys=FakeSystem())
+    express.start_stack(info, cfg, sys=FakeSystem(), ui=FakeUI())
     assert probed == [("http://gpu-box:11435", "k")]
 
 
@@ -162,7 +162,7 @@ def test_start_stack_explains_an_unreachable_remote_engine(monkeypatch: pytest.M
     cfg = config.Config(engine_managed=False, engine_url="http://gpu-box:11435")
     monkeypatch.setattr(health, "api_up", lambda url, **k: False)
     with pytest.raises(FriendlyError) as exc:
-        express.start_stack(info, cfg, sys=FakeSystem())
+        express.start_stack(info, cfg, sys=FakeSystem(), ui=FakeUI())
     assert "gpu-box" in exc.value.problem
     assert "lepika connect --local" in exc.value.fix
 

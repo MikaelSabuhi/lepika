@@ -8,17 +8,16 @@ import json
 import re
 import subprocess
 import urllib.error
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from lepika import config, gguf, log, paths, prompts
+from lepika import config, gguf, log, paths
 from lepika.config import Config
 from lepika.errors import FriendlyError
 from lepika.system import System
-
-AskFn = Callable[..., str]
+from lepika.ui import UI
 
 # Same shape as OpenWebUI's `uv tool run`: pinned interpreter, named package.
 HF_PYTHON = "3.12"
@@ -324,7 +323,7 @@ def token_for(cfg: Config, *, sys: System) -> str:
     return sys.environ.get("HF_TOKEN", "").strip() or cfg.hf_token.strip()
 
 
-def ask_token(cfg: Config, ask: AskFn | None = None) -> str:
+def ask_token(cfg: Config, *, ui: UI) -> str:
     """Ask once — only after a gated pre-flight, so public repos never see a prompt.
 
     A non-empty answer is saved to config.toml (0600 from creation). Empty means the
@@ -332,11 +331,10 @@ def ask_token(cfg: Config, ask: AskFn | None = None) -> str:
     writes every field, so pass the loaded Config, never a fresh one.
     """
     # No terminal skips, as Enter does.
-    token = prompts.ask(
+    token = ui.ask(
         "Hugging Face token (this repo is gated; Enter to cancel)",
         password=True,
         default="",
-        reader=ask,
     ).strip()
     if token:
         cfg.hf_token = token

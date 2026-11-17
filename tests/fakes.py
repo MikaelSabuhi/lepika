@@ -1,7 +1,8 @@
-"""Shared test doubles: `FakeSystem` and its HTTP answers."""
+"""Shared test doubles: `FakeSystem` and its HTTP answers, and `FakeUI`."""
 
 from __future__ import annotations
 
+import contextlib
 import io
 import subprocess
 import urllib.request
@@ -9,7 +10,7 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from lepika import proc
+from lepika import proc, ui
 from lepika.errors import CommandNotFound, FriendlyError
 from lepika.system import Response
 
@@ -302,3 +303,74 @@ class FakeSystem:
 
     def host_addresses(self) -> list[str]:
         return list(self.hosts)
+
+
+class UnansweredQuestion(BaseException):
+    """A test let code ask a question it gave `FakeUI` no answer for.
+
+    A BaseException, not the `EOFError` a terminal-less stdin gives: that would be
+    read as "no terminal, take the default", and the test would pass for the wrong
+    reason. Nothing in `src/` catches a BaseException.
+    """
+
+
+class FakeUI(ui.UI):
+    """The real `UI` with its input side scripted; output still renders through rich.
+
+    `answers` answer `ask` and `confirms` answer `confirm`, in order. A caller's own
+    `reader`/`confirm_reader` answers instead, so a reader that asserts on what it was
+    handed keeps doing so. `no_terminal` makes every question meet EOF, which the real
+    policy in `UI.ask`/`UI.confirm` then handles. Every question is recorded in
+    `asked`/`confirmed` with the keywords its reader received; one nobody scripted
+    raises `UnansweredQuestion`. `progress` draws nothing: it records each bar's label
+    in `progress_labels` and every `(completed, total)` report in `reports`.
+    """
+
+    def __init__(
+        self,
+        *,
+        answers: Sequence[str] = (),
+        confirms: Sequence[bool] = (),
+        reader: ui.Reader | None = None,
+        confirm_reader: ui.Reader | None = None,
+        no_terminal: bool = False,
+    ) -> None:
+        self.answers = list(answers)
+        self.confirms = list(confirms)
+        self.caller_reader = reader
+        self.caller_confirm_reader = confirm_reader
+        self.no_terminal = no_terminal
+        self.asked: list[tuple[str, dict[str, Any]]] = []
+        self.confirmed: list[tuple[str, dict[str, Any]]] = []
+        self.progress_labels: list[str] = []
+        self.reports: list[tuple[int, int]] = []
+        super().__init__(reader=self._read, confirm_reader=self._read_confirm)
+
+    def _read(self, prompt: str, **kwargs: Any) -> Any:
+        self.asked.append((prompt, kwargs))
+        if self.no_terminal:
+            raise EOFError("stdin is not a terminal")
+        if self.caller_reader is not None:
+            return self.caller_reader(prompt, **kwargs)
+        if not self.answers:
+            raise UnansweredQuestion(f"FakeUI was not given an answer for {prompt!r}")
+        return self.answers.pop(0)
+
+    def _read_confirm(self, prompt: str, **kwargs: Any) -> Any:
+        self.confirmed.append((prompt, kwargs))
+        if self.no_terminal:
+            raise EOFError("stdin is not a terminal")
+        if self.caller_confirm_reader is not None:
+            return self.caller_confirm_reader(prompt, **kwargs)
+        if not self.confirms:
+            raise UnansweredQuestion(f"FakeUI was not given a yes/no for {prompt!r}")
+        return self.confirms.pop(0)
+
+    @contextlib.contextmanager
+    def progress(self, label: str) -> Iterator[ui.ProgressFn]:
+        self.progress_labels.append(label)
+
+        def report(completed: int, total: int) -> None:
+            self.reports.append((completed, total))
+
+        yield report

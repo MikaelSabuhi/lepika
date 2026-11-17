@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import FakeSystem
+from fakes import FakeSystem, FakeUI
 
 from lepika import config, detect, server, serving, stack_env
 
@@ -128,16 +128,12 @@ def test_hf_token_from_the_shell_wins() -> None:
     assert values["HF_TOKEN"] == "from-shell"
 
 
-def test_token_prompt_without_a_terminal_skips(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("HF_TOKEN", raising=False)
-
+def test_token_prompt_without_a_terminal_skips(tmp_path: Path) -> None:
     def no_terminal(*a: Any, **k: Any) -> str:
         raise EOFError
 
     env = tmp_path / ".env"
-    server.hf_token_prompt(env, ask=no_terminal)
+    server.hf_token_prompt(env, sys=FakeSystem(environ={}), ui=FakeUI(reader=no_terminal))
     assert stack_env.read_env(env).get("HF_TOKEN", "") == ""
 
 

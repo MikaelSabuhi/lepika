@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import FakeResponse, FakeSystem, routes
+from fakes import FakeResponse, FakeSystem, FakeUI, routes
 
 from lepika import express, health, log, ollama, openwebui, paths, ports, system
 from lepika.config import Config
@@ -206,7 +206,7 @@ def test_start_stack_writes_one_stack_up_line(monkeypatch: pytest.MonkeyPatch) -
     info = SystemInfo("linux", "x86_64", "none", 16.0, False, True, True)
     monkeypatch.setattr(ollama, "ensure_ollama", lambda info, url=None, **k: None)
     monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
-    express.start_stack(info, Config(), sys=FakeSystem())
+    express.start_stack(info, Config(), sys=FakeSystem(), ui=FakeUI())
     assert _log_events().count("stack.up") == 1
 
 
@@ -222,7 +222,7 @@ def test_start_stack_logs_nothing_when_the_engine_pre_flight_refuses(
     monkeypatch.setattr(ollama, "ensure_ollama", refuse)
     monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
     with pytest.raises(FriendlyError):
-        express.start_stack(info, Config(), sys=FakeSystem())
+        express.start_stack(info, Config(), sys=FakeSystem(), ui=FakeUI())
     assert "stack.up" not in _log_events()
 
 

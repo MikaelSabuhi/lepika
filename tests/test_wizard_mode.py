@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes import FakeUI
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, engine, express, models, ollama, server, wizard
+from lepika import cli, config, detect, engine, express, models, ollama, server, ui, wizard
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
@@ -37,15 +38,15 @@ def test_choose_mode_is_silent_without_docker() -> None:
         asked.append("?")
         return "2"
 
-    assert wizard.choose_mode(NO_DOCKER, "express", ask=ask) == "express"
+    assert wizard.choose_mode(NO_DOCKER, "express", ui=FakeUI(reader=ask)) == "express"
     assert asked == []
 
 
 def test_choose_mode_asks_when_docker_is_present_and_defaults_to_current() -> None:
-    assert wizard.choose_mode(DOCKER, "express", ask=lambda *a, **k: "") == "express"
-    assert wizard.choose_mode(DOCKER, "server", ask=lambda *a, **k: "") == "server"
-    assert wizard.choose_mode(DOCKER, "express", ask=lambda *a, **k: "2") == "server"
-    assert wizard.choose_mode(DOCKER, "server", ask=lambda *a, **k: "1") == "express"
+    assert wizard.choose_mode(DOCKER, "express", ui=FakeUI(reader=lambda *a, **k: "")) == "express"
+    assert wizard.choose_mode(DOCKER, "server", ui=FakeUI(reader=lambda *a, **k: "")) == "server"
+    assert wizard.choose_mode(DOCKER, "express", ui=FakeUI(reader=lambda *a, **k: "2")) == "server"
+    assert wizard.choose_mode(DOCKER, "server", ui=FakeUI(reader=lambda *a, **k: "1")) == "express"
 
 
 def _no_terminal(*a: Any, **k: Any) -> str:
@@ -55,19 +56,25 @@ def _no_terminal(*a: Any, **k: Any) -> str:
 def test_choose_mode_keeps_the_current_mode_without_a_terminal(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert wizard.choose_mode(DOCKER, "server", ask=_no_terminal) == "server"
+    assert wizard.choose_mode(DOCKER, "server", ui=FakeUI(reader=_no_terminal)) == "server"
     out = capsys.readouterr().out
     assert "No terminal to ask — staying with Server." in out
     assert "using 1" not in out and "using 2" not in out
-    assert wizard.choose_mode(DOCKER, "express", ask=_no_terminal) == "express"
+    assert wizard.choose_mode(DOCKER, "express", ui=FakeUI(reader=_no_terminal)) == "express"
     out = capsys.readouterr().out
     assert "No terminal to ask — staying with Express." in out
     assert "using 1" not in out
 
 
 def test_choose_mode_accepts_the_mode_by_name() -> None:
-    assert wizard.choose_mode(DOCKER, "express", ask=lambda *a, **k: "server") == "server"
-    assert wizard.choose_mode(DOCKER, "server", ask=lambda *a, **k: "Express") == "express"
+    assert (
+        wizard.choose_mode(DOCKER, "express", ui=FakeUI(reader=lambda *a, **k: "server"))
+        == "server"
+    )
+    assert (
+        wizard.choose_mode(DOCKER, "server", ui=FakeUI(reader=lambda *a, **k: "Express"))
+        == "express"
+    )
 
 
 def test_choose_mode_asks_again_once_then_keeps_the_default(
@@ -80,7 +87,7 @@ def test_choose_mode_asks_again_once_then_keeps_the_default(
         asked.append(prompt)
         return next(answers)
 
-    assert wizard.choose_mode(DOCKER, "server", ask=ask) == "server"
+    assert wizard.choose_mode(DOCKER, "server", ui=FakeUI(reader=ask)) == "server"
     assert len(asked) == 2
     assert "Pick 1 or 2" in capsys.readouterr().out
 
@@ -105,7 +112,7 @@ def test_wizard_in_server_mode_uses_the_server_backend(
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     answers = iter(["2", "1"])  # mode, then model
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     monkeypatch.setattr(server, "start_stack", fake_server_start)
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: events.append("pull"))
     monkeypatch.setattr(express, "start_stack", lambda *a, **k: pytest.fail("wrong backend"))
@@ -124,7 +131,7 @@ def test_wizard_in_server_mode_uses_the_server_backend(
 def test_mode_flag_skips_the_question(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> None:
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "1")  # only the model question
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: "1"))  # only the model question
     monkeypatch.setattr(server, "start_stack", started)
     # Leaving Express stops its stack: nothing of it runs here.
     monkeypatch.setattr(express, "stop", lambda info, cfg, **k: False)
@@ -158,7 +165,7 @@ def test_dry_run_in_server_mode_describes_compose(
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     answers = iter(["", "1"])  # bare Enter keeps the saved mode; then the model
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     monkeypatch.setattr(
         server, "start_stack", lambda *a, **k: pytest.fail("--dry-run must start nothing")
     )
@@ -200,7 +207,7 @@ def test_leaving_server_mode_stops_the_server_stack(
     """Both modes bind the same port: the abandoned stack does not linger, it answers."""
     config.save(config.Config(mode="server"))
     answers = iter(["1", "1"])  # Express, then the model
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     assert switching == ["server"]
@@ -211,7 +218,7 @@ def test_leaving_express_mode_stops_the_express_stack(
     switching: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     answers = iter(["2", "1"])  # Server, then the model
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     assert switching == ["express"]
@@ -223,7 +230,7 @@ def test_staying_in_the_same_mode_stops_nothing(
 ) -> None:
     """A re-run of the wizard is not a reason to tear down a working stack."""
     answers = iter(["1", "1"])
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     assert runner.invoke(cli.app, []).exit_code == 0
     assert switching == []
 
@@ -231,7 +238,7 @@ def test_staying_in_the_same_mode_stops_nothing(
 def test_dry_run_switches_nothing_off(
     switching: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "1")  # only the model question
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: "1"))  # only the model question
     result = runner.invoke(cli.app, ["--dry-run", "--mode", "server"])
     assert result.exit_code == 0, result.output
     assert switching == []
@@ -248,7 +255,7 @@ def test_failed_switch_to_server_removes_the_containers_it_created(
 
     monkeypatch.setattr(server, "start_stack", failing_start)
     answers = iter(["2", "1"])  # Server, then the model
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
     assert result.exit_code != 0
     # leave_mode stopped Express, then the error path swept the half-created stack.
@@ -268,7 +275,7 @@ def test_failed_start_while_already_in_server_mode_leaves_the_stack_alone(
 
     monkeypatch.setattr(server, "start_stack", failing_start)
     answers = iter(["2", "1"])
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
     assert result.exit_code != 0
     assert switching == []
@@ -292,7 +299,7 @@ def test_failure_after_the_mode_was_saved_keeps_the_visible_stack(
 
     monkeypatch.setattr(server, "start_stack", engine_up_then_webui_times_out)
     answers = iter(["2", "1"])
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
     assert result.exit_code != 0
     assert switching == ["express"]
@@ -311,7 +318,7 @@ def test_leaving_express_mode_stops_the_ollama_lepika_started(
         lambda os_name, url, key="", **k: bool(seen.append((os_name, url, key))) or True,
     )
     answers = iter(["2", "1"])  # Server, then the model
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     # The key goes with it: a keyed engine answers 401 unauthenticated, which the
@@ -337,7 +344,7 @@ def test_server_start_sees_the_ollama_as_stopped_after_the_switch(
 
     monkeypatch.setattr(server, "start_stack", start)
     answers = iter(["2", "1"])  # Server, then the model
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     assert [info.ollama_running for info in seen] == [False]
@@ -349,7 +356,7 @@ def test_an_ollama_lepika_did_not_start_is_left_alone_and_unannounced(
     """No pid file means Homebrew or systemd owns it: say nothing, stop nothing."""
     monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: False)
     answers = iter(["2", "1"])
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     assert "Stopped the Ollama" not in result.output
@@ -364,7 +371,7 @@ def test_leaving_express_mode_never_stops_a_remote_engine(
         ollama, "stop_ollama", lambda *a, **k: pytest.fail("must not touch a remote engine")
     )
     answers = iter(["2", "1"])
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     assert runner.invoke(cli.app, []).exit_code == 0
 
 
@@ -377,7 +384,7 @@ def test_leaving_server_mode_does_not_stop_a_native_ollama(
         ollama, "stop_ollama", lambda *a, **k: pytest.fail("Server mode started no native Ollama")
     )
     answers = iter(["1", "1"])  # Express, then the model
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     assert runner.invoke(cli.app, []).exit_code == 0
 
 
@@ -393,7 +400,7 @@ def test_the_mode_is_saved_only_once_the_engine_is_up(
     monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: False)
     monkeypatch.setattr(server, "start_stack", refuse)
     answers = iter(["2", "1"])  # Server, then the model
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
     assert result.exit_code != 0
     assert config.load().mode == "express"
@@ -411,7 +418,7 @@ def test_a_backend_too_broken_to_stop_does_not_trap_the_user_in_it(
     config.save(config.Config(mode="server"))
     monkeypatch.setattr(server, "stop", boom)
     answers = iter(["1", "1"])
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     assert "not running" in result.output
@@ -433,7 +440,7 @@ def test_a_ui_that_will_not_stop_still_lets_the_engine_stop(
     monkeypatch.setattr(express, "stop", boom)
     monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: True)
     answers = iter(["2", "1"])  # Server, then the model
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     assert "still answering" in result.output
@@ -450,7 +457,7 @@ def test_an_engine_that_will_not_stop_still_reports_the_ui_stop(
 
     monkeypatch.setattr(ollama, "stop_ollama", boom)
     answers = iter(["2", "1"])  # Server, then the model
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     assert switching == ["express"]

@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes import FakeUI
 from typer.testing import CliRunner
 
-from lepika import cli, detect, health, models, wizard
+from lepika import cli, detect, health, models, ui
 from lepika.cli import app
 
 runner = CliRunner()
@@ -73,7 +74,7 @@ def test_run_prints_a_check_mark_to_a_cp1252_stdout(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(sys, "stdout", stream)
     # Rich's Console reads sys.stdout at write time, which is what makes an in-place
     # reconfigure in run() reach every command's output.
-    monkeypatch.setattr(cli, "app", lambda: cli.console.print("✓ Ready"))
+    monkeypatch.setattr(cli, "app", lambda: ui.REAL.say("✓ Ready"))
     cli.run()
     stream.flush()
     assert "✓ Ready".encode() in stream.buffer.getvalue()
@@ -230,7 +231,7 @@ def test_run_without_a_terminal_is_two_lines_not_a_traceback(
         lambda **k: [models.CuratedModel(name="Small", ref="llama3.2:3b", min_ram_gb=6)],
     )
     monkeypatch.setattr(health, "webui_up", lambda port, **k: True)
-    monkeypatch.setattr(wizard, "_ask", no_terminal)
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=no_terminal))
     with pytest.raises(SystemExit) as exit_info:
         cli.run()
     assert exit_info.value.code == 1

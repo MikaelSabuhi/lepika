@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from lepika import engine, hf, models, ollama, system
+from lepika import engine, hf, models, ollama, system, ui
 from lepika.errors import FriendlyError
 from lepika.system import System
 
@@ -50,7 +50,7 @@ def _no_stored_token(tmp_path: Path) -> System:
 def test_pull_of_the_smallest_curated_model_succeeds() -> None:
     curated = models.load_curated(fetch_remote=False, sys=system.REAL)
     smallest = min(curated, key=lambda m: m.min_ram_gb)
-    engine.pull_model(OLLAMA_URL, models.parse_model_ref(smallest.ref), sys=system.REAL)
+    engine.pull_model(OLLAMA_URL, models.parse_model_ref(smallest.ref), sys=system.REAL, ui=ui.REAL)
     installed = [name for name, _size in engine.list_models(OLLAMA_URL, sys=system.REAL)]
     assert any(engine.same_model(name, smallest.ref) for name in installed), installed
 
@@ -58,7 +58,7 @@ def test_pull_of_the_smallest_curated_model_succeeds() -> None:
 def test_a_repo_without_gguf_is_classified_not_gguf() -> None:
     ref = models.parse_model_ref(f"hf.co/{SAFETENSORS_REPO}")
     with pytest.raises(engine.NotGGUF):
-        engine.pull_model(OLLAMA_URL, ref, sys=system.REAL)
+        engine.pull_model(OLLAMA_URL, ref, sys=system.REAL, ui=ui.REAL)
 
 
 def test_preflight_of_a_public_repo_lists_files(tmp_path: Path) -> None:

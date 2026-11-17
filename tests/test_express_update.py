@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import Answer, FakeResponse, FakeSystem, routes
+from fakes import Answer, FakeResponse, FakeSystem, FakeUI, routes
 
 from lepika import config, detect, express, health, ollama, openwebui, paths
 from lepika.backend import UpdateStep
@@ -78,7 +78,7 @@ def _update(
     if engine is not None:
         machine.urls = routes({_VERSION_URL: engine})
     try:
-        return express.update(info, cfg or config.Config(), sys=machine)
+        return express.update(info, cfg or config.Config(), sys=machine, ui=FakeUI())
     finally:
         # Engines start and stop only through `start_ollama` and `stop_ollama`, both
         # doubled by `restarts`: nothing here launches or signals a process itself.

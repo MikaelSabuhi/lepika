@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import FakeResponse, FakeSystem, routes
+from fakes import FakeResponse, FakeSystem, FakeUI, routes
 from typer.testing import CliRunner
 
 from lepika import (
@@ -22,6 +22,7 @@ from lepika import (
     server,
     serving,
     stack_env,
+    ui,
     wizard,
 )
 from lepika.errors import FriendlyError
@@ -112,14 +113,14 @@ def test_vllm_up_is_false_when_nothing_answers() -> None:
 def test_start_stack_waits_for_vllm_not_ollama(isolated_home: Path) -> None:
     cfg = config.Config(mode="server", model=REPO)
     vllm = "http://127.0.0.1:8000/health"
-    ui = "http://127.0.0.1:3000/health"
+    webui = "http://127.0.0.1:3000/health"
     # No answer for Ollama's /api/version: probing it would fail the test.
     machine = FakeSystem(
         stdout={"docker info": '{"nvidia": {}}'},
-        urls=routes({vllm: FakeResponse(), ui: FakeResponse()}),
+        urls=routes({vllm: FakeResponse(), webui: FakeResponse()}),
     )
-    server.start_stack(LINUX_NVIDIA, cfg, sys=machine)
-    assert [r.full_url for r in machine.requested] == [vllm, ui]
+    server.start_stack(LINUX_NVIDIA, cfg, sys=machine, ui=FakeUI())
+    assert [r.full_url for r in machine.requested] == [vllm, webui]
 
 
 def test_start_stack_vllm_without_toolkit_is_friendly(isolated_home: Path) -> None:
@@ -128,33 +129,39 @@ def test_start_stack_vllm_without_toolkit_is_friendly(isolated_home: Path) -> No
             LINUX_NVIDIA,
             config.Config(mode="server", model=REPO),
             sys=FakeSystem(stdout={"docker info": "{}"}),
+            ui=FakeUI(),
         )
     assert "Container Toolkit" in exc.value.fix
 
 
-def test_hf_token_prompt_writes_once_and_skips_when_present(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("HF_TOKEN", raising=False)
+def test_hf_token_prompt_writes_once_and_skips_when_present(tmp_path: Path) -> None:
     env = tmp_path / ".env"
     asked: list[str] = []
-    server.hf_token_prompt(env, ask=lambda *a, **k: asked.append("?") or "hf_abc")
+    server.hf_token_prompt(
+        env,
+        sys=FakeSystem(environ={}),
+        ui=FakeUI(reader=lambda *a, **k: asked.append("?") or "hf_abc"),
+    )
     assert stack_env.read_env(env)["HF_TOKEN"] == "hf_abc"
-    server.hf_token_prompt(env, ask=lambda *a, **k: pytest.fail("asked twice"))
+    server.hf_token_prompt(
+        env,
+        sys=FakeSystem(environ={}),
+        ui=FakeUI(reader=lambda *a, **k: pytest.fail("asked twice")),
+    )
     assert asked == ["?"]
 
 
-def test_hf_token_prompt_skips_when_the_shell_has_one(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("HF_TOKEN", "hf_from_shell")
-    server.hf_token_prompt(tmp_path / ".env", ask=lambda *a, **k: pytest.fail("asked anyway"))
+def test_hf_token_prompt_skips_when_the_shell_has_one(tmp_path: Path) -> None:
+    server.hf_token_prompt(
+        tmp_path / ".env",
+        sys=FakeSystem(environ={"HF_TOKEN": "hf_from_shell"}),
+        ui=FakeUI(reader=lambda *a, **k: pytest.fail("asked anyway")),
+    )
 
 
-def test_hf_token_prompt_accepts_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("HF_TOKEN", raising=False)
+def test_hf_token_prompt_accepts_empty(tmp_path: Path) -> None:
     env = tmp_path / ".env"
-    server.hf_token_prompt(env, ask=lambda *a, **k: "")
+    server.hf_token_prompt(env, sys=FakeSystem(environ={}), ui=FakeUI(reader=lambda *a, **k: ""))
     assert stack_env.read_env(env).get("HF_TOKEN", "") == ""
 
 
@@ -182,7 +189,7 @@ def test_wizard_saves_the_vllm_model_before_starting_the_stack(
     seen: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
     monkeypatch.setattr(models, "load_curated", lambda **k: [])
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: REPO)
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: REPO))
     monkeypatch.setattr(server, "hf_token_prompt", lambda env, **k: seen.append("token"))
     monkeypatch.setattr(engine, "pull_model", lambda *a, **k: pytest.fail("no pull for vLLM"))
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
@@ -205,7 +212,7 @@ def test_dry_run_says_it_would_start_vllm(
     config.save(config.Config(mode="server"))
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
     monkeypatch.setattr(models, "load_curated", lambda **k: [])
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: REPO)
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: REPO))
     result = runner.invoke(cli.app, ["--dry-run", "--mode", "server"])
     assert result.exit_code == 0, result.output
     assert f"would: start vLLM with {REPO}" in result.output
@@ -326,7 +333,7 @@ def test_wizard_starts_the_stack_for_the_ollama_model_it_is_about_to_pull(
     started: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
     monkeypatch.setattr(models, "load_curated", lambda **k: [])
-    monkeypatch.setattr(wizard, "_ask", lambda *a, **k: "qwen3:8b")
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: "qwen3:8b"))
     monkeypatch.setattr(engine, "pull_model", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
 

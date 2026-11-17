@@ -314,10 +314,9 @@ def test_model_add_starts_the_stack_for_the_model_it_is_about_to_pull(
     config.save(config.Config(mode="server", model=REPO))
     started: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
+    monkeypatch.setattr(system, "REAL", FakeSystem(which=DOCKER))
     monkeypatch.setattr(
-        backend,
-        "backend_for",
-        Backends(server=FakeBackend(on_start=lambda info, cfg, **k: started.append(cfg.model))),
+        ServerBackend, "start", lambda self, info, cfg, **k: started.append(cfg.model) or ""
     )
     monkeypatch.setattr(engine, "pull_model", lambda *a, **k: None)
     result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
@@ -332,9 +331,8 @@ def test_model_add_keeps_the_old_model_when_the_pull_fails(
     """The target model reaches the stack, but only a successful pull reaches the config."""
     config.save(config.Config(mode="server", model=REPO))
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
-    monkeypatch.setattr(
-        backend, "backend_for", Backends(server=FakeBackend(on_start=lambda info, cfg, **k: "u"))
-    )
+    monkeypatch.setattr(system, "REAL", FakeSystem(which=DOCKER))
+    monkeypatch.setattr(ServerBackend, "start", lambda self, info, cfg, **k: "u")
 
     def boom(*a: Any, **k: Any) -> None:
         raise FriendlyError("no", "fix")
@@ -399,7 +397,6 @@ def test_up_says_vllm_in_the_plan_sentence(
     config.save(config.Config(mode="server", model=REPO))
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
     monkeypatch.setattr(system, "REAL", FakeSystem(which=DOCKER))
-    monkeypatch.setattr(server, "gpu_note", lambda info, **k: None)
     monkeypatch.setattr(
         backend,
         "backend_for",

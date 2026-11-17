@@ -3,20 +3,23 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fakes import Backends, FakeBackend, FakeSystem, FakeUI
+from fakes import FakeSystem, FakeUI
 from typer.testing import CliRunner
 
-from lepika import backend, cli, config, detect, health, log, ollama, openwebui, paths
+from lepika import cli, config, detect, health, log, ollama, openwebui, paths, system
 from lepika.errors import FriendlyError
 from lepika.express import ExpressBackend
+from lepika.server import ServerBackend
 
 runner = CliRunner()
+INFO = detect.Machine("linux", "x86_64", "nvidia", 32.0)
 
 
 def test_connect_stores_url_key_and_marks_engine_remote(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     monkeypatch.setattr(health, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     monkeypatch.setattr(health, "webui_up", lambda port, **k: False)
     result = runner.invoke(cli.app, ["connect", "http://gpu-box:11435", "--key", "s3cret"])
     assert result.exit_code == 0
@@ -31,6 +34,7 @@ def test_connect_strips_a_trailing_slash(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     monkeypatch.setattr(health, "api_up", lambda url, **k: True)
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     monkeypatch.setattr(health, "webui_up", lambda port, **k: False)
     runner.invoke(cli.app, ["connect", "http://gpu-box:11435/"])
     assert config.load().engine_url == "http://gpu-box:11435"
@@ -58,12 +62,10 @@ def test_connect_refuses_an_engine_that_does_not_answer(
 def test_connect_probes_with_the_key(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> None:
     seen: list[str] = []
     monkeypatch.setattr(health, "api_up", lambda url, key="", **k: bool(seen.append(key)) or True)
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     monkeypatch.setattr(health, "webui_up", lambda port, **k: False)
     runner.invoke(cli.app, ["connect", "http://gpu-box:11435", "--key", "k"])
     assert seen == ["k"]
-
-
-INFO = detect.Machine("linux", "x86_64", "nvidia", 32.0)
 
 
 def test_connect_restarts_a_running_webui_at_the_new_engine(
@@ -131,6 +133,7 @@ def test_connect_local_restores_the_managed_engine(
     config.save(
         config.Config(engine_managed=False, engine_url="http://gpu-box:11435", engine_key="k")
     )
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     monkeypatch.setattr(health, "webui_up", lambda port, **k: False)
     result = runner.invoke(cli.app, ["connect", "--local"])
     assert result.exit_code == 0
@@ -175,13 +178,10 @@ def test_connect_in_server_mode_reconciles_the_stack_instead_of_restarting_expre
     config.save(config.Config(mode="server"))
     monkeypatch.setattr(health, "api_up", lambda url, **k: True)
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(system, "REAL", FakeSystem())
     started: list[str] = []
     monkeypatch.setattr(
-        backend,
-        "backend_for",
-        Backends(
-            server=FakeBackend(on_start=lambda info, cfg, **k: started.append(cfg.engine_url) or "")
-        ),
+        ServerBackend, "start", lambda self, info, cfg, **k: started.append(cfg.engine_url) or ""
     )
     monkeypatch.setattr(
         openwebui,
@@ -214,9 +214,8 @@ def test_connect_without_a_key_is_fine_while_exposed(
     config.save(config.Config(mode="server", exposed=True))
     monkeypatch.setattr(health, "api_up", lambda url, **k: True)
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
-    monkeypatch.setattr(
-        backend, "backend_for", Backends(server=FakeBackend(on_start=lambda info, cfg, **k: ""))
-    )
+    monkeypatch.setattr(system, "REAL", FakeSystem())
+    monkeypatch.setattr(ServerBackend, "start", lambda self, info, cfg, **k: "")
     result = runner.invoke(cli.app, ["connect", "http://gpu-box:11435"])
     assert result.exit_code == 0, result.output
     assert config.load().engine_url == "http://gpu-box:11435"
@@ -227,9 +226,8 @@ def test_connect_local_is_unaffected_by_exposure(
 ) -> None:
     config.save(config.Config(mode="server", exposed=True, engine_managed=False, engine_key="k"))
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
-    monkeypatch.setattr(
-        backend, "backend_for", Backends(server=FakeBackend(on_start=lambda info, cfg, **k: ""))
-    )
+    monkeypatch.setattr(system, "REAL", FakeSystem())
+    monkeypatch.setattr(ServerBackend, "start", lambda self, info, cfg, **k: "")
     result = runner.invoke(cli.app, ["connect", "--local"])
     assert result.exit_code == 0, result.output
     assert config.load().engine_managed is True

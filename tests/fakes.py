@@ -405,11 +405,13 @@ class FakeBackend:
     """Implements `lepika.backend.Backend` without starting anything; records every call.
 
     `url`, `was_running`, `steps` and `sections` are what `start`, `stop`, `update`
-    and `logs` return. `on_start`, `on_stop`, `on_update` and `on_logs` replace that:
-    each is handed the call's arguments and its result is returned, so a test's own
-    fake — and the assertions inside it — keeps running. Without `on_start`, the
-    hook runs before the URL is returned, as it does in both real backends.
-    Each call is recorded in `started`, `stopped`, `updated` or `logged`.
+    and `logs` return; `notes` returns none, `apply_engine_change` says it restarted,
+    and `ensure_engine` and `release` do nothing. An `on_<method>` callable replaces
+    any of them: it is handed the call's arguments and its result is returned, so a
+    test's own fake — and the assertions inside it — keeps running. Without
+    `on_start`, the hook runs before the URL is returned, as it does in both real
+    backends. Each call is recorded in `started`, `stopped`, `updated`, `logged`,
+    `noted`, `engine_changes`, `engines_ensured` or `released`.
     """
 
     def __init__(
@@ -423,6 +425,10 @@ class FakeBackend:
         on_stop: Callable[[Machine, Config], bool] | None = None,
         on_update: Callable[[Machine, Config], list[UpdateStep]] | None = None,
         on_logs: Callable[[int], list[tuple[str, str]]] | None = None,
+        on_notes: Callable[[Machine, Config], list[str]] | None = None,
+        on_apply_engine_change: Callable[[Machine, Config], bool] | None = None,
+        on_ensure_engine: Callable[[Machine, Config], None] | None = None,
+        on_release: Callable[[Machine, Config], str | None] | None = None,
     ) -> None:
         self.url = url
         self.was_running = was_running
@@ -432,10 +438,18 @@ class FakeBackend:
         self.on_stop = on_stop
         self.on_update = on_update
         self.on_logs = on_logs
+        self.on_notes = on_notes
+        self.on_apply_engine_change = on_apply_engine_change
+        self.on_ensure_engine = on_ensure_engine
+        self.on_release = on_release
         self.started: list[tuple[Machine, Config, Callable[[], None] | None]] = []
         self.stopped: list[tuple[Machine, Config]] = []
         self.updated: list[tuple[Machine, Config]] = []
         self.logged: list[int] = []
+        self.noted: list[tuple[Machine, Config]] = []
+        self.engine_changes: list[tuple[Machine, Config]] = []
+        self.engines_ensured: list[tuple[Machine, Config]] = []
+        self.released: list[tuple[Machine, Config]] = []
 
     def start(
         self, info: Machine, cfg: Config, after_engine: Callable[[], None] | None = None
@@ -464,6 +478,29 @@ class FakeBackend:
         if self.on_logs is not None:
             return self.on_logs(lines)
         return list(self.sections)
+
+    def notes(self, info: Machine, cfg: Config) -> list[str]:
+        self.noted.append((info, cfg))
+        if self.on_notes is not None:
+            return self.on_notes(info, cfg)
+        return []
+
+    def apply_engine_change(self, info: Machine, cfg: Config) -> bool:
+        self.engine_changes.append((info, cfg))
+        if self.on_apply_engine_change is not None:
+            return self.on_apply_engine_change(info, cfg)
+        return True
+
+    def ensure_engine(self, info: Machine, cfg: Config) -> None:
+        self.engines_ensured.append((info, cfg))
+        if self.on_ensure_engine is not None:
+            self.on_ensure_engine(info, cfg)
+
+    def release(self, info: Machine, cfg: Config) -> str | None:
+        self.released.append((info, cfg))
+        if self.on_release is not None:
+            return self.on_release(info, cfg)
+        return None
 
 
 class Backends:

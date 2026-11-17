@@ -9,12 +9,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fakes import Backends, FakeBackend, FakeResponse, FakeSystem, FakeUI, routes
+from fakes import FakeResponse, FakeSystem, FakeUI, routes
 from typer.testing import CliRunner
 
-from lepika import acquire, backend, cli, config, detect, engine, gguf, health, hf, mlx, ollama, ui
+from lepika import acquire, cli, config, detect, engine, gguf, health, hf, mlx, ollama, system, ui
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
+from lepika.server import ServerBackend
 
 runner = CliRunner()
 
@@ -637,14 +638,12 @@ def test_model_add_in_server_mode_brings_the_engine_container_up_first(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     """A container engine has to be running before anything can be pulled into it."""
-
     config.save(config.Config(mode="server"))
     events: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(system, "REAL", FakeSystem())
     monkeypatch.setattr(
-        backend,
-        "backend_for",
-        Backends(server=FakeBackend(on_start=lambda info, cfg, **k: events.append("stack") or "")),
+        ServerBackend, "start", lambda self, info, cfg, **k: events.append("stack") or ""
     )
     monkeypatch.setattr(ollama, "ensure_ollama", lambda *a, **k: pytest.fail("no native install"))
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: events.append("pull"))
@@ -656,15 +655,11 @@ def test_model_add_in_server_mode_brings_the_engine_container_up_first(
 def test_model_add_in_server_mode_still_only_checks_a_remote_engine(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
-
     config.save(config.Config(mode="server", engine_managed=False, engine_url="http://gpu-box:1"))
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     monkeypatch.setattr(health, "api_up", lambda url, **k: True)
-    monkeypatch.setattr(
-        backend,
-        "backend_for",
-        Backends(server=FakeBackend(on_start=lambda *a, **k: pytest.fail("not ours to start"))),
-    )
+    monkeypatch.setattr(system, "REAL", FakeSystem())
+    monkeypatch.setattr(ServerBackend, "start", lambda *a, **k: pytest.fail("not ours to start"))
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: None)
     result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
     assert result.exit_code == 0, result.output

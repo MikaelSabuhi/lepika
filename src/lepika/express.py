@@ -82,3 +82,43 @@ class ExpressBackend:
             content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
             out.append((log_file.name, "\n".join(content[-lines:])))
         return out
+
+    def notes(self, info: Machine, cfg: Config) -> list[str]:
+        """Before `lepika up` starts anything: whether config.toml's context length can apply."""
+        note = ollama.context_note(info, cfg, sys=self.sys)
+        return [] if note is None else [note]
+
+    def apply_engine_change(self, info: Machine, cfg: Config) -> bool:
+        """Make a running OpenWebUI use the engine just configured; did anything restart?
+
+        OpenWebUI reads the engine URL and key from its environment once, at startup, so
+        a UI that is already up keeps talking to the old engine no matter what the config
+        says — and `lepika up` would not fix it, because a healthy UI is left alone. This
+        is what makes `lepika connect` take effect on a live stack.
+        """
+        if not health.webui_up(cfg.webui_port, sys=self.sys):
+            return False
+        openwebui.restart_openwebui(cfg, info.os, sys=self.sys)
+        return True
+
+    def ensure_engine(self, info: Machine, cfg: Config) -> None:
+        """Have the engine ready to pull a model into: ours started, a remote one checked."""
+        if cfg.engine_managed:
+            ollama.ensure_ollama(
+                info, url=cfg.engine_url, context_length=cfg.context_length, sys=self.sys
+            )
+        else:
+            # A remote engine is someone else's to run: check it, never install for it.
+            health.check_remote_engine(cfg, sys=self.sys)
+
+    def release(self, info: Machine, cfg: Config) -> str | None:
+        """On the way to Server mode: stop the native Ollama LePika itself started."""
+        # `lepika down` leaves Ollama up on purpose, but Server's pre-flight refuses a
+        # port 11434 that a native engine holds. Only the one LePika started is stopped
+        # — anything else has no pid file — and rule 9 keeps a remote engine untouched,
+        # which is what `engine_managed` short-circuits before the call.
+        if not cfg.engine_managed:
+            return None
+        if ollama.stop_ollama(info.os, cfg.engine_url, key=cfg.engine_key, sys=self.sys):
+            return "Stopped the Ollama LePika had started."
+        return None

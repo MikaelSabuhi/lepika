@@ -247,12 +247,89 @@ def test_start_stack_with_remote_engine_does_not_wait_for_a_container(
     assert "engine" not in up_cmd
 
 
+def _every_profile(*tail: str) -> str:
+    """A compose command over every profile, as `FakeSystem` matches its leading words."""
+    every = server.compose_cmd(paths.stack_dir(), list(server.INACTIVE), gpu_overlay=False)
+    return " ".join([*every, *tail])
+
+
+def _stop(machine: FakeSystem) -> bool:
+    return ServerBackend(sys=machine, ui=FakeUI()).stop(LINUX_NVIDIA, config.Config(mode="server"))
+
+
+def _stack_down_events() -> list[dict[str, Any]]:
+    text = (paths.logs_dir() / log.LOG_FILE).read_text(encoding="utf-8")
+    events = [json.loads(line) for line in text.splitlines()]
+    return [event for event in events if event["event"] == "stack.down"]
+
+
 def test_stop_runs_compose_down(isolated_home: Path) -> None:
-    machine = FakeSystem(which=DOCKER)
-    assert (
-        ServerBackend(sys=machine, ui=FakeUI()).stop(LINUX_NVIDIA, config.Config(mode="server"))
-        is True
+    machine = FakeSystem(which=DOCKER, stdout={_every_profile("ps"): "3f2a9c\n7d1e04\n"})
+    assert _stop(machine) is True
+    assert any(c[-1] == "down" for c in machine.ran)
+
+
+def test_stop_asks_compose_for_the_stacks_containers_before_taking_them_down(
+    isolated_home: Path,
+) -> None:
+    """Every profile, stopped ones too (`-a`), as ids: a read, so it is not logged."""
+    machine = FakeSystem(which=DOCKER, stdout={_every_profile("ps"): "3f2a9c\n"})
+    _stop(machine)
+    compose = [
+        (c, k)
+        for c, k in zip(machine.ran, machine.ran_kwargs, strict=True)
+        if c[:2] == ["docker", "compose"]
+    ]
+    assert [" ".join(c) for c, _ in compose] == [
+        _every_profile("ps", "-a", "-q"),
+        _every_profile("down"),
+    ]
+    ps_kwargs = compose[0][1]
+    assert ps_kwargs["check"] is False and ps_kwargs["log"] is False
+    assert ps_kwargs["timeout"] is not None
+
+
+def test_stop_says_nothing_was_running_when_the_stack_had_no_containers(
+    isolated_home: Path,
+) -> None:
+    machine = FakeSystem(which=DOCKER, stdout={_every_profile("ps"): ""})
+    assert _stop(machine) is False
+    # Still run: `down` also removes the stack's network, which outlives its containers.
+    assert any(c[-1] == "down" for c in machine.ran)
+
+
+def test_stop_reports_a_compose_down_that_fails(isolated_home: Path) -> None:
+    """A failed stop is not "nothing was running": the containers may well still be up."""
+    machine = FakeSystem(
+        which=DOCKER,
+        stdout={_every_profile("ps"): "3f2a9c\n"},
+        codes={_every_profile("down"): 1},
     )
+    with pytest.raises(FriendlyError) as exc:
+        _stop(machine)
+    assert exc.value.problem == "`docker compose down` failed."
+    assert "lepika logs" in exc.value.fix
+    # Written before the error: the log still says what `down` exited with.
+    assert [event["exit"] for event in _stack_down_events()] == [1]
+
+
+def test_stop_that_cannot_list_the_containers_does_not_claim_nothing_was_running(
+    isolated_home: Path,
+) -> None:
+    machine = FakeSystem(which=DOCKER, codes={_every_profile("ps"): 1})
+    assert _stop(machine) is True
+    assert any(c[-1] == "down" for c in machine.ran)
+
+
+def test_stop_whose_container_listing_times_out_still_takes_the_stack_down(
+    isolated_home: Path,
+) -> None:
+    """The listing only decides what to say; a hung one must not skip the stop itself."""
+    machine = FakeSystem(
+        which=DOCKER,
+        raises={_every_profile("ps"): FriendlyError("Command timed out after 30s", "Try again")},
+    )
+    assert _stop(machine) is True
     assert any(c[-1] == "down" for c in machine.ran)
 
 

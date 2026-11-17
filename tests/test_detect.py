@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import io
-import urllib.request
-from typing import Any
-
 import pytest
 from fakes import FakeResponse, FakeSystem, routes
 
@@ -20,10 +16,6 @@ def _hung(program: str) -> FakeSystem:
     """A `program` that times out, the way `proc.run_logged` reports a wedged one."""
     timeout = FriendlyError(f"{program} timed out.", "Check that it still answers.")
     return FakeSystem(raises={program: timeout})
-
-
-def _engine_answers(request: urllib.request.Request) -> Any:
-    return io.BytesIO(b'{"version": "0.33.2"}')
 
 
 def test_detect_os_maps_platform_tags() -> None:
@@ -47,7 +39,7 @@ def test_detect_os_maps_platform_tags() -> None:
 def test_detect_reads_the_os_and_architecture_from_the_system(
     platform: str, architecture: str, os_name: str, arch: str, gpu: str
 ) -> None:
-    sys = FakeSystem(platform=platform, architecture=architecture, urls=_engine_answers)
+    sys = FakeSystem(platform=platform, architecture=architecture)
     info = detect.detect(sys=sys)
     assert (info.os, info.arch, info.gpu) == (os_name, arch, gpu)
 
@@ -85,10 +77,7 @@ def test_unknown_memory_is_a_friendly_error() -> None:
 
 def test_detect_makes_no_subprocess_call() -> None:
     """Rule 6: detecting the machine starts no process, whatever is installed."""
-    sys = FakeSystem(
-        which={"nvidia-smi": "/usr/bin/nvidia-smi", "docker": "/usr/bin/docker"},
-        urls=_engine_answers,
-    )
+    sys = FakeSystem(which={"nvidia-smi": "/usr/bin/nvidia-smi"})
     info = detect.detect(sys=sys)
     assert sys.ran == []
     assert sys.called == []

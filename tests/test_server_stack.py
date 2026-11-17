@@ -120,7 +120,11 @@ def test_start_stack_writes_env_ups_and_waits(isolated_home: Path) -> None:
     # before the hook runs, and the UI after it.
     assert _probed(machine) == [_ENGINE, _ENGINE, _UI]
     assert hook_ran_after == [2]
-    assert machine.requested[0].get_header("Authorization") is None
+    # Neither the port check nor the readiness wait sends the config's key.
+    engine_keys = [
+        r.get_header("Authorization") for r in machine.requested if r.full_url == _ENGINE
+    ]
+    assert engine_keys == [None, None]
     # Services from profiles that are not active are stopped explicitly — in one
     # compose call, not one per profile.
     stops = [c for c in machine.ran if "stop" in c]
@@ -186,9 +190,21 @@ def test_the_port_check_asks_the_stacks_own_port_not_the_configured_engine(
 def test_the_port_check_runs_after_docker_is_known_to_be_running(isolated_home: Path) -> None:
     """Asked when the check runs: Docker is confirmed first, the port second, and only
     an answering port is worth a `compose ps`."""
-    machine = _box({"docker info": "{}"})
+    ran_when_asked: list[list[list[str]]] = []
+    webui = routes({_UI: _UP})
+
+    def answer(request: urllib.request.Request) -> Any:
+        if request.full_url != _ENGINE:
+            return webui(request)
+        ran_when_asked.append([list(c) for c in machine.ran])
+        if any("up" in c for c in machine.called):
+            return _UP
+        raise OSError("connection refused")
+
+    machine = FakeSystem(stdout={"docker info": "{}"}, which=DOCKER, urls=answer)
     server.start_stack(LINUX_NVIDIA, config.Config(mode="server"), sys=machine, ui=FakeUI())
-    assert machine.ran[0] == ["docker", "info"]
+    # The port check: `docker info` had run, and nothing else had.
+    assert ran_when_asked[0] == [["docker", "info"]]
     assert not any("ps" in c for c in machine.ran)
 
 

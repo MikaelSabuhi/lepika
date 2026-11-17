@@ -84,7 +84,7 @@ def run_checks(info: Machine, *, sys: System) -> list[CheckResult]:
             checks.append(
                 CheckResult(
                     "Ollama installed",
-                    info.has_ollama,
+                    sys.which("ollama") is not None,
                     "Run `lepika` to install it, or see https://ollama.com/download",
                 )
             )

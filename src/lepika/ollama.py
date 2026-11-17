@@ -251,7 +251,7 @@ def ensure_ollama(
     def answering() -> bool:
         return health.api_up(url, sys=sys)
 
-    if not info.has_ollama:
+    if sys.which("ollama") is None:
         install_ollama(info, sys=sys)
     if answering():
         # Only an engine we started is ours to restart; any other keeps its own
@@ -292,9 +292,13 @@ def context_note(info: Machine, cfg: Config, *, sys: System) -> str | None:
     way to read an idle engine's context length, so this cannot check — it says
     where the setting lives on that engine. Quiet for the engine LePika itself
     started, which got the value at launch, and for a remote engine, which was
-    never ours to configure.
+    never ours to configure. Asked before the stack starts: an engine answering on
+    `engine_url` then is one `ensure_ollama` will adopt.
     """
-    if not (cfg.mode == "express" and cfg.engine_managed and info.ollama_running):
+    if not (cfg.mode == "express" and cfg.engine_managed):
+        return None
+    # No key: a managed engine takes none.
+    if not health.api_up(cfg.engine_url, sys=sys):
         return None
     if _ours(info.os, sys=sys):
         return None

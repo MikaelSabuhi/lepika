@@ -22,15 +22,19 @@ from lepika import (
     server,
     serving,
     stack_env,
+    system,
     ui,
     wizard,
 )
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
-LINUX_NVIDIA = detect.Machine("linux", "x86_64", "nvidia", 64.0, True, False, False)
-MAC = detect.Machine("macos", "arm64", "apple", 32.0, True, False, False)
+LINUX_NVIDIA = detect.Machine("linux", "x86_64", "nvidia", 64.0)
+MAC = detect.Machine("macos", "arm64", "apple", 32.0)
 REPO = "meta-llama/Llama-3.1-8B-Instruct"
+DOCKER = {"docker": "/usr/bin/docker"}
+# Port 11434, which Server's pre-flight asks about before anything starts: free here.
+PORT_FREE = {"http://127.0.0.1:11434/api/version": urllib.error.URLError("refused")}
 
 
 def test_uses_vllm_only_for_full_weight_repos() -> None:
@@ -63,7 +67,7 @@ def test_vllm_active_is_the_one_predicate_for_a_running_vllm() -> None:
     assert serving.vllm_active(config.Config(mode="express", model=REPO)) is False
 
 
-CPU_LINUX = detect.Machine("linux", "x86_64", "none", 64.0, True, False, False)
+CPU_LINUX = detect.Machine("linux", "x86_64", "none", 64.0)
 
 
 def test_validate_accepts_hf_repo_where_vllm_or_an_import_runs_and_rejects_elsewhere() -> None:
@@ -114,13 +118,15 @@ def test_start_stack_waits_for_vllm_not_ollama(isolated_home: Path) -> None:
     cfg = config.Config(mode="server", model=REPO)
     vllm = "http://127.0.0.1:8000/health"
     webui = "http://127.0.0.1:3000/health"
-    # No answer for Ollama's /api/version: probing it would fail the test.
+    port = "http://127.0.0.1:11434/api/version"
     machine = FakeSystem(
         stdout={"docker info": '{"nvidia": {}}'},
-        urls=routes({vllm: FakeResponse(), webui: FakeResponse()}),
+        which=DOCKER,
+        urls=routes({**PORT_FREE, vllm: FakeResponse(), webui: FakeResponse()}),
     )
     server.start_stack(LINUX_NVIDIA, cfg, sys=machine, ui=FakeUI())
-    assert [r.full_url for r in machine.requested] == [vllm, webui]
+    # After the pre-flight's look at port 11434, Ollama is never waited for.
+    assert [r.full_url for r in machine.requested] == [port, vllm, webui]
 
 
 def test_start_stack_vllm_without_toolkit_is_friendly(isolated_home: Path) -> None:
@@ -128,7 +134,7 @@ def test_start_stack_vllm_without_toolkit_is_friendly(isolated_home: Path) -> No
         server.start_stack(
             LINUX_NVIDIA,
             config.Config(mode="server", model=REPO),
-            sys=FakeSystem(stdout={"docker info": "{}"}),
+            sys=FakeSystem(stdout={"docker info": "{}"}, which=DOCKER, urls=routes(PORT_FREE)),
             ui=FakeUI(),
         )
     assert "Container Toolkit" in exc.value.fix
@@ -188,6 +194,7 @@ def test_wizard_saves_the_vllm_model_before_starting_the_stack(
     config.save(config.Config(mode="server"))
     seen: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
+    monkeypatch.setattr(system, "REAL", FakeSystem(which=DOCKER))
     monkeypatch.setattr(models, "load_curated", lambda **k: [])
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: REPO))
     monkeypatch.setattr(server, "hf_token_prompt", lambda env, **k: seen.append("token"))
@@ -211,6 +218,7 @@ def test_dry_run_says_it_would_start_vllm(
 ) -> None:
     config.save(config.Config(mode="server"))
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
+    monkeypatch.setattr(system, "REAL", FakeSystem(which=DOCKER))
     monkeypatch.setattr(models, "load_curated", lambda **k: [])
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: REPO))
     result = runner.invoke(cli.app, ["--dry-run", "--mode", "server"])
@@ -332,6 +340,7 @@ def test_wizard_starts_the_stack_for_the_ollama_model_it_is_about_to_pull(
     config.save(config.Config(mode="server", model=REPO))
     started: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
+    monkeypatch.setattr(system, "REAL", FakeSystem(which=DOCKER))
     monkeypatch.setattr(models, "load_curated", lambda **k: [])
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: "qwen3:8b"))
     monkeypatch.setattr(engine, "pull_model", lambda *a, **k: None)
@@ -375,6 +384,7 @@ def test_up_says_vllm_in_the_plan_sentence(
 ) -> None:
     config.save(config.Config(mode="server", model=REPO))
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
+    monkeypatch.setattr(system, "REAL", FakeSystem(which=DOCKER))
     monkeypatch.setattr(server, "gpu_note", lambda info, **k: None)
     monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "http://localhost:3000")
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)

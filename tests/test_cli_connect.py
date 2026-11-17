@@ -62,7 +62,7 @@ def test_connect_probes_with_the_key(monkeypatch: pytest.MonkeyPatch, isolated_h
     assert seen == ["k"]
 
 
-INFO = detect.Machine("linux", "x86_64", "nvidia", 32.0, False, True, True)
+INFO = detect.Machine("linux", "x86_64", "nvidia", 32.0)
 
 
 def test_connect_restarts_a_running_webui_at_the_new_engine(
@@ -145,7 +145,7 @@ def test_connect_without_url_or_local_is_a_usage_error(isolated_home: Path) -> N
 
 
 def test_start_stack_never_installs_a_remote_engine(monkeypatch: pytest.MonkeyPatch) -> None:
-    info = detect.Machine("linux", "x86_64", "nvidia", 32.0, False, False, False)
+    info = detect.Machine("linux", "x86_64", "nvidia", 32.0)
     cfg = config.Config(engine_managed=False, engine_url="http://gpu-box:11435", engine_key="k")
     monkeypatch.setattr(ollama, "ensure_ollama", lambda *a, **k: pytest.fail("must not install"))
     monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
@@ -158,7 +158,7 @@ def test_start_stack_never_installs_a_remote_engine(monkeypatch: pytest.MonkeyPa
 
 
 def test_start_stack_explains_an_unreachable_remote_engine(monkeypatch: pytest.MonkeyPatch) -> None:
-    info = detect.Machine("linux", "x86_64", "nvidia", 32.0, False, False, False)
+    info = detect.Machine("linux", "x86_64", "nvidia", 32.0)
     cfg = config.Config(engine_managed=False, engine_url="http://gpu-box:11435")
     monkeypatch.setattr(health, "api_up", lambda url, **k: False)
     with pytest.raises(FriendlyError) as exc:

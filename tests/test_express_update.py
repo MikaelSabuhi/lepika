@@ -18,9 +18,6 @@ def _info(os_name: str) -> detect.Machine:
         arch="x86_64",
         gpu="nvidia",
         ram_gb=32.0,
-        has_docker=False,
-        has_ollama=True,
-        ollama_running=True,
     )
 
 

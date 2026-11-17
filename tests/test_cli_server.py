@@ -3,12 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fakes import FakeSystem
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, express, health, server
+from lepika import cli, config, detect, express, health, server, system
 
 runner = CliRunner()
-DOCKER = detect.Machine("linux", "x86_64", "nvidia", 64.0, True, False, False)
+DOCKER = detect.Machine("linux", "x86_64", "nvidia", 64.0)
 
 
 @pytest.fixture()
@@ -17,6 +18,7 @@ def server_mode(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> list[st
     calls: list[str] = []
     config.save(config.Config(mode="server", model="qwen3:8b"))
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
+    monkeypatch.setattr(system, "REAL", FakeSystem(which={"docker": "/usr/bin/docker"}))
     monkeypatch.setattr(
         server,
         "start_stack",
@@ -70,9 +72,10 @@ def test_up_without_docker_says_so_before_probing_docker(
     "Command not found" instead of the friendly Express hint."""
     from lepika.errors import FriendlyError
 
-    no_docker = detect.Machine("linux", "x86_64", "nvidia", 64.0, False, False, False)
     config.save(config.Config(mode="server"))
-    monkeypatch.setattr(detect, "detect", lambda **k: no_docker)
+    monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
+    machine = FakeSystem()  # no Docker on the PATH
+    monkeypatch.setattr(system, "REAL", machine)
     monkeypatch.setattr(
         server, "gpu_note", lambda info, **k: pytest.fail("probed Docker before checking it exists")
     )
@@ -80,3 +83,4 @@ def test_up_without_docker_says_so_before_probing_docker(
     assert result.exit_code != 0
     assert isinstance(result.exception, FriendlyError)
     assert "Express" in result.exception.fix
+    assert machine.ran == []

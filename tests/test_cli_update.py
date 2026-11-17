@@ -11,7 +11,7 @@ from lepika import cli, detect, express, health, ollama, openwebui, proc
 from lepika.backend import UpdateStep
 
 runner = CliRunner()
-LINUX = detect.Machine("linux", "x86_64", "nvidia", 32.0, False, True, True)
+LINUX = detect.Machine("linux", "x86_64", "nvidia", 32.0)
 
 
 @pytest.fixture(autouse=True)
@@ -34,9 +34,6 @@ def test_update_upgrades_engine_and_webui(monkeypatch: pytest.MonkeyPatch) -> No
         arch="x86_64",
         gpu="nvidia",
         ram_gb=32.0,
-        has_docker=False,
-        has_ollama=True,
-        ollama_running=True,
     )
     monkeypatch.setattr(detect, "detect", lambda **k: info)
     monkeypatch.setattr(proc, "run_logged", fake_run)
@@ -67,9 +64,6 @@ def test_update_restarts_openwebui_rather_than_probing_the_dying_one(
         arch="x86_64",
         gpu="nvidia",
         ram_gb=32.0,
-        has_docker=False,
-        has_ollama=True,
-        ollama_running=True,
     )
     restarts: list[tuple[int, str]] = []
     monkeypatch.setattr(detect, "detect", lambda **k: info)
@@ -119,9 +113,6 @@ def test_down_gates_the_signal_on_the_configured_port(monkeypatch: pytest.Monkey
         arch="x86_64",
         gpu="nvidia",
         ram_gb=32.0,
-        has_docker=False,
-        has_ollama=True,
-        ollama_running=True,
     )
     seen: list[int | None] = []
     monkeypatch.setattr(detect, "detect", lambda **k: info)

@@ -19,6 +19,10 @@ from lepika.ui import UI
 
 STACK_FILES = ("compose.yml", "compose.nvidia.yml", "Caddyfile")
 VLLM_URL = "http://127.0.0.1:8000"
+# Where compose.yml publishes the engine container on this machine. Not
+# `config.DEFAULT_ENGINE_URL`: that is where a managed engine is reached, and
+# `engine_url` is the user's to edit; this port is the stack's own.
+HOST_ENGINE_URL = "http://127.0.0.1:11434"
 _TOOLKIT_URL = (
     "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
 )
@@ -202,8 +206,8 @@ def compose_cmd(stack: Path, active: list[str], gpu_overlay: bool) -> list[str]:
     return cmd
 
 
-def ensure_docker(info: Machine, retry: str = "lepika up", *, sys: System) -> None:
-    if not info.has_docker:
+def ensure_docker(retry: str = "lepika up", *, sys: System) -> None:
+    if sys.which("docker") is None:
         raise FriendlyError(
             "Server mode needs Docker, which is not installed.",
             "Install it from https://docs.docker.com/get-docker/ — or use Express mode "
@@ -268,9 +272,15 @@ def start_stack(
     Always runs `compose up -d`: it is idempotent, takes about a second when nothing
     changed, and is what makes `connect`/`expose` edits take effect.
     """
-    ensure_docker(info, sys=sys)
+    ensure_docker(sys=sys)
     stack = install_stack()
-    if cfg.engine_managed and info.ollama_running and not _our_ollama(stack, sys=sys):
+    # Asked now, not taken from detection: the wizard may have just stopped the Ollama
+    # that held the port. Cheapest first; no key, as it is a managed engine's port.
+    if (
+        cfg.engine_managed
+        and health.api_up(HOST_ENGINE_URL, sys=sys)
+        and not _our_ollama(stack, sys=sys)
+    ):
         raise FriendlyError(
             "Ollama is already running natively on port 11434, so the Docker engine can't bind it.",
             "Stop it first: `brew services stop ollama` (macOS), `systemctl stop ollama` "
@@ -340,7 +350,7 @@ def start_stack(
 
 def stop(info: Machine, cfg: Config, *, sys: System) -> bool:
     """`lepika down` in Server mode: stop and remove the containers; volumes stay."""
-    ensure_docker(info, retry="lepika down", sys=sys)
+    ensure_docker(retry="lepika down", sys=sys)
     stack = install_stack()
     every = list(INACTIVE)  # every profile, so nothing is left behind
     result = sys.run(
@@ -358,7 +368,7 @@ def update(
     ui: UI,
 ) -> list[UpdateStep]:
     """`lepika update` in Server mode: pull newer images, then reconcile."""
-    ensure_docker(info, retry="lepika update", sys=sys)
+    ensure_docker(retry="lepika update", sys=sys)
     stack = install_stack()
     log.get_logger().info("stack.update")
     base = compose_cmd(stack, profiles(cfg), gpu_overlay=False)

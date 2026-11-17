@@ -696,3 +696,10 @@ def test_fake_system_answers_platform_and_architecture() -> None:
     fake = FakeSystem(platform="win32", architecture="AMD64")
     assert fake.platform() == "win32"
     assert fake.architecture() == "AMD64"
+
+
+def test_fake_system_records_every_lookup_found_or_not() -> None:
+    fake = FakeSystem(which={"docker": "/usr/bin/docker"})
+    assert fake.which("docker") == "/usr/bin/docker"
+    assert fake.which("ollama") is None
+    assert fake.looked_up == ["docker", "ollama"]

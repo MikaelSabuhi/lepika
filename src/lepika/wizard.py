@@ -272,13 +272,13 @@ def choose_model(
     return resolve(models.parse_model_ref(answer), cfg, info, sys=sys, ui=ui)
 
 
-def choose_mode(info: Machine, current: str, *, ui: UI) -> str:
+def choose_mode(current: str, *, sys: System, ui: UI) -> str:
     """Express unless Docker is present AND the user picks Server.
 
     A machine without Docker never hears the question — and so is never nudged
     towards installing Docker for a mode it does not need.
     """
-    if not info.has_docker:
+    if sys.which("docker") is None:
         return "express"
     default = "2" if current == "server" else "1"
     ui.say("How should LePika run?")
@@ -320,15 +320,12 @@ def _report_stop_failure(exc: FriendlyError, *, ui: UI) -> None:
     ui.say(f"[yellow]Could not stop it cleanly: {escape(exc.problem)}[/yellow]")
 
 
-def leave_mode(info: Machine, previous: str, cfg: config.Config, *, ui: UI) -> Machine:
+def leave_mode(info: Machine, previous: str, cfg: config.Config, *, ui: UI) -> None:
     """Stop the stack we are switching away from, best effort.
 
     Both modes serve OpenWebUI on the same host port, so an abandoned stack does not
     just linger — it answers. `ensure_openwebui` would find the old container healthy,
     leave it alone, and open a UI that `lepika status` then reports as the other mode.
-
-    Returns `info` as it stands after the stop: detection ran before it, and Server's
-    pre-flight would otherwise refuse port 11434 for an Ollama that is already gone.
     """
     ui.say(
         f"Switching from {_MODE_LABEL[previous]} to {_MODE_LABEL[cfg.mode]} mode — "
@@ -354,26 +351,22 @@ def leave_mode(info: Machine, previous: str, cfg: config.Config, *, ui: UI) -> M
                 info.os, old_cfg.engine_url, key=old_cfg.engine_key, sys=system.REAL
             ):
                 ui.say("Stopped the Ollama LePika had started.")
-                # True means the API went quiet, not just that a signal was sent: the
-                # snapshot is corrected from what was verified, never re-probed.
-                info = dataclasses.replace(info, ollama_running=False)
         except FriendlyError as exc:
             _report_stop_failure(exc, ui=ui)
-    return info
 
 
 def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     info = detect.detect(sys=system.REAL)
     cfg = config.load()
     previous = cfg.mode
-    cfg.mode = mode if mode is not None else choose_mode(info, cfg.mode, ui=ui.REAL)
-    if cfg.mode == "server" and not info.has_docker:
+    cfg.mode = mode if mode is not None else choose_mode(cfg.mode, sys=system.REAL, ui=ui.REAL)
+    if cfg.mode == "server" and system.REAL.which("docker") is None:
         # Only reachable via `--mode server`: a clear error naming Express, never an
         # install prompt. Whether a present Docker is *running* is start_stack's
         # business — asking here would make --dry-run shell out.
-        server.ensure_docker(info, sys=system.REAL)
+        server.ensure_docker(sys=system.REAL)
     if cfg.mode != previous and not dry_run:
-        info = leave_mode(info, previous, cfg, ui=ui.REAL)
+        leave_mode(info, previous, cfg, ui=ui.REAL)
     ui.REAL.say(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))
     # The quant picker may read the Hub and ask nvidia-smi here, dry run or not: both are
     # reads, and the dry-run report then names the tag it would pull.

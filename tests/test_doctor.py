@@ -33,7 +33,13 @@ def machine(
                 "http://127.0.0.1:3000/health": FakeResponse() if webui else DOWN,
             }
         ),
-        which=which if which is not None else {"uv": "/usr/bin/uv", "docker": "/usr/bin/docker"},
+        which=which
+        if which is not None
+        else {
+            "uv": "/usr/bin/uv",
+            "docker": "/usr/bin/docker",
+            "ollama": "/usr/local/bin/ollama",
+        },
         **kwargs,
     )
 
@@ -42,15 +48,12 @@ def engine_probes(fake: FakeSystem) -> list[str]:
     return [r.full_url for r in fake.requested if r.full_url.endswith("/api/version")]
 
 
-def info(ram: float = 32.0, has_ollama: bool = True) -> Machine:
+def info(ram: float = 32.0) -> Machine:
     return Machine(
         os="linux",
         arch="x86_64",
         gpu="nvidia",
         ram_gb=ram,
-        has_docker=False,
-        has_ollama=has_ollama,
-        ollama_running=True,
     )
 
 
@@ -61,7 +64,7 @@ def test_all_green_when_everything_up(isolated_home: Path) -> None:
 
 def test_missing_ollama_has_hint(isolated_home: Path) -> None:
     results = doctor.run_checks(
-        info(has_ollama=False),
+        info(),
         sys=machine(engine=False, webui=False, which={"uv": "/usr/bin/uv"}),
     )
     failed = {r.name: r for r in results if not r.ok}
@@ -93,7 +96,7 @@ def test_remote_engine_skips_the_local_install_check_and_uses_the_key(isolated_h
         config.Config(engine_managed=False, engine_url="http://gpu-box:11435", engine_key="k")
     )
     fake = machine(engine_url="http://gpu-box:11435")
-    results = doctor.run_checks(info(has_ollama=False), sys=fake)
+    results = doctor.run_checks(info(), sys=fake)
     assert "Ollama installed" not in {r.name for r in results}
     seen = [
         r.get_header("Authorization") for r in fake.requested if r.full_url.endswith("/api/version")
@@ -165,7 +168,7 @@ def test_server_mode_checks_docker_instead_of_native_ollama(isolated_home: Path)
 
     config.save(config.Config(mode="server"))
     results = doctor.run_checks(
-        info(has_ollama=False),
+        info(),
         sys=machine(
             which={"docker": "/usr/bin/docker"},
             stdout={"docker info --format": '{"nvidia": {}}'},

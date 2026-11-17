@@ -1,11 +1,10 @@
-"""Detect what machine we're on and what's already installed."""
+"""Detect what machine we're on: the facts that cannot change while a command runs."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
 
-from lepika import config, health
 from lepika.errors import ISSUES_URL, FriendlyError
 from lepika.system import System
 
@@ -15,13 +14,14 @@ Gpu = Literal["apple", "nvidia", "none"]
 
 @dataclass(frozen=True)
 class Machine:
+    """Facts that hold for the whole command. Whether Docker or Ollama is installed,
+    or an engine is answering, can change while it runs, so each reader asks the
+    `System` at the moment it needs to know."""
+
     os: OsName
     arch: str
     gpu: Gpu
     ram_gb: float
-    has_docker: bool
-    has_ollama: bool
-    ollama_running: bool
 
 
 def detect_os(platform: str) -> OsName:
@@ -109,7 +109,8 @@ def detect_ram_gb(*, sys: System) -> float:
 
 
 def detect(*, sys: System) -> Machine:
-    """The machine as LePika needs it, read without starting a process (rule 6)."""
+    """The machine as LePika needs it, read without starting a process or opening a
+    URL (rule 6): the only lookup is `nvidia-smi`, which decides the GPU."""
     os_name = detect_os(sys.platform())
     arch = sys.architecture().lower()
     return Machine(
@@ -117,9 +118,6 @@ def detect(*, sys: System) -> Machine:
         arch=arch,
         gpu=detect_gpu(os_name, arch, sys=sys),
         ram_gb=detect_ram_gb(sys=sys),
-        has_docker=sys.which("docker") is not None,
-        has_ollama=sys.which("ollama") is not None,
-        ollama_running=health.api_up(config.DEFAULT_ENGINE_URL, sys=sys),
     )
 
 

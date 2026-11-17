@@ -9,7 +9,7 @@ from lepika import cli, config, detect, paths, server, stack_env
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
-DOCKER = detect.Machine("linux", "x86_64", "nvidia", 64.0, True, False, False)
+DOCKER = detect.Machine("linux", "x86_64", "nvidia", 64.0)
 
 
 @pytest.fixture()

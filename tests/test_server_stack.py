@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +12,10 @@ from lepika import config, detect, log, paths, server, stack_env
 from lepika.backend import UpdateStep
 from lepika.errors import FriendlyError
 
-LINUX_NVIDIA = detect.Machine("linux", "x86_64", "nvidia", 64.0, True, False, False)
-MAC = detect.Machine("macos", "arm64", "apple", 32.0, True, False, False)
-NO_DOCKER = detect.Machine("linux", "x86_64", "none", 16.0, False, False, False)
+LINUX_NVIDIA = detect.Machine("linux", "x86_64", "nvidia", 64.0)
+MAC = detect.Machine("macos", "arm64", "apple", 32.0)
+# Docker on the PATH: every Server-mode entry point asks before it runs `docker`.
+DOCKER = {"docker": "/usr/bin/docker"}
 
 
 def test_profiles_follow_config() -> None:
@@ -49,15 +51,18 @@ def test_nvidia_in_docker_checks_the_runtime_on_linux() -> None:
 
 
 def test_ensure_docker_without_docker_never_asks_to_install_it_first() -> None:
+    machine = FakeSystem()
     with pytest.raises(FriendlyError) as exc:
-        server.ensure_docker(NO_DOCKER, sys=FakeSystem())
+        server.ensure_docker(sys=machine)
     assert "Express" in exc.value.fix
     assert "docs.docker.com" in exc.value.fix
+    assert machine.looked_up == ["docker"]
+    assert machine.ran == []
 
 
 def test_ensure_docker_daemon_down_is_friendly() -> None:
     with pytest.raises(FriendlyError) as exc:
-        server.ensure_docker(LINUX_NVIDIA, sys=FakeSystem(codes={"docker": 1}))
+        server.ensure_docker(sys=FakeSystem(which=DOCKER, codes={"docker": 1}))
     assert "Docker" in exc.value.problem
 
 
@@ -70,9 +75,25 @@ def _probed(machine: FakeSystem) -> list[str]:
     return [request.full_url for request in machine.requested]
 
 
-def _box(stdout: dict[str, str | list[str]], **kwargs: Any) -> FakeSystem:
-    """A Docker host whose engine container and OpenWebUI both answer their probes."""
-    return FakeSystem(stdout=stdout, urls=routes({_ENGINE: _UP, _UI: _UP}), **kwargs)
+def _box(
+    stdout: dict[str, str | list[str]], *, port_taken: bool = False, **kwargs: Any
+) -> FakeSystem:
+    """A Docker host whose engine container and OpenWebUI both answer their probes.
+
+    Port 11434 answers once `compose up` has run, or from the start when `port_taken`:
+    an Ollama, native or the stack's own container, already holds it.
+    """
+    webui = routes({_UI: _UP})
+
+    def answer(request: urllib.request.Request) -> Any:
+        if request.full_url != _ENGINE:
+            return webui(request)
+        if port_taken or any("up" in c for c in machine.called):
+            return _UP
+        raise OSError("connection refused")
+
+    machine = FakeSystem(stdout=stdout, which=DOCKER, urls=answer, **kwargs)
+    return machine
 
 
 def test_start_stack_writes_env_ups_and_waits(isolated_home: Path) -> None:
@@ -95,9 +116,10 @@ def test_start_stack_writes_env_ups_and_waits(isolated_home: Path) -> None:
     assert str(isolated_home / "stack" / "compose.nvidia.yml") in up_cmd
     env = stack_env.read_env(isolated_home / "stack" / ".env")
     assert env["OLLAMA_BASE_URL"] == "http://ollama:11434"
-    # The engine is probed before the hook runs, and the UI after it.
-    assert _probed(machine) == [_ENGINE, _UI]
-    assert hook_ran_after == [1]
+    # Port 11434 is asked about before anything starts, then the engine is waited for
+    # before the hook runs, and the UI after it.
+    assert _probed(machine) == [_ENGINE, _ENGINE, _UI]
+    assert hook_ran_after == [2]
     assert machine.requested[0].get_header("Authorization") is None
     # Services from profiles that are not active are stopped explicitly — in one
     # compose call, not one per profile.
@@ -115,18 +137,14 @@ def test_start_stack_takes_the_shell_hf_token_from_the_system(isolated_home: Pat
     assert stack_env.read_env(isolated_home / "stack" / ".env")["HF_TOKEN"] == "from-shell"
 
 
-# Port 11434 already answers: either our own ollama container (a second `lepika up`)
-# or a native Ollama the container could never bind over.
-ENGINE_ANSWERING = detect.Machine("linux", "x86_64", "nvidia", 64.0, True, True, True)
-
-
 def _with_ps(ps_stdout: str) -> FakeSystem:
-    """A box where something already serves 11434.
+    """A box where something already serves 11434: either our own ollama container (a
+    second `lepika up`) or a native Ollama the container could never bind over.
 
     `docker compose ps -q ollama` is what tells the two apart: a container id means
     the engine on that port is ours.
     """
-    return _box({"docker info": '{"nvidia": {}}', "docker compose": ps_stdout})
+    return _box({"docker info": '{"nvidia": {}}', "docker compose": ps_stdout}, port_taken=True)
 
 
 def test_start_stack_proceeds_when_the_engine_on_11434_is_our_own_container(
@@ -134,9 +152,7 @@ def test_start_stack_proceeds_when_the_engine_on_11434_is_our_own_container(
 ) -> None:
     """The stack publishes 127.0.0.1:11434 itself, so a second `lepika up` must not refuse."""
     machine = _with_ps("9f8e7d6c5b4a\n")
-    url = server.start_stack(
-        ENGINE_ANSWERING, config.Config(mode="server"), sys=machine, ui=FakeUI()
-    )
+    url = server.start_stack(LINUX_NVIDIA, config.Config(mode="server"), sys=machine, ui=FakeUI())
     assert url == "http://localhost:3000"
     assert any(c[-3:] == ["up", "-d", "--remove-orphans"] for c in machine.called)
     ps_cmd = next(c for c in machine.ran if "ps" in c)
@@ -146,7 +162,7 @@ def test_start_stack_proceeds_when_the_engine_on_11434_is_our_own_container(
 def test_start_stack_refuses_when_native_ollama_holds_the_port(isolated_home: Path) -> None:
     machine = _with_ps("")
     with pytest.raises(FriendlyError) as exc:
-        server.start_stack(ENGINE_ANSWERING, config.Config(mode="server"), sys=machine, ui=FakeUI())
+        server.start_stack(LINUX_NVIDIA, config.Config(mode="server"), sys=machine, ui=FakeUI())
     assert "11434" in exc.value.problem
     # A loopback-bound native Ollama is not reachable from a container, so the only
     # real way forward is stopping it.
@@ -155,10 +171,31 @@ def test_start_stack_refuses_when_native_ollama_holds_the_port(isolated_home: Pa
     assert machine.called == []
 
 
+def test_the_port_check_asks_the_stacks_own_port_not_the_configured_engine(
+    isolated_home: Path,
+) -> None:
+    """`engine_url` is the user's to edit; the port compose publishes is not."""
+    machine = _with_ps("")
+    cfg = config.Config(mode="server", engine_url="http://127.0.0.1:11500")
+    with pytest.raises(FriendlyError) as exc:
+        server.start_stack(LINUX_NVIDIA, cfg, sys=machine, ui=FakeUI())
+    assert "11434" in exc.value.problem
+    assert _probed(machine) == [server.HOST_ENGINE_URL + "/api/version"]
+
+
+def test_the_port_check_runs_after_docker_is_known_to_be_running(isolated_home: Path) -> None:
+    """Asked when the check runs: Docker is confirmed first, the port second, and only
+    an answering port is worth a `compose ps`."""
+    machine = _box({"docker info": "{}"})
+    server.start_stack(LINUX_NVIDIA, config.Config(mode="server"), sys=machine, ui=FakeUI())
+    assert machine.ran[0] == ["docker", "info"]
+    assert not any("ps" in c for c in machine.ran)
+
+
 def test_start_stack_refuses_to_expose_without_an_api_key(isolated_home: Path) -> None:
     # An empty key makes Caddy's `Bearer {$LEPIKA_API_KEY}` matcher accept a bare
     # `Bearer ` header, so exposing without one is an open proxy.
-    machine = FakeSystem(stdout={"docker info": "{}"})
+    machine = _box({"docker info": "{}"})
     with pytest.raises(FriendlyError) as exc:
         server.start_stack(
             LINUX_NVIDIA, config.Config(mode="server", exposed=True), sys=machine, ui=FakeUI()
@@ -168,7 +205,7 @@ def test_start_stack_refuses_to_expose_without_an_api_key(isolated_home: Path) -
 
 
 def test_start_stack_compose_failure_is_friendly(isolated_home: Path) -> None:
-    machine = FakeSystem(stdout={"docker info": "{}"}, codes={"docker compose": 1})
+    machine = _box({"docker info": "{}"}, codes={"docker compose": 1})
     with pytest.raises(FriendlyError) as exc:
         server.start_stack(LINUX_NVIDIA, config.Config(mode="server"), sys=machine, ui=FakeUI())
     assert "lepika logs" in exc.value.fix
@@ -184,7 +221,9 @@ def test_start_stack_with_remote_engine_does_not_wait_for_a_container(
         engine_key="k",
     )
     remote = "http://gpu-box:11435/api/version"
-    machine = FakeSystem(stdout={"docker info": "{}"}, urls=routes({remote: _UP, _UI: _UP}))
+    machine = FakeSystem(
+        stdout={"docker info": "{}"}, which=DOCKER, urls=routes({remote: _UP, _UI: _UP})
+    )
     server.start_stack(LINUX_NVIDIA, cfg, sys=machine, ui=FakeUI())
     # Asked once, with its key; nothing waits for a local engine.
     engine_probes = [r for r in machine.requested if r.full_url != _UI]
@@ -196,13 +235,13 @@ def test_start_stack_with_remote_engine_does_not_wait_for_a_container(
 
 
 def test_stop_runs_compose_down(isolated_home: Path) -> None:
-    machine = FakeSystem()
+    machine = FakeSystem(which=DOCKER)
     assert server.stop(LINUX_NVIDIA, config.Config(mode="server"), sys=machine) is True
     assert any(c[-1] == "down" for c in machine.ran)
 
 
 def test_update_pulls_then_starts(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    machine = FakeSystem(stdout={"docker info": "{}"})
+    machine = FakeSystem(stdout={"docker info": "{}"}, which=DOCKER)
     started: list[str] = []
     monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: started.append("up") or "u")
     server.update(LINUX_NVIDIA, config.Config(mode="server"), sys=machine, ui=FakeUI())
@@ -217,7 +256,8 @@ def _image_ids(before: str, after: str) -> FakeSystem:
             "docker info": "{}",
             "docker compose": "ollama/ollama:latest\n",
             "docker image inspect": [before, after],
-        }
+        },
+        which=DOCKER,
     )
 
 
@@ -266,7 +306,7 @@ def test_server_update_reports_upgraded_when_images_appear_for_the_first_time(
 @pytest.mark.parametrize(
     "machine",
     [
-        FakeSystem(stdout={"docker info": "{}", "docker compose": ""}),
+        FakeSystem(stdout={"docker info": "{}", "docker compose": ""}, which=DOCKER),
         _image_ids("", ""),
         _image_ids("sha256:aaa\n", ""),
     ],
@@ -312,7 +352,9 @@ def test_stop_with_the_daemon_down_says_to_retry_down(isolated_home: Path) -> No
     """`lepika down` cannot finish without the daemon: the containers come back with it."""
     with pytest.raises(FriendlyError) as exc:
         server.stop(
-            LINUX_NVIDIA, config.Config(mode="server"), sys=FakeSystem(codes={"docker info": 1})
+            LINUX_NVIDIA,
+            config.Config(mode="server"),
+            sys=FakeSystem(which=DOCKER, codes={"docker info": 1}),
         )
     assert "not running" in exc.value.problem
     assert "lepika down" in exc.value.fix
@@ -326,7 +368,7 @@ def test_update_with_the_daemon_down_says_to_retry_update(
         server.update(
             LINUX_NVIDIA,
             config.Config(mode="server"),
-            sys=FakeSystem(codes={"docker info": 1}),
+            sys=FakeSystem(which=DOCKER, codes={"docker info": 1}),
             ui=FakeUI(),
         )
     assert "lepika update" in exc.value.fix

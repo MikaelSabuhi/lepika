@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 from lepika import health, log, serving, stack_env
 from lepika.backend import UpdateStep
 from lepika.config import Config
-from lepika.detect import SystemInfo
+from lepika.detect import Machine
 from lepika.errors import FriendlyError
 from lepika.paths import logs_dir, stack_dir
 from lepika.system import System
@@ -19,6 +19,10 @@ from lepika.ui import UI
 
 STACK_FILES = ("compose.yml", "compose.nvidia.yml", "Caddyfile")
 VLLM_URL = "http://127.0.0.1:8000"
+# Where compose.yml publishes the engine container on this machine. Not
+# `config.DEFAULT_ENGINE_URL`: that is where a managed engine is reached, and
+# `engine_url` is the user's to edit; this port is the stack's own.
+HOST_ENGINE_URL = "http://127.0.0.1:11434"
 _TOOLKIT_URL = (
     "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
 )
@@ -174,7 +178,7 @@ def hf_token_prompt(env_path: Path, *, sys: System, ui: UI) -> None:
     stack_env.write_env(env_path, {"HF_TOKEN": token})
 
 
-def nvidia_in_docker(info: SystemInfo, *, sys: System) -> bool:
+def nvidia_in_docker(info: Machine, *, sys: System) -> bool:
     """Can Docker hand the NVIDIA GPU to a container? (Linux: the toolkit registers a runtime.)"""
     if info.gpu != "nvidia":
         return False
@@ -202,8 +206,8 @@ def compose_cmd(stack: Path, active: list[str], gpu_overlay: bool) -> list[str]:
     return cmd
 
 
-def ensure_docker(info: SystemInfo, retry: str = "lepika up", *, sys: System) -> None:
-    if not info.has_docker:
+def ensure_docker(retry: str = "lepika up", *, sys: System) -> None:
+    if sys.which("docker") is None:
         raise FriendlyError(
             "Server mode needs Docker, which is not installed.",
             "Install it from https://docs.docker.com/get-docker/ — or use Express mode "
@@ -245,7 +249,7 @@ def _compose_failed(step: str) -> FriendlyError:
     )
 
 
-def gpu_note(info: SystemInfo, *, sys: System) -> str | None:
+def gpu_note(info: Machine, *, sys: System) -> str | None:
     """One line when an NVIDIA GPU exists but Docker can't see it; None otherwise."""
     if info.gpu == "nvidia" and info.os == "linux" and not nvidia_in_docker(info, sys=sys):
         return (
@@ -256,7 +260,7 @@ def gpu_note(info: SystemInfo, *, sys: System) -> str | None:
 
 
 def start_stack(
-    info: SystemInfo,
+    info: Machine,
     cfg: Config,
     after_engine: Callable[[], None] | None = None,
     *,
@@ -268,9 +272,15 @@ def start_stack(
     Always runs `compose up -d`: it is idempotent, takes about a second when nothing
     changed, and is what makes `connect`/`expose` edits take effect.
     """
-    ensure_docker(info, sys=sys)
+    ensure_docker(sys=sys)
     stack = install_stack()
-    if cfg.engine_managed and info.ollama_running and not _our_ollama(stack, sys=sys):
+    # Asked now, not taken from detection: the wizard may have just stopped the Ollama
+    # that held the port. Cheapest first; no key, as it is a managed engine's port.
+    if (
+        cfg.engine_managed
+        and health.api_up(HOST_ENGINE_URL, sys=sys)
+        and not _our_ollama(stack, sys=sys)
+    ):
         raise FriendlyError(
             "Ollama is already running natively on port 11434, so the Docker engine can't bind it.",
             "Stop it first: `brew services stop ollama` (macOS), `systemctl stop ollama` "
@@ -338,9 +348,9 @@ def start_stack(
     return health.webui_url(cfg.webui_port)
 
 
-def stop(info: SystemInfo, cfg: Config, *, sys: System) -> bool:
+def stop(info: Machine, cfg: Config, *, sys: System) -> bool:
     """`lepika down` in Server mode: stop and remove the containers; volumes stay."""
-    ensure_docker(info, retry="lepika down", sys=sys)
+    ensure_docker(retry="lepika down", sys=sys)
     stack = install_stack()
     every = list(INACTIVE)  # every profile, so nothing is left behind
     result = sys.run(
@@ -351,14 +361,14 @@ def stop(info: SystemInfo, cfg: Config, *, sys: System) -> bool:
 
 
 def update(
-    info: SystemInfo,
+    info: Machine,
     cfg: Config,
     *,
     sys: System,
     ui: UI,
 ) -> list[UpdateStep]:
     """`lepika update` in Server mode: pull newer images, then reconcile."""
-    ensure_docker(info, retry="lepika update", sys=sys)
+    ensure_docker(retry="lepika update", sys=sys)
     stack = install_stack()
     log.get_logger().info("stack.update")
     base = compose_cmd(stack, profiles(cfg), gpu_overlay=False)

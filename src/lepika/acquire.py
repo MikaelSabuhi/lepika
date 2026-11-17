@@ -17,7 +17,7 @@ from pathlib import Path
 from rich.markup import escape
 
 from lepika import config, engine, gguf, hf, mlx, models, paths, serving
-from lepika.detect import SystemInfo
+from lepika.detect import Machine
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
 from lepika.system import System
@@ -53,7 +53,7 @@ def preflight_with_token(
         return hf.preflight(repo, token, sys=sys), token
 
 
-def _ram_advisory(label: str, quantized: int, info: SystemInfo, *, ui: UI) -> None:
+def _ram_advisory(label: str, quantized: int, info: Machine, *, ui: UI) -> None:
     """Advice, never a refusal: it is the user's machine and the user's model."""
     if quantized > info.ram_gb * 0.75 * 2**30:
         ui.say(
@@ -63,7 +63,7 @@ def _ram_advisory(label: str, quantized: int, info: SystemInfo, *, ui: UI) -> No
 
 
 def import_repo(
-    info: SystemInfo,
+    info: Machine,
     cfg: config.Config,
     ref: ModelRef,
     quant: str = engine.IMPORT_QUANT,
@@ -186,7 +186,7 @@ def check_local(source: Path, name: str) -> None:
 
 
 def import_local(
-    info: SystemInfo,
+    info: Machine,
     cfg: config.Config,
     source: Path,
     name: str,
@@ -248,7 +248,7 @@ def import_local(
 
 
 def acquire(
-    info: SystemInfo,
+    info: Machine,
     cfg: config.Config,
     ref: ModelRef,
     quant: str = engine.IMPORT_QUANT,

@@ -110,16 +110,16 @@ def up() -> None:
     cfg = config.load()
     ui.REAL.say(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))
     # A CPU-bound container on a GPU machine is a mystery worth one line up front.
-    # `has_docker` first: gpu_note runs `docker info`, and without the binary that
+    # Docker's presence first: gpu_note runs `docker info`, and without the binary that
     # would replace Server mode's Express hint with a generic "command not found".
     if (
         cfg.mode == "server"
-        and info.has_docker
+        and system.REAL.which("docker") is not None
         and (note := server.gpu_note(info, sys=system.REAL)) is not None
     ):
         ui.REAL.say(f"[yellow]{escape(note)}[/yellow]")
-    # `info` is the pre-start snapshot: an engine running now is one `start_stack`
-    # will adopt, and the context length in config.toml will not reach it.
+    # Asked before `start_stack`, and that order is the point: an engine answering
+    # now is one the start will adopt, so config.toml's context length cannot reach it.
     if (note := ollama.context_note(info, cfg, sys=system.REAL)) is not None:
         ui.REAL.say(f"[yellow]{escape(note)}[/yellow]")
     _ready(cfg, _backend(cfg).start_stack(info, cfg, sys=system.REAL, ui=ui.REAL))

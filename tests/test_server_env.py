@@ -11,7 +11,7 @@ from fakes import FakeSystem, FakeUI
 
 from lepika import config, detect, server, serving, stack_env
 
-INFO = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
+INFO = detect.Machine("linux", "x86_64", "nvidia", 64.0)
 
 
 def test_install_stack_copies_the_bundled_files_and_overwrites(isolated_home: Path) -> None:

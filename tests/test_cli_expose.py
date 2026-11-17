@@ -9,7 +9,7 @@ from lepika import cli, config, detect, paths, server, stack_env
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
-DOCKER = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
+DOCKER = detect.Machine("linux", "x86_64", "nvidia", 64.0)
 
 
 @pytest.fixture()
@@ -104,7 +104,7 @@ def test_the_key_is_in_the_env_before_the_stack_starts(
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
     monkeypatch.setattr(server, "lan_ips", lambda **k: ["192.168.1.20"])
 
-    def record_start(info: detect.SystemInfo, cfg: config.Config, **kwargs: object) -> str:
+    def record_start(info: detect.Machine, cfg: config.Config, **kwargs: object) -> str:
         seen.append(
             stack_env.read_env(paths.stack_dir() / stack_env.ENV_FILE).get("LEPIKA_API_KEY", "")
         )

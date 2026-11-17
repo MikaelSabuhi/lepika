@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import json
 import shlex
 import signal
@@ -13,25 +12,23 @@ import pytest
 from fakes import FakeResponse, FakeSystem, UnansweredURL, routes
 
 from lepika import config, health, mlx, ollama, paths, serving
-from lepika.detect import SystemInfo
+from lepika.detect import Machine
 from lepika.errors import FriendlyError
 from lepika.paths import logs_dir
 from lepika.system import Response
 
 
-def info_for(os_name: str, has_ollama: bool = False) -> SystemInfo:
-    return SystemInfo(
+def info_for(os_name: str) -> Machine:
+    return Machine(
         os=os_name,  # type: ignore[arg-type]
         arch="x86_64",
         gpu="none",
         ram_gb=16.0,
-        has_docker=False,
-        has_ollama=has_ollama,
-        ollama_running=False,
     )
 
 
 _URL = "http://127.0.0.1:11434"
+INSTALLED = {"ollama": "/usr/local/bin/ollama"}
 
 
 def answering(*up: bool, url: str = _URL, **kwargs: Any) -> FakeSystem:
@@ -343,19 +340,27 @@ def test_stop_ollama_survives_a_process_that_is_already_gone(isolated_home: Path
 
 
 def test_ensure_ollama_skips_install_and_start_when_running() -> None:
-    machine = answering(True)
-    ollama.ensure_ollama(info_for("linux", has_ollama=True), context_length=16384, sys=machine)
+    machine = answering(True, which=INSTALLED)
+    ollama.ensure_ollama(info_for("linux"), context_length=16384, sys=machine)
     assert machine.ran == []
+    assert machine.spawned == []
+    assert machine.looked_up == ["ollama"]
+
+
+def test_ensure_ollama_installs_when_ollama_is_not_on_the_path() -> None:
+    """Asked when it is needed: nothing found means install, then use what answers."""
+    machine = answering(True, which={"brew": "/opt/homebrew/bin/brew"})
+    ollama.ensure_ollama(info_for("macos"), context_length=16384, sys=machine)
+    assert machine.ran == [["brew", "install", "ollama"]]
+    assert machine.looked_up[0] == "ollama"
     assert machine.spawned == []
 
 
 def test_ensure_ollama_probes_the_url_it_is_given() -> None:
     """A configured remote engine must be probed there, not on the local default."""
     url = "http://gpu-box.local:11434"
-    machine = answering(True, url=url)
-    ollama.ensure_ollama(
-        info_for("linux", has_ollama=True), context_length=16384, url=url, sys=machine
-    )
+    machine = answering(True, url=url, which=INSTALLED)
+    ollama.ensure_ollama(info_for("linux"), context_length=16384, url=url, sys=machine)
     assert _probed(machine) == [f"{url}/api/version"]
     # The engine it manages is probed without a key.
     assert [r.get_header("Authorization") for r in machine.requested] == [None]
@@ -367,8 +372,8 @@ def test_wait_for_raises_after_timeout() -> None:
         health.wait_for(lambda: False, seconds=3, what="Ollama API", sys=FakeSystem())
 
 
-def _info(os_name: str, arch: str, gpu: str) -> SystemInfo:
-    return SystemInfo(os_name, arch, gpu, 32.0, False, True, True)  # type: ignore[arg-type]
+def _info(os_name: str, arch: str, gpu: str) -> Machine:
+    return Machine(os_name, arch, gpu, 32.0)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -466,8 +471,8 @@ def _linux_install(tmp_path: Path, with_mlx: bool = False) -> tuple[Path, dict[s
 # The rest of the Linux pipeline, on PATH.
 _PIPELINE = {name: f"/usr/bin/{name}" for name in ("zstd", "curl", "tar")}
 
-NVIDIA_LINUX = SystemInfo("linux", "x86_64", "nvidia", 64.0, False, True, True)
-NVIDIA_WINDOWS = SystemInfo("windows", "amd64", "nvidia", 64.0, False, True, True)
+NVIDIA_LINUX = Machine("linux", "x86_64", "nvidia", 64.0)
+NVIDIA_WINDOWS = Machine("windows", "amd64", "nvidia", 64.0)
 
 
 class NeverProbes(FakeSystem):
@@ -479,7 +484,7 @@ def test_ensure_mlx_is_a_no_op_on_macos_and_when_the_bundle_is_present(tmp_path:
     _root, which = _linux_install(tmp_path, with_mlx=True)
     # macOS returns before it looks at anything: every effect is faked, and none is used.
     mac = NeverProbes(stdout=SMI13)
-    mlx.ensure_mlx(SystemInfo("macos", "arm64", "apple", 32.0, False, True, True), sys=mac)
+    mlx.ensure_mlx(Machine("macos", "arm64", "apple", 32.0), sys=mac)
     assert (mac.ran, mac.called, mac.write_probes) == ([], [], [])
     linux = FakeSystem(which=which, stdout=SMI13)
     mlx.ensure_mlx(NVIDIA_LINUX, sys=linux)
@@ -667,46 +672,65 @@ def test_ensure_ollama_starts_the_engine_with_the_configured_context_length(
     isolated_home: Path,
 ) -> None:
     # Down when asked, up once started.
-    machine = answering(False, True)
-    ollama.ensure_ollama(info_for("linux", has_ollama=True), context_length=8192, sys=machine)
+    machine = answering(False, True, which=INSTALLED)
+    ollama.ensure_ollama(info_for("linux"), context_length=8192, sys=machine)
     _, env, _log = machine.spawned[0]
     assert env["OLLAMA_CONTEXT_LENGTH"] == "8192"
 
 
 def test_context_note_when_someone_elses_engine_was_already_up(isolated_home: Path) -> None:
     """The tray app or brew started it: our env never reached it, so say how to set it."""
-    info = dataclasses.replace(info_for("windows", has_ollama=True), ollama_running=True)
-    note = ollama.context_note(info, config.Config(context_length=16384), sys=FakeSystem())
+    machine = answering(True)
+    note = ollama.context_note(
+        info_for("windows"), config.Config(context_length=16384), sys=machine
+    )
     assert note is not None
     assert "16384" in note
     assert "Settings" in note  # the Windows app has a Context length setting
 
 
 def test_context_note_on_posix_says_to_restart(isolated_home: Path) -> None:
-    info = dataclasses.replace(info_for("linux", has_ollama=True), ollama_running=True)
-    note = ollama.context_note(info, config.Config(), sys=FakeSystem())
+    note = ollama.context_note(info_for("linux"), config.Config(), sys=answering(True))
     assert note is not None
     assert "lepika up" in note
 
 
 def test_context_note_is_silent_when_nothing_was_running(isolated_home: Path) -> None:
-    info = info_for("linux", has_ollama=True)
-    assert ollama.context_note(info, config.Config(), sys=FakeSystem()) is None
+    machine = answering(False)
+    assert ollama.context_note(info_for("linux"), config.Config(), sys=machine) is None
+    assert _probed(machine) == [f"{_URL}/api/version"]
+    assert machine.ran == []  # nothing answering: no pid to check
+
+
+def test_context_note_asks_the_engine_the_config_names(isolated_home: Path) -> None:
+    """The engine `lepika up` adopts is the one at `engine_url`, wherever that is."""
+    url = "http://127.0.0.1:11500"
+    machine = answering(True, url=url)
+    cfg = config.Config(engine_url=url)
+    assert ollama.context_note(info_for("linux"), cfg, sys=machine) is not None
+    assert _probed(machine) == [f"{url}/api/version"]
+    # A managed engine takes no key.
+    assert [r.get_header("Authorization") for r in machine.requested] == [None]
 
 
 def test_context_note_is_silent_for_our_own_engine(isolated_home: Path) -> None:
     """An Ollama LePika started got the env at launch; the note would be noise."""
     paths.pid_file("ollama").write_text("4242")
-    machine = FakeSystem(stdout={"ps -p 4242": "/usr/local/bin/ollama\n"})
-    info = dataclasses.replace(info_for("linux", has_ollama=True), ollama_running=True)
-    assert ollama.context_note(info, config.Config(), sys=machine) is None
+    machine = answering(True, stdout={"ps -p 4242": "/usr/local/bin/ollama\n"})
+    assert ollama.context_note(info_for("linux"), config.Config(), sys=machine) is None
     assert machine.ran == [["ps", "-p", "4242", "-o", "comm="]]
 
 
 def test_context_note_is_silent_for_a_remote_engine(isolated_home: Path) -> None:
-    info = dataclasses.replace(info_for("linux", has_ollama=True), ollama_running=True)
     cfg = config.Config(engine_managed=False, engine_url="http://gpu-box:11435")
-    assert ollama.context_note(info, cfg, sys=FakeSystem()) is None
+    # No answers: asking the remote engine would fail the test.
+    assert ollama.context_note(info_for("linux"), cfg, sys=FakeSystem()) is None
+
+
+def test_context_note_is_silent_in_server_mode_without_asking(isolated_home: Path) -> None:
+    """The container gets the setting from `.env`; there is nothing to note or probe."""
+    cfg = config.Config(mode="server")
+    assert ollama.context_note(info_for("linux"), cfg, sys=FakeSystem()) is None
 
 
 class OurEngine(FakeSystem):
@@ -716,6 +740,7 @@ class OurEngine(FakeSystem):
     def __init__(self, environ: dict[str, str] | None = None) -> None:
         super().__init__(
             stdout={"ps -p 4242": "/usr/local/bin/ollama\n"},
+            which=INSTALLED,
             environ=environ if environ is not None else {},
             urls=self._version,
         )
@@ -743,9 +768,7 @@ class OurEngine(FakeSystem):
         return [pid for pid, _sig in self.signals]
 
     def ensure(self, context_length: int) -> None:
-        ollama.ensure_ollama(
-            info_for("linux", has_ollama=True), context_length=context_length, sys=self
-        )
+        ollama.ensure_ollama(info_for("linux"), context_length=context_length, sys=self)
 
 
 def test_ensure_ollama_restarts_our_engine_when_the_context_length_changed(

@@ -7,7 +7,7 @@ import shlex
 from pathlib import Path
 
 from lepika import log
-from lepika.detect import SystemInfo
+from lepika.detect import Machine
 from lepika.errors import FriendlyError
 from lepika.system import System
 
@@ -67,7 +67,7 @@ def cuda_major(*, sys: System) -> int:
     return int(match.group(1)) if match else 0
 
 
-def ensure_mlx(info: SystemInfo, *, sys: System) -> None:
+def ensure_mlx(info: Machine, *, sys: System) -> None:
     """Make sure Ollama can run an imported (safetensors) model on this machine.
 
     macOS arm64 builds carry the MLX runner; Linux and Windows get it from a

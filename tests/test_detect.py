@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import io
-import urllib.request
-from typing import Any
-
 import pytest
 from fakes import FakeResponse, FakeSystem, routes
 
-from lepika import config, detect, health
+from lepika import detect, health
 from lepika.errors import FriendlyError
 
 _NVIDIA_SMI = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
@@ -22,16 +18,30 @@ def _hung(program: str) -> FakeSystem:
     return FakeSystem(raises={program: timeout})
 
 
-def _engine_answers(request: urllib.request.Request) -> Any:
-    return io.BytesIO(b'{"version": "0.33.2"}')
+def test_detect_os_maps_platform_tags() -> None:
+    assert detect.detect_os("darwin") == "macos"
+    assert detect.detect_os("linux") == "linux"
+    assert detect.detect_os("win32") == "windows"
+    with pytest.raises(FriendlyError) as exc:
+        detect.detect_os("freebsd14")
+    assert exc.value.problem == "Unsupported operating system: freebsd14"
+    assert exc.value.fix == "LePika supports macOS, Linux, and Windows."
 
 
-def test_detect_os_maps_platform_names() -> None:
-    assert detect.detect_os("Darwin") == "macos"
-    assert detect.detect_os("Linux") == "linux"
-    assert detect.detect_os("Windows") == "windows"
-    with pytest.raises(FriendlyError):
-        detect.detect_os("SunOS")
+@pytest.mark.parametrize(
+    ("platform", "architecture", "os_name", "arch", "gpu"),
+    [
+        ("darwin", "arm64", "macos", "arm64", "apple"),
+        ("linux", "x86_64", "linux", "x86_64", "none"),
+        ("win32", "AMD64", "windows", "amd64", "none"),
+    ],
+)
+def test_detect_reads_the_os_and_architecture_from_the_system(
+    platform: str, architecture: str, os_name: str, arch: str, gpu: str
+) -> None:
+    sys = FakeSystem(platform=platform, architecture=architecture)
+    info = detect.detect(sys=sys)
+    assert (info.os, info.arch, info.gpu) == (os_name, arch, gpu)
 
 
 def test_detect_gpu_apple_silicon() -> None:
@@ -67,25 +77,29 @@ def test_unknown_memory_is_a_friendly_error() -> None:
 
 def test_detect_makes_no_subprocess_call() -> None:
     """Rule 6: detecting the machine starts no process, whatever is installed."""
-    sys = FakeSystem(
-        which={"nvidia-smi": "/usr/bin/nvidia-smi", "docker": "/usr/bin/docker"},
-        urls=_engine_answers,
-    )
+    sys = FakeSystem(which={"nvidia-smi": "/usr/bin/nvidia-smi"})
     info = detect.detect(sys=sys)
     assert sys.ran == []
     assert sys.called == []
     assert sys.spawned == []
     assert sys.streamed == []
     assert info.ram_gb == 16.0
-    assert info.has_docker is True
-    assert info.has_ollama is False
-    assert info.ollama_running is True
 
 
-def test_detect_probes_the_default_engine_url() -> None:
-    sys = FakeSystem(urls=_engine_answers)
-    detect.detect(sys=sys)
-    assert [r.full_url for r in sys.requested] == [config.DEFAULT_ENGINE_URL + "/api/version"]
+def test_detect_asks_no_url_and_looks_up_nothing_but_nvidia_smi() -> None:
+    """What is installed and what is running can change while a command runs, so each
+    reader asks at the moment it needs to; detection reads only fixed facts."""
+    sys = FakeSystem(
+        which={
+            "nvidia-smi": "/usr/bin/nvidia-smi",
+            "docker": "/usr/bin/docker",
+            "ollama": "/usr/local/bin/ollama",
+        }
+    )
+    info = detect.detect(sys=sys)
+    assert sys.requested == []
+    assert sys.looked_up == ["nvidia-smi"]
+    assert info == detect.Machine(os="linux", arch="x86_64", gpu="nvidia", ram_gb=16.0)
 
 
 def test_api_up_true_and_false() -> None:
@@ -110,14 +124,11 @@ def test_api_up_without_key_sends_no_authorization_header() -> None:
 
 
 def test_plan_sentence_mentions_gpu_and_mode() -> None:
-    info = detect.SystemInfo(
+    info = detect.Machine(
         os="macos",
         arch="arm64",
         gpu="apple",
         ram_gb=36.0,
-        has_docker=False,
-        has_ollama=True,
-        ollama_running=False,
     )
     sentence = detect.plan_sentence(info)
     assert "Express" in sentence
@@ -125,32 +136,29 @@ def test_plan_sentence_mentions_gpu_and_mode() -> None:
 
 
 def test_plan_sentence_describes_server_mode() -> None:
-    info = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
+    info = detect.Machine("linux", "x86_64", "nvidia", 64.0)
     assert "Server mode" in detect.plan_sentence(info, mode="server")
     assert "docker compose" in detect.plan_sentence(info, mode="server")
 
 
 def test_plan_sentence_names_the_engine_it_is_given() -> None:
-    info = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
+    info = detect.Machine("linux", "x86_64", "nvidia", 64.0)
     assert "OpenWebUI + vLLM" in detect.plan_sentence(info, mode="server", engine="vLLM")
     assert "OpenWebUI + Ollama" in detect.plan_sentence(info, mode="server")
 
 
 def test_plan_sentence_names_a_remote_engine() -> None:
-    info = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
+    info = detect.Machine("linux", "x86_64", "nvidia", 64.0)
     sentence = detect.plan_sentence(info, mode="server", engine="a remote engine")
     assert "OpenWebUI + a remote engine)." in sentence
 
 
-def _info(gpu: detect.Gpu, ram_gb: float) -> detect.SystemInfo:
-    return detect.SystemInfo(
+def _info(gpu: detect.Gpu, ram_gb: float) -> detect.Machine:
+    return detect.Machine(
         os="linux",
         arch="x86_64",
         gpu=gpu,
         ram_gb=ram_gb,
-        has_docker=False,
-        has_ollama=True,
-        ollama_running=True,
     )
 
 

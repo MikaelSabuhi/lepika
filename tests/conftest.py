@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import urllib.request
 from pathlib import Path
@@ -30,6 +31,15 @@ class RealProcessCall(BaseException):
     A BaseException for the same reason as `RealNetworkCall`: production code reads
     an `OSError` or any `Exception` from a launch or a signal as "not there" and
     carries on, which is how a real `ps` or a real SIGTERM went unnoticed.
+    """
+
+
+class RealInstallLookup(BaseException):
+    """A test asked the real `PATH` whether Docker or Ollama is installed.
+
+    The answer is the developer's machine: a test that does not state it is green on
+    one machine and red on the next. A BaseException for the same reason as
+    `RealNetworkCall`: nothing in `src/` may read it as "not installed".
     """
 
 
@@ -117,14 +127,52 @@ def no_real_processes(request: pytest.FixtureRequest, monkeypatch: pytest.Monkey
     guard_processes(request.node, monkeypatch)
 
 
+# Programs whose presence decides what a command does; every other lookup is left
+# alone, as an answer no test depends on.
+_GUARDED_PROGRAMS = frozenset({"docker", "ollama"})
+
+
+def guard_installs(node: pytest.Item, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refuse a real `shutil.which` lookup of Docker or Ollama, except in a `canary`
+    test, opted out by marker exactly as from the network guard.
+
+    A test states the answer instead: through the `which` map of the `FakeSystem` it
+    passes, or, for a command, of the one it puts in `system.REAL`'s place. A test
+    that patches `shutil.which` itself runs its `monkeypatch.setattr` after this
+    autouse fixture and wins.
+    """
+    if node.get_closest_marker("canary") is not None:
+        return
+    real_which = shutil.which
+
+    def guarded_which(cmd: Any, *args: Any, **kwargs: Any) -> Any:
+        if os.path.basename(os.fspath(cmd)) in _GUARDED_PROGRAMS:
+            raise RealInstallLookup(
+                f"test asked this machine whether {cmd} is installed; give its "
+                "FakeSystem a `which` answer"
+            )
+        return real_which(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "which", guarded_which)
+
+
+@pytest.fixture(autouse=True)
+def no_real_install_lookup(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail any test that learns from this machine whether Docker or Ollama is installed."""
+    guard_installs(request.node, monkeypatch)
+
+
 @pytest.fixture(autouse=True)
 def no_real_docker_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep `docker info` a fake: a real one is slow and answers with the developer's own
     Docker Desktop memory. A test that hands it the real `System` gets "unknown" — what
-    a stopped daemon answers — and sizes against its own SystemInfo, as before."""
+    a stopped daemon answers — and sizes against its own Machine, as before. The real
+    one is taken now, before a test can put a `FakeSystem` in its place: that fake is
+    asked like any other."""
     real = detect.docker_memory_gb
+    real_system = system.REAL
 
     def probe(*, sys: System) -> float:
-        return 0.0 if sys is system.REAL else real(sys=sys)
+        return 0.0 if sys is real_system else real(sys=sys)
 
     monkeypatch.setattr(detect, "docker_memory_gb", probe)

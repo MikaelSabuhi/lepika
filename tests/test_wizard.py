@@ -18,6 +18,7 @@ from lepika import (
     models,
     ollama,
     openwebui,
+    system,
     ui,
     wizard,
 )
@@ -25,14 +26,11 @@ from lepika.errors import FriendlyError
 
 runner = CliRunner()
 
-INFO = detect.SystemInfo(
+INFO = detect.Machine(
     os="macos",
     arch="arm64",
     gpu="apple",
     ram_gb=16.0,
-    has_docker=False,
-    has_ollama=True,
-    ollama_running=True,
 )
 
 CURATED = [
@@ -70,7 +68,7 @@ def test_choose_model_free_form_survives_an_offline_hub(capsys: pytest.CaptureFi
     assert "letting Ollama pick" in " ".join(capsys.readouterr().out.split())
 
 
-CPU_ONLY = detect.SystemInfo("linux", "x86_64", "none", 16.0, False, True, True)
+CPU_ONLY = detect.Machine("linux", "x86_64", "none", 16.0)
 
 
 def test_choose_model_rejects_hf_repo_with_gguf_hint_where_nothing_can_serve_it() -> None:
@@ -104,14 +102,11 @@ THREE = [
     models.CuratedModel(name="C", ref="gemma3:4b", min_ram_gb=6),
 ]
 
-TINY = detect.SystemInfo(
+TINY = detect.Machine(
     os="macos",
     arch="arm64",
     gpu="apple",
     ram_gb=1.0,
-    has_docker=False,
-    has_ollama=True,
-    ollama_running=True,
 )
 
 
@@ -179,6 +174,7 @@ def test_run_wizard_orders_engine_then_pull_then_ui_then_browser(
     """The real path's ordering is the whole product: pin it, faking every callee."""
     events: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(system, "REAL", FakeSystem())  # no Docker: Express, unasked
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: "1"))
     monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: events.append("engine"))
@@ -199,6 +195,7 @@ def test_wizard_keeps_the_old_model_when_the_pull_fails(
     """Saving before the pull recorded a model the machine does not have."""
     config.save(config.Config(model="previous:model"))
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(system, "REAL", FakeSystem())  # no Docker: Express, unasked
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: "1"))
     monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: None)
@@ -220,6 +217,7 @@ def test_dry_run_writes_nothing_and_executes_nothing(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(system, "REAL", FakeSystem())  # no Docker: Express, unasked
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: "1"))
 
@@ -261,6 +259,7 @@ def test_choose_model_prompt_lists_all_three_model_ref_shapes() -> None:
 
 def test_dry_run_says_it_would_import_a_full_weight_repo(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(system, "REAL", FakeSystem())  # no Docker: Express, unasked
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: "Qwen/Qwen3.5-2B"))
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     result = runner.invoke(cli.app, ["--dry-run"])
@@ -273,6 +272,7 @@ def test_wizard_acquires_the_model_through_acquire(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(system, "REAL", FakeSystem())  # no Docker: Express, unasked
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: "Qwen/Qwen3.5-2B"))
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: None)
@@ -291,6 +291,7 @@ def test_wizard_declined_download_keeps_the_old_model(
     """Saying no to the size leaves the stack up and the previous model still the default."""
     config.save(config.Config(model="previous:model"))
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(system, "REAL", FakeSystem())  # no Docker: Express, unasked
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: "Qwen/Qwen3.5-2B"))
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: None)
@@ -466,7 +467,7 @@ def test_choose_quant_probes_nvidia_memory_only_when_it_lists(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q4_K_M", int(4e9))]))
-    nvidia = detect.SystemInfo("linux", "x86_64", "nvidia", 32.0, False, True, True)
+    nvidia = detect.Machine("linux", "x86_64", "nvidia", 32.0)
 
     sys = FakeSystem(stdout={"nvidia-smi": "16303\n"})
     wizard.choose_quant(
@@ -512,7 +513,7 @@ def test_choose_quant_never_probes_the_gpu_when_the_listing_fails(
         raise gguf.Unavailable("offline")
 
     monkeypatch.setattr(gguf, "list_builds", unavailable)
-    nvidia = detect.SystemInfo("linux", "x86_64", "nvidia", 32.0, False, True, True)
+    nvidia = detect.Machine("linux", "x86_64", "nvidia", 32.0)
 
     sys = FakeSystem()
     assert wizard.choose_quant(GGUF_REF, config.Config(), nvidia, sys=sys, ui=FakeUI()) == GGUF_REF
@@ -673,7 +674,7 @@ def test_choose_model_carries_its_system_into_the_quant_picker(
     """A typed tagless GGUF repo goes on to the quant picker, and the GPU it sizes
     against must be the one the caller's System reports, not the real machine's."""
     monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
-    nvidia = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, False, True, True)
+    nvidia = detect.Machine("linux", "x86_64", "nvidia", 64.0)
     # 8 GiB of GPU: 80 % of it is 6.9 GB, so only UD-IQ2_M (6.0 GB) can be the ★. With
     # no GPU figure the ★ would be a CPU build sized against the 64 GB of RAM.
     sys = FakeSystem(stdout={"nvidia-smi": "8192\n"})

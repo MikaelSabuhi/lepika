@@ -1,25 +1,44 @@
 from __future__ import annotations
 
-import dataclasses
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import FakeUI
+from fakes import FakeResponse, FakeSystem, FakeUI, routes
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, engine, express, models, ollama, server, ui, wizard
+from lepika import (
+    acquire,
+    cli,
+    config,
+    detect,
+    engine,
+    express,
+    models,
+    ollama,
+    server,
+    system,
+    ui,
+    wizard,
+)
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
-DOCKER = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
-NO_DOCKER = detect.SystemInfo("macos", "arm64", "apple", 16.0, False, True, True)
+DOCKER = detect.Machine("linux", "x86_64", "nvidia", 64.0)
+NO_DOCKER = detect.Machine("macos", "arm64", "apple", 16.0)
 CURATED = [models.CuratedModel(name="Small", ref="llama3.2:3b", min_ram_gb=6)]
+REAL_SERVER_START = server.start_stack
+
+
+def docker_installed() -> FakeSystem:
+    """A machine whose PATH has Docker on it, and nothing else that is asked about."""
+    return FakeSystem(which={"docker": "/usr/bin/docker"})
 
 
 def started(
-    info: detect.SystemInfo,
+    info: detect.Machine,
     cfg: config.Config,
     after_engine: Callable[[], None] | None = None,
     **k: Any,
@@ -38,15 +57,29 @@ def test_choose_mode_is_silent_without_docker() -> None:
         asked.append("?")
         return "2"
 
-    assert wizard.choose_mode(NO_DOCKER, "express", ui=FakeUI(reader=ask)) == "express"
+    machine = FakeSystem()
+    assert wizard.choose_mode("express", sys=machine, ui=FakeUI(reader=ask)) == "express"
     assert asked == []
+    assert machine.looked_up == ["docker"]
 
 
 def test_choose_mode_asks_when_docker_is_present_and_defaults_to_current() -> None:
-    assert wizard.choose_mode(DOCKER, "express", ui=FakeUI(reader=lambda *a, **k: "")) == "express"
-    assert wizard.choose_mode(DOCKER, "server", ui=FakeUI(reader=lambda *a, **k: "")) == "server"
-    assert wizard.choose_mode(DOCKER, "express", ui=FakeUI(reader=lambda *a, **k: "2")) == "server"
-    assert wizard.choose_mode(DOCKER, "server", ui=FakeUI(reader=lambda *a, **k: "1")) == "express"
+    assert (
+        wizard.choose_mode("express", sys=docker_installed(), ui=FakeUI(reader=lambda *a, **k: ""))
+        == "express"
+    )
+    assert (
+        wizard.choose_mode("server", sys=docker_installed(), ui=FakeUI(reader=lambda *a, **k: ""))
+        == "server"
+    )
+    assert (
+        wizard.choose_mode("express", sys=docker_installed(), ui=FakeUI(reader=lambda *a, **k: "2"))
+        == "server"
+    )
+    assert (
+        wizard.choose_mode("server", sys=docker_installed(), ui=FakeUI(reader=lambda *a, **k: "1"))
+        == "express"
+    )
 
 
 def _no_terminal(*a: Any, **k: Any) -> str:
@@ -56,11 +89,17 @@ def _no_terminal(*a: Any, **k: Any) -> str:
 def test_choose_mode_keeps_the_current_mode_without_a_terminal(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert wizard.choose_mode(DOCKER, "server", ui=FakeUI(reader=_no_terminal)) == "server"
+    assert (
+        wizard.choose_mode("server", sys=docker_installed(), ui=FakeUI(reader=_no_terminal))
+        == "server"
+    )
     out = capsys.readouterr().out
     assert "No terminal to ask — staying with Server." in out
     assert "using 1" not in out and "using 2" not in out
-    assert wizard.choose_mode(DOCKER, "express", ui=FakeUI(reader=_no_terminal)) == "express"
+    assert (
+        wizard.choose_mode("express", sys=docker_installed(), ui=FakeUI(reader=_no_terminal))
+        == "express"
+    )
     out = capsys.readouterr().out
     assert "No terminal to ask — staying with Express." in out
     assert "using 1" not in out
@@ -68,11 +107,15 @@ def test_choose_mode_keeps_the_current_mode_without_a_terminal(
 
 def test_choose_mode_accepts_the_mode_by_name() -> None:
     assert (
-        wizard.choose_mode(DOCKER, "express", ui=FakeUI(reader=lambda *a, **k: "server"))
+        wizard.choose_mode(
+            "express", sys=docker_installed(), ui=FakeUI(reader=lambda *a, **k: "server")
+        )
         == "server"
     )
     assert (
-        wizard.choose_mode(DOCKER, "server", ui=FakeUI(reader=lambda *a, **k: "Express"))
+        wizard.choose_mode(
+            "server", sys=docker_installed(), ui=FakeUI(reader=lambda *a, **k: "Express")
+        )
         == "express"
     )
 
@@ -87,7 +130,7 @@ def test_choose_mode_asks_again_once_then_keeps_the_default(
         asked.append(prompt)
         return next(answers)
 
-    assert wizard.choose_mode(DOCKER, "server", ui=FakeUI(reader=ask)) == "server"
+    assert wizard.choose_mode("server", sys=docker_installed(), ui=FakeUI(reader=ask)) == "server"
     assert len(asked) == 2
     assert "Pick 1 or 2" in capsys.readouterr().out
 
@@ -99,7 +142,7 @@ def test_wizard_in_server_mode_uses_the_server_backend(
     events: list[str] = []
 
     def fake_server_start(
-        info: detect.SystemInfo,
+        info: detect.Machine,
         cfg: config.Config,
         after_engine: Callable[[], None] | None = None,
         **k: Any,
@@ -110,6 +153,7 @@ def test_wizard_in_server_mode_uses_the_server_backend(
         return "http://localhost:3000"
 
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
+    monkeypatch.setattr(system, "REAL", docker_installed())
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     answers = iter(["2", "1"])  # mode, then model
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
@@ -130,6 +174,7 @@ def test_wizard_in_server_mode_uses_the_server_backend(
 
 def test_mode_flag_skips_the_question(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> None:
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
+    monkeypatch.setattr(system, "REAL", docker_installed())
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: "1"))  # only the model question
     monkeypatch.setattr(server, "start_stack", started)
@@ -147,10 +192,15 @@ def test_mode_flag_skips_the_question(monkeypatch: pytest.MonkeyPatch, isolated_
 def test_mode_server_without_docker_is_friendly_not_an_install_prompt(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
+    machine = FakeSystem()  # no Docker on the PATH
     monkeypatch.setattr(detect, "detect", lambda **k: NO_DOCKER)
+    monkeypatch.setattr(system, "REAL", machine)
     result = runner.invoke(cli.app, ["--mode", "server"])
     assert result.exit_code != 0
     assert "Docker" in str(result.exception)
+    assert "lepika --mode express" in result.exception.fix  # type: ignore[union-attr]
+    # Nothing is run to find that out: no `docker info` for a Docker that isn't there.
+    assert machine.ran == []
 
 
 def test_mode_rejects_anything_but_express_or_server(isolated_home: Path) -> None:
@@ -163,6 +213,8 @@ def test_dry_run_in_server_mode_describes_compose(
 ) -> None:
     config.save(config.Config(mode="server"))
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
+    machine = docker_installed()
+    monkeypatch.setattr(system, "REAL", machine)
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     answers = iter(["", "1"])  # bare Enter keeps the saved mode; then the model
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
@@ -173,6 +225,9 @@ def test_dry_run_in_server_mode_describes_compose(
     assert result.exit_code == 0, result.output
     assert "docker compose" in result.output
     assert config.load().mode == "server"
+    # The one command a dry run may run is the read that sizes the models.
+    assert machine.ran == [["docker", "info", "--format", "{{.MemTotal}}"]]
+    assert machine.called == [] and machine.streamed == [] and machine.spawned == []
     # "would:" means would: a dry run must not even lay down the stack directory.
     assert not (isolated_home / "stack").exists()
 
@@ -189,6 +244,7 @@ def switching(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> list[str]
     """A Docker machine where both backends start silently and every stop is recorded."""
     stops: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
+    monkeypatch.setattr(system, "REAL", docker_installed())
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     monkeypatch.setattr(express, "stop", lambda info, cfg, **k: stops.append("express") or True)
     monkeypatch.setattr(server, "stop", lambda info, cfg, **k: stops.append("server") or True)
@@ -288,7 +344,7 @@ def test_failure_after_the_mode_was_saved_keeps_the_visible_stack(
     visible to `lepika down` — a later failure (OpenWebUI timeout) sweeps nothing."""
 
     def engine_up_then_webui_times_out(
-        info: detect.SystemInfo,
+        info: detect.Machine,
         cfg: config.Config,
         after_engine: Callable[[], None] | None = None,
         **k: Any,
@@ -327,27 +383,50 @@ def test_leaving_express_mode_stops_the_ollama_lepika_started(
     assert "Stopped the Ollama LePika had started" in result.output
 
 
-def test_server_start_sees_the_ollama_as_stopped_after_the_switch(
+def test_servers_port_check_asks_again_after_the_switch_stopped_the_ollama(
     switching: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Detection ran before the stop: handing the old snapshot to Server's pre-flight
-    made it refuse port 11434 for an Ollama that was already gone (E2E finding F13)."""
-    monkeypatch.setattr(
-        detect, "detect", lambda **k: dataclasses.replace(DOCKER, ollama_running=True)
+    """Leaving Express stops the Ollama LePika started; Server's pre-flight must then
+    find port 11434 free. An answer taken before the stop made it refuse an Ollama that
+    was already gone, so the port is asked about when the check runs, and only then."""
+    events: list[str] = []
+    native = {"running": True}
+
+    def engine(request: urllib.request.Request) -> FakeResponse:
+        answering = native["running"] or any("up" in cmd for cmd in machine.called)
+        events.append("engine up" if answering else "engine refused")
+        if not answering:
+            raise OSError("connection refused")
+        return FakeResponse(b"{}")
+
+    webui = routes({"http://127.0.0.1:3000/health": FakeResponse(b"")})
+    machine = FakeSystem(
+        which={"docker": "/usr/bin/docker"},
+        urls=lambda request: (
+            engine(request)
+            if request.full_url == "http://127.0.0.1:11434/api/version"
+            else webui(request)
+        ),
     )
-    monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: True)
-    seen: list[detect.SystemInfo] = []
+    monkeypatch.setattr(system, "REAL", machine)
 
-    def start(info: detect.SystemInfo, cfg: config.Config, **k: Any) -> str:
-        seen.append(info)
-        return started(info, cfg, **k)
+    def stop(os_name: str, url: str, **k: Any) -> bool:
+        events.append("stop")
+        native["running"] = False
+        return True
 
-    monkeypatch.setattr(server, "start_stack", start)
+    monkeypatch.setattr(ollama, "stop_ollama", stop)
+    monkeypatch.setattr(server, "start_stack", REAL_SERVER_START)
+    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref, **k: ref.raw)
     answers = iter(["2", "1"])  # Server, then the model
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
-    assert [info.ollama_running for info in seen] == [False]
+    # The pre-flight's probe comes after the stop and sees the port free; the next one
+    # is the wait for the stack's own engine once `compose up` has run.
+    assert events == ["stop", "engine refused", "engine up"]
+    # Free, so there was no container of ours to ask about.
+    assert not any("ps" in cmd for cmd in machine.ran)
 
 
 def test_an_ollama_lepika_did_not_start_is_left_alone_and_unannounced(
@@ -393,7 +472,7 @@ def test_the_mode_is_saved_only_once_the_engine_is_up(
 ) -> None:
     """A pre-flight that refuses must not leave a config claiming a mode that never started."""
 
-    def refuse(info: detect.SystemInfo, cfg: config.Config, **k: Any) -> str:
+    def refuse(info: detect.Machine, cfg: config.Config, **k: Any) -> str:
         raise FriendlyError("Ollama is already running natively on port 11434.", "Stop it.")
 
     config.save(config.Config(mode="express", model="previous:model"))
@@ -412,7 +491,7 @@ def test_a_backend_too_broken_to_stop_does_not_trap_the_user_in_it(
 ) -> None:
     """Docker being down is usually *why* someone is leaving Server mode."""
 
-    def boom(info: detect.SystemInfo, cfg: config.Config, **k: Any) -> bool:
+    def boom(info: detect.Machine, cfg: config.Config, **k: Any) -> bool:
         raise FriendlyError("Docker is installed but not running.", "Start Docker Desktop.")
 
     config.save(config.Config(mode="server"))
@@ -434,7 +513,7 @@ def test_a_ui_that_will_not_stop_still_lets_the_engine_stop(
     entirely, and Server's pre-flight then refuses the port 11434 it still holds.
     """
 
-    def boom(info: detect.SystemInfo, cfg: config.Config, **k: Any) -> bool:
+    def boom(info: detect.Machine, cfg: config.Config, **k: Any) -> bool:
         raise FriendlyError("OpenWebUI on port 3000 is still answering.", "Stop it yourself.")
 
     monkeypatch.setattr(express, "stop", boom)

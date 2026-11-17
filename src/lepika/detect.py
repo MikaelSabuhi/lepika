@@ -1,12 +1,10 @@
-"""Detect what machine we're on and what's already installed."""
+"""Detect what machine we're on: the facts that cannot change while a command runs."""
 
 from __future__ import annotations
 
-import platform as _platform
 from dataclasses import dataclass
 from typing import Literal
 
-from lepika import config, health
 from lepika.errors import ISSUES_URL, FriendlyError
 from lepika.system import System
 
@@ -15,26 +13,27 @@ Gpu = Literal["apple", "nvidia", "none"]
 
 
 @dataclass(frozen=True)
-class SystemInfo:
+class Machine:
+    """Facts that hold for the whole command. Whether Docker or Ollama is installed,
+    or an engine is answering, can change while it runs, so each reader asks the
+    `System` at the moment it needs to know."""
+
     os: OsName
     arch: str
     gpu: Gpu
     ram_gb: float
-    has_docker: bool
-    has_ollama: bool
-    ollama_running: bool
 
 
-def detect_os(system: str | None = None) -> OsName:
-    s = (system or _platform.system()).lower()
-    if s == "darwin":
+def detect_os(platform: str) -> OsName:
+    """The OS a `sys.platform` tag names."""
+    if platform == "darwin":
         return "macos"
-    if s == "linux":
+    if platform == "linux":
         return "linux"
-    if s == "windows":
+    if platform == "win32":
         return "windows"
     raise FriendlyError(
-        f"Unsupported operating system: {s}",
+        f"Unsupported operating system: {platform}",
         "LePika supports macOS, Linux, and Windows.",
     )
 
@@ -50,7 +49,7 @@ def detect_gpu(os_name: OsName, arch: str, *, sys: System) -> Gpu:
 _NVIDIA_SMI_MEMORY = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
 
 
-def gpu_memory_gb(info: SystemInfo, *, sys: System) -> float:
+def gpu_memory_gb(info: Machine, *, sys: System) -> float:
     """Memory a model can be loaded into on the GPU, in GiB; 0.0 without one.
 
     Asked by the quant picker alone, never by `detect()`: on NVIDIA it is a
@@ -109,18 +108,16 @@ def detect_ram_gb(*, sys: System) -> float:
     return float(total_bytes) / 2**30
 
 
-def detect(*, sys: System) -> SystemInfo:
-    """The machine as LePika needs it, read without starting a process (rule 6)."""
-    os_name = detect_os()
-    arch = _platform.machine().lower()
-    return SystemInfo(
+def detect(*, sys: System) -> Machine:
+    """The machine as LePika needs it, read without starting a process or opening a
+    URL (rule 6): the only lookup is `nvidia-smi`, which decides the GPU."""
+    os_name = detect_os(sys.platform())
+    arch = sys.architecture().lower()
+    return Machine(
         os=os_name,
         arch=arch,
         gpu=detect_gpu(os_name, arch, sys=sys),
         ram_gb=detect_ram_gb(sys=sys),
-        has_docker=sys.which("docker") is not None,
-        has_ollama=sys.which("ollama") is not None,
-        ollama_running=health.api_up(config.DEFAULT_ENGINE_URL, sys=sys),
     )
 
 
@@ -128,7 +125,7 @@ _GPU_LABEL = {"apple": "Apple Metal GPU", "nvidia": "NVIDIA GPU", "none": "CPU o
 _OS_LABEL = {"macos": "macOS", "linux": "Linux", "windows": "Windows"}
 
 
-def plan_sentence(info: SystemInfo, mode: str = "express", engine: str = "Ollama") -> str:
+def plan_sentence(info: Machine, mode: str = "express", engine: str = "Ollama") -> str:
     speed_note = "" if info.gpu != "none" else " (no GPU found — models will run slowly)"
     hardware = (
         f"Detected {_OS_LABEL[info.os]} on {info.arch} with {info.ram_gb:.0f} GB RAM "

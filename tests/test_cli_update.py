@@ -11,7 +11,7 @@ from lepika import cli, detect, express, health, ollama, openwebui, proc
 from lepika.backend import UpdateStep
 
 runner = CliRunner()
-LINUX = detect.SystemInfo("linux", "x86_64", "nvidia", 32.0, False, True, True)
+LINUX = detect.Machine("linux", "x86_64", "nvidia", 32.0)
 
 
 @pytest.fixture(autouse=True)
@@ -23,20 +23,17 @@ def no_binaries_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_update_upgrades_engine_and_webui(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
-    installed: list[detect.SystemInfo] = []
+    installed: list[detect.Machine] = []
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    info = detect.SystemInfo(
+    info = detect.Machine(
         os="linux",
         arch="x86_64",
         gpu="nvidia",
         ram_gb=32.0,
-        has_docker=False,
-        has_ollama=True,
-        ollama_running=True,
     )
     monkeypatch.setattr(detect, "detect", lambda **k: info)
     monkeypatch.setattr(proc, "run_logged", fake_run)
@@ -62,14 +59,11 @@ def test_update_restarts_openwebui_rather_than_probing_the_dying_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The upgraded build only takes effect if the old server is actually replaced."""
-    info = detect.SystemInfo(
+    info = detect.Machine(
         os="linux",
         arch="x86_64",
         gpu="nvidia",
         ram_gb=32.0,
-        has_docker=False,
-        has_ollama=True,
-        ollama_running=True,
     )
     restarts: list[tuple[int, str]] = []
     monkeypatch.setattr(detect, "detect", lambda **k: info)
@@ -114,14 +108,11 @@ def test_update_prints_what_happened(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_down_gates_the_signal_on_the_configured_port(monkeypatch: pytest.MonkeyPatch) -> None:
     """`lepika down` must tell `stop_openwebui` which port proves the pid is ours."""
-    info = detect.SystemInfo(
+    info = detect.Machine(
         os="linux",
         arch="x86_64",
         gpu="nvidia",
         ram_gb=32.0,
-        has_docker=False,
-        has_ollama=True,
-        ollama_running=True,
     )
     seen: list[int | None] = []
     monkeypatch.setattr(detect, "detect", lambda **k: info)

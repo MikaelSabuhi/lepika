@@ -3,27 +3,34 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fakes import FakeResponse, FakeSystem, routes
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, health, ollama, openwebui, paths
+from lepika import cli, config, detect, health, ollama, openwebui, paths, system
 
 runner = CliRunner()
 
-INFO = detect.SystemInfo(
+INFO = detect.Machine(
     os="linux",
     arch="x86_64",
     gpu="nvidia",
     ram_gb=32.0,
-    has_docker=False,
-    has_ollama=True,
-    ollama_running=True,
 )
+
+
+def engine_running(url: str = config.DEFAULT_ENGINE_URL) -> FakeSystem:
+    """Ollama installed, and an engine already answering at `url`."""
+    return FakeSystem(
+        which={"ollama": "/usr/local/bin/ollama"},
+        urls=routes({f"{url}/api/version": FakeResponse(b"{}")}),
+    )
 
 
 @pytest.fixture()
 def quiet_stack(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     counts = {"ensure_ollama": 0, "ensure_openwebui": 0, "browser": 0, "stop": 0}
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(system, "REAL", engine_running())
     monkeypatch.setattr(
         ollama,
         "ensure_ollama",
@@ -143,6 +150,7 @@ def test_up_points_the_engine_check_at_the_configured_url(
 ) -> None:
     urls: list[str | None] = []
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(system, "REAL", engine_running("http://gpu-box.local:11434"))
     monkeypatch.setattr(ollama, "ensure_ollama", lambda info, url=None, **k: urls.append(url))
     monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
@@ -215,3 +223,34 @@ def test_up_stays_quiet_about_context_length_when_there_is_nothing_to_say(
     result = runner.invoke(cli.app, ["up"])
     assert result.exit_code == 0
     assert "context" not in result.output.lower()
+
+
+def test_up_notes_the_context_length_of_the_engine_the_config_names(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """The engine `lepika up` adopts is the one at `engine_url`; whether the note applies
+    is asked there, not of the default port, and before the stack starts."""
+    order: list[str] = []
+    engine = FakeSystem(
+        which={"ollama": "/usr/local/bin/ollama"},
+        urls=routes(
+            {
+                "http://127.0.0.1:11500/api/version": FakeResponse(b"{}"),
+                "http://127.0.0.1:11434/api/version": OSError("connection refused"),
+            }
+        ),
+    )
+    monkeypatch.setattr(system, "REAL", engine)
+    monkeypatch.setattr(
+        ollama,
+        "ensure_ollama",
+        lambda info, **k: order.append(f"start after {[r.full_url for r in engine.requested]}"),
+    )
+    monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
+    monkeypatch.setattr(cli, "_open_browser", lambda url: None)
+    config.save(config.Config(engine_url="http://127.0.0.1:11500"))
+    result = runner.invoke(cli.app, ["up"])
+    assert result.exit_code == 0, result.output
+    assert "Ollama was already running" in result.output
+    assert [r.full_url for r in engine.requested] == ["http://127.0.0.1:11500/api/version"]
+    assert len(order) == 1 and "11500" in order[0]

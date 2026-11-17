@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import FakeUI
+from fakes import FakeSystem, FakeUI
 from typer.testing import CliRunner
 
-from lepika import cli, detect, health, models, ui
+from lepika import cli, detect, health, models, system, ui
 from lepika.cli import app
 
 runner = CliRunner()
@@ -218,13 +218,14 @@ def test_run_treats_an_os_error_without_a_file_as_unexpected(
 def test_run_without_a_terminal_is_two_lines_not_a_traceback(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    info = detect.SystemInfo("macos", "arm64", "apple", 16.0, False, True, True)
+    info = detect.Machine("macos", "arm64", "apple", 16.0)
 
     def no_terminal(*a: Any, **k: Any) -> str:
         raise EOFError("stdin is not a terminal")
 
     monkeypatch.setattr(sys, "argv", ["lepika"])
     monkeypatch.setattr(detect, "detect", lambda **k: info)
+    monkeypatch.setattr(system, "REAL", FakeSystem())  # no Docker: no mode question
     monkeypatch.setattr(
         models,
         "load_curated",

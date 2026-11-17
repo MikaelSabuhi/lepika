@@ -36,6 +36,9 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - The wizard's mode question also accepts `express` or `server` by name.
+- Detecting the machine no longer probes the local Ollama port, so `down`, `update`,
+  `doctor`, `model add`/`import`, `connect` and `expose` each make one request fewer;
+  the context-length note on `lepika up` follows `engine_url`.
 
 ## [0.2.0] - 2026-11-10
 

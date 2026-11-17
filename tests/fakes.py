@@ -118,6 +118,8 @@ class FakeSystem:
     `signal_errors` is raised, after recording, for a signal sent to that pid.
     `route_address` and `host_addresses` are this machine's addresses, as unfiltered
     as the real ones: by default it has no route and its hostname resolves to nothing.
+    Every `which` is recorded in `looked_up`, found or not.
+    `platform` and `architecture` describe the machine: Linux on x86_64 by default.
     """
 
     def __init__(
@@ -142,7 +144,11 @@ class FakeSystem:
         while_running: Callable[[list[str]], None] | None = None,
         route_address: str | None = None,
         host_addresses: Sequence[str] = (),
+        platform: str = "linux",
+        architecture: str = "x86_64",
     ) -> None:
+        self.platform_tag = platform
+        self.machine = architecture
         self.route = route_address
         self.hosts = list(host_addresses)
         self.stdout = stdout or {}
@@ -175,6 +181,7 @@ class FakeSystem:
         self.requested: list[urllib.request.Request] = []
         self.request_timeouts: list[float] = []
         self.browsed: list[str] = []
+        self.looked_up: list[str] = []
 
     def _launch(self, cmd: Sequence[str]) -> None:
         if cmd and cmd[0] in self.missing:
@@ -258,6 +265,7 @@ class FakeSystem:
         return self.spawn_pid
 
     def which(self, name: str) -> str | None:
+        self.looked_up.append(name)
         return self.paths.get(name)
 
     def open_url(self, request: urllib.request.Request, *, timeout: float) -> Response:
@@ -303,6 +311,12 @@ class FakeSystem:
 
     def host_addresses(self) -> list[str]:
         return list(self.hosts)
+
+    def platform(self) -> str:
+        return self.platform_tag
+
+    def architecture(self) -> str:
+        return self.machine
 
 
 class UnansweredQuestion(BaseException):

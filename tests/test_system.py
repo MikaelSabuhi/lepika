@@ -42,6 +42,8 @@ _METHODS = (
     "ram_bytes",
     "route_address",
     "host_addresses",
+    "platform",
+    "architecture",
 )
 
 
@@ -657,3 +659,47 @@ def test_fake_system_answers_the_address_probes() -> None:
     fake = FakeSystem(route_address="192.168.1.20", host_addresses=["192.168.1.20", "10.0.0.5"])
     assert fake.route_address() == "192.168.1.20"
     assert fake.host_addresses() == ["192.168.1.20", "10.0.0.5"]
+
+
+def test_platform_is_the_interpreters_platform_tag(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert REAL.platform() == sys.platform
+    monkeypatch.setattr(sys, "platform", "freebsd14")
+    assert REAL.platform() == "freebsd14"
+
+
+def test_architecture_is_what_uname_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `raising=False`: Windows has no `os.uname`, and the suite runs there too.
+    monkeypatch.setattr(os, "uname", lambda: SimpleNamespace(machine="arm64"), raising=False)
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "x86")
+    assert REAL.architecture() == "arm64"
+
+
+def test_architecture_without_uname_reads_the_windows_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What the standard library falls back to on Windows, without starting `ver`:
+    a 32-bit interpreter on a 64-bit machine sees the machine's in PROCESSOR_ARCHITEW6432."""
+    monkeypatch.delattr(os, "uname", raising=False)
+    monkeypatch.setenv("PROCESSOR_ARCHITEW6432", "AMD64")
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "x86")
+    assert REAL.architecture() == "AMD64"
+    monkeypatch.setenv("PROCESSOR_ARCHITEW6432", "")
+    assert REAL.architecture() == "x86"
+    monkeypatch.delenv("PROCESSOR_ARCHITEW6432")
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "ARM64")
+    assert REAL.architecture() == "ARM64"
+
+
+def test_fake_system_answers_platform_and_architecture() -> None:
+    assert FakeSystem().platform() == "linux"
+    assert FakeSystem().architecture() == "x86_64"
+    fake = FakeSystem(platform="win32", architecture="AMD64")
+    assert fake.platform() == "win32"
+    assert fake.architecture() == "AMD64"
+
+
+def test_fake_system_records_every_lookup_found_or_not() -> None:
+    fake = FakeSystem(which={"docker": "/usr/bin/docker"})
+    assert fake.which("docker") == "/usr/bin/docker"
+    assert fake.which("ollama") is None
+    assert fake.looked_up == ["docker", "ollama"]

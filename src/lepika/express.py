@@ -7,14 +7,14 @@ from collections.abc import Callable
 from lepika import health, log, ollama, openwebui
 from lepika.backend import UpdateStep, changed
 from lepika.config import Config
-from lepika.detect import SystemInfo
+from lepika.detect import Machine
 from lepika.paths import logs_dir
 from lepika.system import System
 from lepika.ui import UI
 
 
 def start_stack(
-    info: SystemInfo,
+    info: Machine,
     cfg: Config,
     after_engine: Callable[[], None] | None = None,
     *,
@@ -43,7 +43,7 @@ def start_stack(
     return health.webui_url(cfg.webui_port)
 
 
-def stop(info: SystemInfo, cfg: Config, *, sys: System) -> bool:
+def stop(info: Machine, cfg: Config, *, sys: System) -> bool:
     """`lepika down` in Express mode: stop OpenWebUI; Ollama stays as a shared service."""
     # The port is what proves the recorded pid is still our OpenWebUI.
     stopped = openwebui.stop_openwebui(info.os, port=cfg.webui_port, sys=sys)
@@ -51,7 +51,7 @@ def stop(info: SystemInfo, cfg: Config, *, sys: System) -> bool:
     return stopped
 
 
-def update(info: SystemInfo, cfg: Config, *, sys: System, ui: UI) -> list[UpdateStep]:
+def update(info: Machine, cfg: Config, *, sys: System, ui: UI) -> list[UpdateStep]:
     """`lepika update` in Express mode: upgrade the engine (if ours) and OpenWebUI.
 
     `ui` is unused, as in `start_stack`: Server's update restarts its stack through it.

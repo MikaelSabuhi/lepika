@@ -8,6 +8,7 @@ import inspect
 import os
 import pkgutil
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -18,7 +19,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import REAL_URLOPEN, RealNetworkCall, RealProcessCall, guard_network
+from conftest import (
+    REAL_URLOPEN,
+    RealInstallLookup,
+    RealNetworkCall,
+    RealProcessCall,
+    guard_installs,
+    guard_network,
+)
+from fakes import FakeSystem
 
 import lepika
 from lepika import detect, health, system
@@ -140,6 +149,45 @@ def test_the_process_guard_is_not_swallowed_by_a_broad_except() -> None:
             pytest.fail("the guard was an ordinary exception")
 
 
+@pytest.mark.parametrize("program", ["docker", "ollama"])
+def test_a_real_lookup_of_docker_or_ollama_fails_the_test(program: str) -> None:
+    with pytest.raises(RealInstallLookup, match=program):
+        shutil.which(program)
+    # The real `System` looks it up the same way, so a command left on it fails too.
+    with pytest.raises(RealInstallLookup, match=program):
+        system.REAL.which(program)
+
+
+def test_the_install_guard_is_not_swallowed_by_except_exception() -> None:
+    with pytest.raises(RealInstallLookup):
+        try:
+            shutil.which("docker")
+        except Exception:
+            pytest.fail("the guard was an ordinary exception")
+
+
+def test_a_fake_system_is_not_caught_by_the_install_guard() -> None:
+    assert FakeSystem(which={"docker": "/usr/bin/docker"}).which("docker") == "/usr/bin/docker"
+    assert FakeSystem().which("ollama") is None
+
+
+def test_the_install_guard_leaves_other_programs_and_a_patched_which_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert shutil.which("lepika-guard-probe-not-installed") is None
+    monkeypatch.setattr(shutil, "which", lambda name: f"/opt/{name}")
+    assert system.REAL.which("docker") == "/opt/docker"
+
+
+def test_the_install_guard_steps_aside_for_a_canary_only(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sentinel = shutil.which
+    request.node.add_marker(pytest.mark.canary)
+    guard_installs(request.node, monkeypatch)
+    assert shutil.which is sentinel
+
+
 def test_dockers_memory_is_never_asked_of_the_real_docker(monkeypatch: pytest.MonkeyPatch) -> None:
     """Server-mode wizard tests size models through `detect.docker_memory_gb` without
     faking `System`: the real `docker info` would make them slow and decide them by the
@@ -151,6 +199,15 @@ def test_dockers_memory_is_never_asked_of_the_real_docker(monkeypatch: pytest.Mo
     monkeypatch.setattr(subprocess, "run", spawned)
     monkeypatch.setattr(subprocess, "Popen", spawned)
     assert detect.docker_memory_gb(sys=system.REAL) == 0.0
+
+
+def test_a_fake_in_place_of_the_real_system_is_asked_about_dockers_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakeSystem(stdout={"docker info": str(8 * 2**30)})
+    monkeypatch.setattr(system, "REAL", fake)
+    assert detect.docker_memory_gb(sys=system.REAL) == 8.0
+    assert fake.ran == [["docker", "info", "--format", "{{.MemTotal}}"]]
 
 
 def test_canary_tests_are_deselected_by_default(

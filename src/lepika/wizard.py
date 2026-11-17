@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 
-from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
@@ -31,8 +30,6 @@ from lepika.errors import FriendlyError
 from lepika.models import CuratedModel, ModelRef
 from lepika.system import System
 from lepika.ui import UI, NoTerminal
-
-console = Console()
 
 
 def _validate(ref: ModelRef, cfg: config.Config, info: SystemInfo) -> ModelRef:
@@ -115,7 +112,7 @@ def choose_quant(
     try:
         builds = gguf.list_builds(repo, token=hf.token_for(cfg, sys=sys), sys=sys)
     except gguf.Unavailable:
-        console.print(
+        ui.say(
             f"[dim]Couldn't list the quantizations of {escape(repo)} — letting Ollama pick.[/dim]"
         )
         return ref
@@ -130,7 +127,7 @@ def choose_quant(
     more = f" {_MORE_FOR_DOCKER}" if memory.docker else ""
     shown = [b for b in builds if gguf.tier(b, gpu_gb, memory.gb) != "none"]
     if not shown:
-        console.print(
+        ui.say(
             f"None of the {len(builds)} builds fits in {memory.phrase} — letting Ollama pick."
             + more
         )
@@ -147,15 +144,15 @@ def choose_quant(
         name = escape(b.quant) + (" ★" if b == best else "")
         fit = gguf.label(gguf.tier(b, gpu_gb, memory.gb), gpu_gb)
         table.add_row(str(i), name, engine.human_size(b.size_bytes), fit)
-    console.print(table)
+    ui.say(table)
     hidden = len(builds) - len(shown)
     if hidden:
         plural = "s" if hidden != 1 else ""
-        console.print(
+        ui.say(
             f"[dim]{hidden} larger build{plural} hidden — too big for {memory.phrase}.{more}[/dim]"
         )
     if not cfg.engine_managed:
-        console.print(
+        ui.say(
             f"[dim]Sized against this machine — the engine at {escape(cfg.engine_url)} "
             "is what runs it.[/dim]"
         )
@@ -178,19 +175,19 @@ def choose_quant(
             )
         except NoTerminal:
             if best is not None:
-                console.print(f"[dim]No terminal to ask — taking {escape(best.quant)}.[/dim]")
+                ui.say(f"[dim]No terminal to ask — taking {escape(best.quant)}.[/dim]")
                 return chosen(best.quant)
-            console.print("[dim]No terminal to ask — letting Ollama pick.[/dim]")
+            ui.say("[dim]No terminal to ask — letting Ollama pick.[/dim]")
             return ref
         answer = raw.strip() or default
         if best is None and not answer:
-            console.print("[dim]Letting Ollama pick.[/dim]")
+            ui.say("[dim]Letting Ollama pick.[/dim]")
             return ref
         # isdecimal, not isdigit: "²".isdigit() is True but int("²") raises.
         if answer.isdecimal() and 1 <= int(answer) <= len(shown):
             return chosen(shown[int(answer) - 1].quant)
         if attempt == 1:
-            console.print(f"Pick 1 to {len(shown)}.")
+            ui.say(f"Pick 1 to {len(shown)}.")
     # Two misses: the recommendation is the answer that cannot be wrong — and with no
     # recommendation, the ref goes on as typed rather than looping.
     return chosen(best.quant) if best is not None else ref
@@ -222,7 +219,7 @@ def choose_model(
     if not fitting:
         # A bare empty table reads as a broken program. Name the reason and the
         # way out — typing a ref still works, and something always fits.
-        console.print(
+        ui.say(
             f"Nothing in the curated list fits comfortably in {memory.phrase} — "
             "you can still type any model; try qwen3:0.6b"
         )
@@ -234,7 +231,7 @@ def choose_model(
         for i, m in enumerate(fitting, start=1):
             # Curated entries can come from the remote list: escape before rendering.
             table.add_row(str(i), escape(m.name), escape(m.ref))
-        console.print(table)
+        ui.say(table)
 
     prompt = "Pick a number, or type any model (qwen3:8b · hf.co/<org>/<repo>-GGUF · <org>/<repo>)"
 
@@ -264,7 +261,7 @@ def choose_model(
         # A number with no row behind it is a mistyped pick, not a model named 99.
         # One explanation, one retry — then it is taken at face value, so a wrong
         # second answer still ends the prompt rather than looping.
-        console.print(
+        ui.say(
             f"There are only {len(fitting)} numbered choices — pick 1 to "
             f"{len(fitting)}, or type a model name."
         )
@@ -284,11 +281,9 @@ def choose_mode(info: SystemInfo, current: str, *, ui: UI) -> str:
     if not info.has_docker:
         return "express"
     default = "2" if current == "server" else "1"
-    console.print("How should LePika run?")
-    console.print(
-        "  1  ⚡ Express — native Ollama + OpenWebUI, GPU on every platform (recommended)"
-    )
-    console.print(
+    ui.say("How should LePika run?")
+    ui.say("  1  ⚡ Express — native Ollama + OpenWebUI, GPU on every platform (recommended)")
+    ui.say(
         "  2  🐳 Server — everything in docker compose; NVIDIA GPU on Linux, "
         "shareable with `lepika expose`"
     )
@@ -301,13 +296,13 @@ def choose_mode(info: SystemInfo, current: str, *, ui: UI) -> str:
         except NoTerminal:
             # No terminal keeps the mode too — said by name, not as "1".
             kept = choices[default]
-            console.print(f"[dim]No terminal to ask — staying with {_MODE_LABEL[kept]}.[/dim]")
+            ui.say(f"[dim]No terminal to ask — staying with {_MODE_LABEL[kept]}.[/dim]")
             return kept
         answer = answer.strip() or default
         if answer.lower() in choices:
             return choices[answer.lower()]
         if attempt == 1:
-            console.print("Pick 1 or 2 — or type express or server.")
+            ui.say("Pick 1 or 2 — or type express or server.")
     # Two misses: keep the mode the machine already has rather than loop.
     return choices[default]
 
@@ -315,17 +310,17 @@ def choose_mode(info: SystemInfo, current: str, *, ui: UI) -> str:
 _MODE_LABEL = {"express": "Express", "server": "Server"}
 
 
-def _report_stop_failure(exc: FriendlyError) -> None:
+def _report_stop_failure(exc: FriendlyError, *, ui: UI) -> None:
     """Say a stop failed and carry on.
 
     A stack too broken to stop is usually why the user is leaving it, so this is a
     yellow line rather than a refusal that traps them in the mode that failed. Each
     stop reports its own; the problem sentence names which one it was.
     """
-    console.print(f"[yellow]Could not stop it cleanly: {escape(exc.problem)}[/yellow]")
+    ui.say(f"[yellow]Could not stop it cleanly: {escape(exc.problem)}[/yellow]")
 
 
-def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> SystemInfo:
+def leave_mode(info: SystemInfo, previous: str, cfg: config.Config, *, ui: UI) -> SystemInfo:
     """Stop the stack we are switching away from, best effort.
 
     Both modes serve OpenWebUI on the same host port, so an abandoned stack does not
@@ -335,7 +330,7 @@ def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> SystemInf
     Returns `info` as it stands after the stop: detection ran before it, and Server's
     pre-flight would otherwise refuse port 11434 for an Ollama that is already gone.
     """
-    console.print(
+    ui.say(
         f"Switching from {_MODE_LABEL[previous]} to {_MODE_LABEL[cfg.mode]} mode — "
         f"stopping the {_MODE_LABEL[previous]} stack…"
     )
@@ -348,7 +343,7 @@ def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> SystemInf
         # The bool is "was anything running", which is not a reason to stop switching.
         backend.stop(info, old_cfg, sys=system.REAL)
     except FriendlyError as exc:
-        _report_stop_failure(exc)
+        _report_stop_failure(exc, ui=ui)
     # `lepika down` leaves Ollama up on purpose, but Server's pre-flight refuses a
     # port 11434 that a native engine holds. Only the one LePika started is stopped
     # — anything else has no pid file — and rule 9 keeps a remote engine untouched,
@@ -358,12 +353,12 @@ def leave_mode(info: SystemInfo, previous: str, cfg: config.Config) -> SystemInf
             if ollama.stop_ollama(
                 info.os, old_cfg.engine_url, key=old_cfg.engine_key, sys=system.REAL
             ):
-                console.print("Stopped the Ollama LePika had started.")
+                ui.say("Stopped the Ollama LePika had started.")
                 # True means the API went quiet, not just that a signal was sent: the
                 # snapshot is corrected from what was verified, never re-probed.
                 info = dataclasses.replace(info, ollama_running=False)
         except FriendlyError as exc:
-            _report_stop_failure(exc)
+            _report_stop_failure(exc, ui=ui)
     return info
 
 
@@ -378,8 +373,8 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         # business — asking here would make --dry-run shell out.
         server.ensure_docker(info, sys=system.REAL)
     if cfg.mode != previous and not dry_run:
-        info = leave_mode(info, previous, cfg)
-    console.print(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))
+        info = leave_mode(info, previous, cfg, ui=ui.REAL)
+    ui.REAL.say(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))
     # The quant picker may read the Hub and ask nvidia-smi here, dry run or not: both are
     # reads, and the dry-run report then names the tag it would pull.
     ref = choose_model(info, cfg, sys=system.REAL, ui=ui.REAL)
@@ -389,18 +384,18 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         if cfg.mode == "server":
             # Built from lepika_home(), not stack_dir(): a dry run creates nothing.
             env_path = paths.lepika_home() / "stack" / stack_env.ENV_FILE
-            console.print(f"would: write {escape(str(env_path))}")
-            console.print("would: run docker compose up -d")
+            ui.REAL.say(f"would: write {escape(str(env_path))}")
+            ui.REAL.say("would: run docker compose up -d")
         else:
-            console.print("would: ensure Ollama is installed and running")
+            ui.REAL.say("would: ensure Ollama is installed and running")
         if models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info):
-            console.print(f"would: start vLLM with {escape(ref.raw)}")
+            ui.REAL.say(f"would: start vLLM with {escape(ref.raw)}")
         elif ref.kind == "hf_repo":
-            console.print(f"would: import {escape(ref.raw)} into Ollama ({engine.IMPORT_QUANT})")
+            ui.REAL.say(f"would: import {escape(ref.raw)} into Ollama ({engine.IMPORT_QUANT})")
         else:
-            console.print(f"would: pull model {escape(ref.raw)}")
-        console.print(f"would: start OpenWebUI on port {cfg.webui_port}")
-        console.print(f"would: open {health.webui_url(cfg.webui_port)}")
+            ui.REAL.say(f"would: pull model {escape(ref.raw)}")
+        ui.REAL.say(f"would: start OpenWebUI on port {cfg.webui_port}")
+        ui.REAL.say(f"would: open {health.webui_url(cfg.webui_port)}")
         return
     if models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info):
         server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE, sys=system.REAL, ui=ui.REAL)
@@ -437,6 +432,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
             dataclasses.replace(cfg, model=ref.raw),
             after_engine=pull_then_save,
             sys=system.REAL,
+            ui=ui.REAL,
         )
     except FriendlyError:
         # A switch into Server that fails before the engine came up never saved the
@@ -448,8 +444,8 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         if cfg.mode == "server" and previous != "server" and config.load().mode != "server":
             try:
                 if server.stop(info, cfg, sys=system.REAL):
-                    console.print("Removed the containers the failed switch had created.")
+                    ui.REAL.say("Removed the containers the failed switch had created.")
             except FriendlyError as exc:
-                _report_stop_failure(exc)
+                _report_stop_failure(exc, ui=ui.REAL)
         raise
     cli._ready(cfg, url)

@@ -74,7 +74,7 @@ def test_run_prints_a_check_mark_to_a_cp1252_stdout(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(sys, "stdout", stream)
     # Rich's Console reads sys.stdout at write time, which is what makes an in-place
     # reconfigure in run() reach every command's output.
-    monkeypatch.setattr(cli, "app", lambda: cli.console.print("✓ Ready"))
+    monkeypatch.setattr(cli, "app", lambda: ui.REAL.say("✓ Ready"))
     cli.run()
     stream.flush()
     assert "✓ Ready".encode() in stream.buffer.getvalue()

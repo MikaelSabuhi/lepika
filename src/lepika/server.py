@@ -8,8 +8,6 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from rich.console import Console
-
 from lepika import health, log, serving, stack_env
 from lepika.backend import UpdateStep
 from lepika.config import Config
@@ -18,8 +16,6 @@ from lepika.errors import FriendlyError
 from lepika.paths import logs_dir, stack_dir
 from lepika.system import System
 from lepika.ui import UI
-
-console = Console()
 
 STACK_FILES = ("compose.yml", "compose.nvidia.yml", "Caddyfile")
 VLLM_URL = "http://127.0.0.1:8000"
@@ -265,6 +261,7 @@ def start_stack(
     after_engine: Callable[[], None] | None = None,
     *,
     sys: System,
+    ui: UI,
 ) -> str:
     """Reconcile the stack with config and return the URL to open.
 
@@ -322,7 +319,7 @@ def start_stack(
     if "vllm" in active:
         # The first start downloads the full weights — tens of GB. A silent wait
         # that long is indistinguishable from a hang, so say what is happening.
-        console.print(
+        ui.say(
             "vLLM is loading the model — the first time this downloads the full "
             "weights; watch with `lepika logs`."
         )
@@ -358,6 +355,7 @@ def update(
     cfg: Config,
     *,
     sys: System,
+    ui: UI,
 ) -> list[UpdateStep]:
     """`lepika update` in Server mode: pull newer images, then reconcile."""
     ensure_docker(info, retry="lepika update", sys=sys)
@@ -368,7 +366,7 @@ def update(
     if sys.call([*base, "pull"]) != 0:
         raise _compose_failed("pull")
     after = _image_ids(base, sys=sys)
-    start_stack(info, cfg, sys=sys)
+    start_stack(info, cfg, sys=sys, ui=ui)
     if not after:
         # Nothing to compare: "up to date" would be a claim nobody checked. Unreadable
         # before but readable after is different: the pull certainly fetched something.

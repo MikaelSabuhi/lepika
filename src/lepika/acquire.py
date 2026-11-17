@@ -14,7 +14,6 @@ import re
 import shutil
 from pathlib import Path
 
-from rich.console import Console
 from rich.markup import escape
 
 from lepika import config, engine, gguf, hf, mlx, models, paths, serving, system
@@ -22,8 +21,6 @@ from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
 from lepika.ui import UI, NoTerminal
-
-console = Console()
 
 
 def _confirm(question: str, *, ui: UI) -> bool:
@@ -53,10 +50,10 @@ def preflight_with_token(repo: str, cfg: config.Config, *, ui: UI) -> tuple[hf.P
         return hf.preflight(repo, token, sys=system.REAL), token
 
 
-def _ram_advisory(label: str, quantized: int, info: SystemInfo) -> None:
+def _ram_advisory(label: str, quantized: int, info: SystemInfo, *, ui: UI) -> None:
     """Advice, never a refusal: it is the user's machine and the user's model."""
     if quantized > info.ram_gb * 0.75 * 2**30:
-        console.print(
+        ui.say(
             f"[yellow]{escape(label)} is about {engine.human_size(quantized)} after "
             f"quantization — it may not fit comfortably in {info.ram_gb:.0f} GB.[/yellow]"
         )
@@ -78,7 +75,7 @@ def import_repo(
     if any(engine.same_model(name, repo) for name, _size in installed):
         # Ollama already serves it: downloading the weights again to rebuild the same
         # model is minutes and gigabytes for nothing.
-        console.print(f"{escape(repo)} is already imported.")
+        ui.say(f"{escape(repo)} is already imported.")
         return repo
     pre, token = preflight_with_token(repo, cfg, ui=ui)
     if pre.has_gguf and not pre.has_safetensors:
@@ -118,7 +115,7 @@ def import_repo(
             f"({engine.human_size(free)} available).",
             "Free some space or pick a smaller model.",
         )
-    _ram_advisory(repo, store_bytes, info)
+    _ram_advisory(repo, store_bytes, info, ui=ui)
     how = (
         f"import it as-is (already {escape(method)}-quantized, ~{engine.human_size(store_bytes)})"
         if method is not None
@@ -127,7 +124,7 @@ def import_repo(
     if not _confirm(f"Fetch {engine.human_size(pre.download_bytes)} onto disk and {how}?", ui=ui):
         return None
     if info.os != "macos":
-        console.print("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
+        ui.say("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
     mlx.ensure_mlx(info, sys=system.REAL)
     hf.download(repo, dest, token, sys=system.REAL)
     engine.import_model(
@@ -195,7 +192,7 @@ def import_local(
     if any(engine.same_model(served, name) for served, _size in installed):
         # Same reasoning as `import_repo`: rebuilding what Ollama already serves is
         # minutes of quantization for a model that is already there.
-        console.print(f"{escape(name)} is already imported.")
+        ui.say(f"{escape(name)} is already imported.")
         return name
     # Already-quantized weights import as-is; `-q` would make Ollama refuse them.
     method = hf.quant_method(hf.load_config(source))
@@ -211,16 +208,16 @@ def import_local(
             f"({engine.human_size(free)} available).",
             "Free some space or pick a smaller model.",
         )
-    _ram_advisory(name, quantized, info)
+    _ram_advisory(name, quantized, info, ui=ui)
     how = (
         f"as-is (already {escape(method)}-quantized, ~{engine.human_size(quantized)})"
         if method is not None
         else f"as {quant} (~{engine.human_size(quantized)})"
     )
     # No confirm: nothing is downloaded, so there is no size to agree to first.
-    console.print(f"Importing {escape(name)} from {escape(str(source))} {how}…")
+    ui.say(f"Importing {escape(name)} from {escape(str(source))} {how}…")
     if info.os != "macos":
-        console.print("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
+        ui.say("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
     mlx.ensure_mlx(info, sys=system.REAL)
     engine.import_model(
         cfg.engine_url,
@@ -260,18 +257,18 @@ def acquire(
             raise
         # `hf.co/<org>/<repo>:tag` — the tag is Ollama's, not part of the repo id.
         repo, _tag = gguf.split_tag(ref.raw)
-        console.print(f"{escape(ref.raw)} ships full weights — importing it into Ollama instead.")
+        ui.say(f"{escape(ref.raw)} ships full weights — importing it into Ollama instead.")
         return import_repo(info, cfg, models.parse_model_ref(repo), quant=quant, ui=ui)
     if ref.kind == "hf_gguf" and cfg.engine_managed:
         # Registry models are Ollama-curated; only hf.co pulls carry community
         # templates — sometimes stripped of their tool handling, which turns every
         # request that carries tools into a 400. A managed engine only: `ollama
         # create` cannot send a remote engine's key (rule 9: not ours to fix).
-        _ensure_tools(cfg, ref.raw)
+        _ensure_tools(cfg, ref.raw, ui=ui)
     return ref.raw
 
 
-def _ensure_tools(cfg: config.Config, name: str) -> None:
+def _ensure_tools(cfg: config.Config, name: str, *, ui: UI) -> None:
     """Rebuild a pulled ChatML model whose template lost its tool handling.
 
     Best effort at every step: the pull already succeeded, so nothing here is
@@ -286,7 +283,7 @@ def _ensure_tools(cfg: config.Config, name: str) -> None:
         return
     if "<|im_start|>" not in template:
         # Not ChatML: the curated template would change the wire format, not fix it.
-        console.print(
+        ui.say(
             f"[yellow]{escape(name)} has no tool support — chat works, but features "
             "that send tools (web search, code interpreter) will fail with it.[/yellow]"
         )
@@ -300,9 +297,9 @@ def _ensure_tools(cfg: config.Config, name: str) -> None:
             sys=system.REAL,
         )
     except FriendlyError as exc:
-        console.print(f"[yellow]{escape(exc.problem)} {escape(exc.fix)}[/yellow]")
+        ui.say(f"[yellow]{escape(exc.problem)} {escape(exc.fix)}[/yellow]")
         return
-    console.print(
+    ui.say(
         f"✓ {escape(name)} shipped without tool support — rebuilt its chat template "
         "(ChatML + tools)."
     )

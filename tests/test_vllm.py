@@ -119,7 +119,7 @@ def test_start_stack_waits_for_vllm_not_ollama(isolated_home: Path) -> None:
         stdout={"docker info": '{"nvidia": {}}'},
         urls=routes({vllm: FakeResponse(), ui: FakeResponse()}),
     )
-    server.start_stack(LINUX_NVIDIA, cfg, sys=machine)
+    server.start_stack(LINUX_NVIDIA, cfg, sys=machine, ui=FakeUI())
     assert [r.full_url for r in machine.requested] == [vllm, ui]
 
 
@@ -129,6 +129,7 @@ def test_start_stack_vllm_without_toolkit_is_friendly(isolated_home: Path) -> No
             LINUX_NVIDIA,
             config.Config(mode="server", model=REPO),
             sys=FakeSystem(stdout={"docker info": "{}"}),
+            ui=FakeUI(),
         )
     assert "Container Toolkit" in exc.value.fix
 

@@ -172,8 +172,8 @@ def _stop_recorded_openwebui(os_name: str, port: int | None, *, sys: System) -> 
         # is never a licence to signal it (rule 7).
         pids.forget("openwebui")
         return False
-    # Stopped, gone, or recycled into a process we don't own — either way, drop
-    # the stale file.
+    # The answer is not used: stopped, already gone, or recycled into a process we
+    # don't own, the file is stale either way, so drop it.
     pids.terminate(pid, os_name, sys=sys)
     pids.forget("openwebui")
     return True

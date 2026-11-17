@@ -204,8 +204,7 @@ def stop_ollama(
         # it (rule 7).
         pids.forget("ollama")
         return False
-    # Gone or not ours to signal is not decided here: the wait below decides what
-    # that meant.
+    # The answer is not used: the wait below decides whether the engine stopped.
     pids.terminate(pid, os_name, sys=sys)
     # Signalled is not stopped: Ollama unloads its models on the way out, and the
     # caller's next move is a Server stack that wants port 11434. Counted in probes

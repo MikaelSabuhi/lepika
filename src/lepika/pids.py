@@ -40,7 +40,8 @@ def forget(name: str) -> None:
 def terminate(pid: int, os_name: str, *, sys: System) -> bool:
     """Ask `pid` to stop (taskkill /T /F on Windows, SIGTERM elsewhere).
 
-    False when it was already gone or is not ours to signal.
+    False when the signal found it gone or was refused; on Windows, only when
+    launching `taskkill` was refused.
     """
     # One `try` around both, as the stops have always had it: `taskkill` itself
     # can be refused, and that is not ours to signal either.

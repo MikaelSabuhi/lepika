@@ -9,13 +9,13 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from lepika import health, log, serving, stack_env
-from lepika.backend import UpdateStep
 from lepika.config import Config
 from lepika.detect import Machine
 from lepika.errors import FriendlyError
 from lepika.paths import logs_dir, stack_dir
 from lepika.system import System
 from lepika.ui import UI
+from lepika.updates import UpdateStep
 
 STACK_FILES = ("compose.yml", "compose.nvidia.yml", "Caddyfile")
 VLLM_URL = "http://127.0.0.1:8000"

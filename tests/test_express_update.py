@@ -8,8 +8,8 @@ import pytest
 from fakes import Answer, FakeResponse, FakeSystem, FakeUI, routes
 
 from lepika import config, detect, express, health, ollama, openwebui, paths
-from lepika.backend import UpdateStep
 from lepika.errors import FriendlyError
+from lepika.updates import UpdateStep
 
 
 def _info(os_name: str) -> detect.Machine:

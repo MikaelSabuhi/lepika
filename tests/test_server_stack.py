@@ -9,8 +9,8 @@ import pytest
 from fakes import FakeResponse, FakeSystem, FakeUI, routes
 
 from lepika import config, detect, log, paths, server, stack_env
-from lepika.backend import UpdateStep
 from lepika.errors import FriendlyError
+from lepika.updates import UpdateStep
 
 LINUX_NVIDIA = detect.Machine("linux", "x86_64", "nvidia", 64.0)
 MAC = detect.Machine("macos", "arm64", "apple", 32.0)

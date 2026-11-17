@@ -38,8 +38,8 @@ from lepika import (
     system,
     ui,
 )
-from lepika.backend import UpdateStep
 from lepika.errors import ISSUES_URL, CommandNotFound, FriendlyError
+from lepika.updates import UpdateStep
 
 app = typer.Typer(
     help="One command → local AI chat in your browser.",

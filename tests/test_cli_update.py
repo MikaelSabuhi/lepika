@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from lepika import cli, detect, express, health, ollama, openwebui, proc
-from lepika.backend import UpdateStep
+from lepika.updates import UpdateStep
 
 runner = CliRunner()
 LINUX = detect.Machine("linux", "x86_64", "nvidia", 32.0)

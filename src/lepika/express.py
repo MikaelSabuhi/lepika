@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from lepika import health, log, ollama, openwebui
-from lepika.backend import UpdateStep, changed
 from lepika.config import Config
 from lepika.detect import Machine
 from lepika.paths import logs_dir
 from lepika.system import System
 from lepika.ui import UI
+from lepika.updates import UpdateStep, changed
 
 
 def start_stack(

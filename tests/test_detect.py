@@ -26,12 +26,30 @@ def _engine_answers(request: urllib.request.Request) -> Any:
     return io.BytesIO(b'{"version": "0.33.2"}')
 
 
-def test_detect_os_maps_platform_names() -> None:
-    assert detect.detect_os("Darwin") == "macos"
-    assert detect.detect_os("Linux") == "linux"
-    assert detect.detect_os("Windows") == "windows"
-    with pytest.raises(FriendlyError):
-        detect.detect_os("SunOS")
+def test_detect_os_maps_platform_tags() -> None:
+    assert detect.detect_os("darwin") == "macos"
+    assert detect.detect_os("linux") == "linux"
+    assert detect.detect_os("win32") == "windows"
+    with pytest.raises(FriendlyError) as exc:
+        detect.detect_os("freebsd14")
+    assert exc.value.problem == "Unsupported operating system: freebsd14"
+    assert exc.value.fix == "LePika supports macOS, Linux, and Windows."
+
+
+@pytest.mark.parametrize(
+    ("platform", "architecture", "os_name", "arch", "gpu"),
+    [
+        ("darwin", "arm64", "macos", "arm64", "apple"),
+        ("linux", "x86_64", "linux", "x86_64", "none"),
+        ("win32", "AMD64", "windows", "amd64", "none"),
+    ],
+)
+def test_detect_reads_the_os_and_architecture_from_the_system(
+    platform: str, architecture: str, os_name: str, arch: str, gpu: str
+) -> None:
+    sys = FakeSystem(platform=platform, architecture=architecture, urls=_engine_answers)
+    info = detect.detect(sys=sys)
+    assert (info.os, info.arch, info.gpu) == (os_name, arch, gpu)
 
 
 def test_detect_gpu_apple_silicon() -> None:

@@ -118,6 +118,7 @@ class FakeSystem:
     `signal_errors` is raised, after recording, for a signal sent to that pid.
     `route_address` and `host_addresses` are this machine's addresses, as unfiltered
     as the real ones: by default it has no route and its hostname resolves to nothing.
+    `platform` and `architecture` describe the machine: Linux on x86_64 by default.
     """
 
     def __init__(
@@ -142,7 +143,11 @@ class FakeSystem:
         while_running: Callable[[list[str]], None] | None = None,
         route_address: str | None = None,
         host_addresses: Sequence[str] = (),
+        platform: str = "linux",
+        architecture: str = "x86_64",
     ) -> None:
+        self.platform_tag = platform
+        self.machine = architecture
         self.route = route_address
         self.hosts = list(host_addresses)
         self.stdout = stdout or {}
@@ -303,6 +308,12 @@ class FakeSystem:
 
     def host_addresses(self) -> list[str]:
         return list(self.hosts)
+
+    def platform(self) -> str:
+        return self.platform_tag
+
+    def architecture(self) -> str:
+        return self.machine
 
 
 class UnansweredQuestion(BaseException):

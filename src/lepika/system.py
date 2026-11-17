@@ -184,6 +184,16 @@ class System(Protocol):
         """Every IPv4 address this machine's hostname resolves to, unfiltered, in order."""
         ...
 
+    def platform(self) -> str:
+        """The interpreter's platform tag, as `sys.platform` spells it: "darwin",
+        "linux", "win32", …"""
+        ...
+
+    def architecture(self) -> str:
+        """The machine's architecture as its OS names it ("arm64", "x86_64", "AMD64", …),
+        read without starting a process."""
+        ...
+
 
 class RealSystem:
     """The machine itself. Each method delegates to the module that owns the effect,
@@ -284,6 +294,20 @@ class RealSystem:
             # An unresolvable hostname is normal on a laptop.
             return []
         return [str(entry[4][0]) for entry in addresses]
+
+    def platform(self) -> str:
+        return sys.platform
+
+    def architecture(self) -> str:
+        # Not `platform.machine()`: on Windows with Python 3.11 it can start a `ver`
+        # subprocess (rule 6). Windows has no `os.uname`; its environment names the
+        # machine, which is where the standard library itself falls back to.
+        uname = getattr(os, "uname", None)
+        if uname is not None:
+            return str(uname().machine)
+        return os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get(
+            "PROCESSOR_ARCHITECTURE", ""
+        )
 
 
 REAL: System = RealSystem()

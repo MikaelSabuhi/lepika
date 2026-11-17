@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import platform as _platform
 from dataclasses import dataclass
 from typing import Literal
 
@@ -25,16 +24,16 @@ class SystemInfo:
     ollama_running: bool
 
 
-def detect_os(system: str | None = None) -> OsName:
-    s = (system or _platform.system()).lower()
-    if s == "darwin":
+def detect_os(platform: str) -> OsName:
+    """The OS a `sys.platform` tag names."""
+    if platform == "darwin":
         return "macos"
-    if s == "linux":
+    if platform == "linux":
         return "linux"
-    if s == "windows":
+    if platform == "win32":
         return "windows"
     raise FriendlyError(
-        f"Unsupported operating system: {s}",
+        f"Unsupported operating system: {platform}",
         "LePika supports macOS, Linux, and Windows.",
     )
 
@@ -111,8 +110,8 @@ def detect_ram_gb(*, sys: System) -> float:
 
 def detect(*, sys: System) -> SystemInfo:
     """The machine as LePika needs it, read without starting a process (rule 6)."""
-    os_name = detect_os()
-    arch = _platform.machine().lower()
+    os_name = detect_os(sys.platform())
+    arch = sys.architecture().lower()
     return SystemInfo(
         os=os_name,
         arch=arch,

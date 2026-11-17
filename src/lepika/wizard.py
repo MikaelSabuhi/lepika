@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 
 from rich.markup import escape
 from rich.table import Table
 
 from lepika import (
     acquire,
-    backend,
     config,
     detect,
     engine,
@@ -22,6 +22,7 @@ from lepika import (
     serving,
     stack_env,
 )
+from lepika.backend import Backend
 from lepika.detect import Machine
 from lepika.errors import FriendlyError
 from lepika.models import CuratedModel, ModelRef
@@ -317,7 +318,14 @@ def _report_stop_failure(exc: FriendlyError, *, ui: UI) -> None:
     ui.say(f"[yellow]Could not stop it cleanly: {escape(exc.problem)}[/yellow]")
 
 
-def leave_mode(info: Machine, previous: str, cfg: config.Config, *, sys: System, ui: UI) -> None:
+def leave_mode(
+    info: Machine,
+    previous: str,
+    cfg: config.Config,
+    *,
+    ui: UI,
+    backends: Callable[[config.Config], Backend],
+) -> None:
     """Stop the stack we are switching away from, best effort.
 
     Both modes serve OpenWebUI on the same host port, so an abandoned stack does not
@@ -330,7 +338,7 @@ def leave_mode(info: Machine, previous: str, cfg: config.Config, *, sys: System,
     )
     # The config as it was loaded: `stop` reads the old mode's ports, not the new mode's.
     old_cfg = dataclasses.replace(cfg, mode=previous)
-    leaving = backend.backend_for(old_cfg, sys=sys, ui=ui)
+    leaving = backends(old_cfg)
     # A try each, not one around both: a UI that will not die would otherwise take
     # the engine stop down with it, and the port 11434 the next mode needs stays held.
     try:
@@ -348,10 +356,15 @@ def leave_mode(info: Machine, previous: str, cfg: config.Config, *, sys: System,
 
 
 def run_wizard(
-    dry_run: bool = False, mode: str | None = None, *, sys: System, ui: UI
+    info: Machine,
+    dry_run: bool = False,
+    mode: str | None = None,
+    *,
+    sys: System,
+    ui: UI,
+    backends: Callable[[config.Config], Backend],
 ) -> tuple[config.Config, str] | None:
     """None after a dry run; otherwise the config as saved and the URL to open."""
-    info = detect.detect(sys=sys)
     cfg = config.load()
     previous = cfg.mode
     cfg = dataclasses.replace(
@@ -363,7 +376,7 @@ def run_wizard(
         # business — asking here would make --dry-run shell out.
         server.ensure_docker(sys=sys)
     if cfg.mode != previous and not dry_run:
-        leave_mode(info, previous, cfg, sys=sys, ui=ui)
+        leave_mode(info, previous, cfg, ui=ui, backends=backends)
     ui.say(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))
     # The quant picker may read the Hub and ask nvidia-smi here, dry run or not: both are
     # reads, and the dry-run report then names the tag it would pull.
@@ -423,7 +436,7 @@ def run_wizard(
     # in Server mode the profile follows the ref, so an old full-weight repo would
     # bring up vLLM and leave nothing to pull into. Only the hook saves it (above).
     try:
-        url = backend.backend_for(cfg, sys=sys, ui=ui).start(
+        url = backends(cfg).start(
             info,
             dataclasses.replace(cfg, model=ref.raw),
             after_engine=pull_then_save,
@@ -437,7 +450,7 @@ def run_wizard(
         # must not tear down what was already running.
         if cfg.mode == "server" and previous != "server" and not saved:
             try:
-                if backend.backend_for(cfg, sys=sys, ui=ui).stop(info, cfg):
+                if backends(cfg).stop(info, cfg):
                     ui.say("Removed the containers the failed switch had created.")
             except FriendlyError as exc:
                 _report_stop_failure(exc, ui=ui)

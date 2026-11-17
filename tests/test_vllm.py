@@ -194,7 +194,6 @@ def test_wizard_saves_the_vllm_model_once_compose_up_has_succeeded(
     """The stack is started for the model it is given; the file follows once it is up."""
     config.save(config.Config(mode="server"))
     seen: list[str] = []
-    monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
     machine = FakeSystem(which=DOCKER)
     monkeypatch.setattr(models, "load_curated", lambda **k: [])
     face = FakeUI(reader=lambda *a, **k: REPO)
@@ -208,8 +207,14 @@ def test_wizard_saves_the_vllm_model_once_compose_up_has_succeeded(
         seen.append(f"hook:{config.load().model}")
         return "http://localhost:3000"
 
-    monkeypatch.setattr(backend, "backend_for", Backends(server=FakeBackend(on_start=fake_start)))
-    result = wizard.run_wizard(mode="server", sys=machine, ui=face)
+    backends = Backends(server=FakeBackend(on_start=fake_start))
+    result = wizard.run_wizard(
+        LINUX_NVIDIA,
+        mode="server",
+        sys=machine,
+        ui=face,
+        backends=lambda cfg: backends(cfg, sys=machine, ui=face),
+    )
     # The wizard hands the URL back; the CLI is what opens it.
     assert result is not None and result[1] == "http://localhost:3000"
     assert seen == ["token", f"start:{REPO}:", f"hook:{REPO}"]
@@ -220,17 +225,22 @@ def test_wizard_keeps_the_old_model_when_vllm_never_got_to_compose_up(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     config.save(config.Config(mode="server", model="qwen3:8b"))
-    monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
     monkeypatch.setattr(models, "load_curated", lambda **k: [])
     monkeypatch.setattr(server, "hf_token_prompt", lambda env, **k: None)
 
     def no_toolkit(info: Any, cfg: Any, **k: Any) -> str:
         raise FriendlyError("vLLM needs the GPU inside Docker, and Docker can't see it.", "x")
 
-    monkeypatch.setattr(backend, "backend_for", Backends(server=FakeBackend(on_start=no_toolkit)))
+    backends = Backends(server=FakeBackend(on_start=no_toolkit))
+    machine = FakeSystem(which=DOCKER)
+    face = FakeUI(reader=lambda *a, **k: REPO)
     with pytest.raises(FriendlyError):
         wizard.run_wizard(
-            mode="server", sys=FakeSystem(which=DOCKER), ui=FakeUI(reader=lambda *a, **k: REPO)
+            LINUX_NVIDIA,
+            mode="server",
+            sys=machine,
+            ui=face,
+            backends=lambda cfg: backends(cfg, sys=machine, ui=face),
         )
     assert config.load() == config.Config(mode="server", model="qwen3:8b")
 
@@ -367,7 +377,6 @@ def test_wizard_starts_the_stack_for_the_ollama_model_it_is_about_to_pull(
 ) -> None:
     config.save(config.Config(mode="server", model=REPO))
     started: list[str] = []
-    monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
     machine = FakeSystem(which=DOCKER)
     monkeypatch.setattr(models, "load_curated", lambda **k: [])
     face = FakeUI(reader=lambda *a, **k: "qwen3:8b")
@@ -379,8 +388,14 @@ def test_wizard_starts_the_stack_for_the_ollama_model_it_is_about_to_pull(
             after_engine()
         return "http://localhost:3000"
 
-    monkeypatch.setattr(backend, "backend_for", Backends(server=FakeBackend(on_start=fake_start)))
-    result = wizard.run_wizard(mode="server", sys=machine, ui=face)
+    backends = Backends(server=FakeBackend(on_start=fake_start))
+    result = wizard.run_wizard(
+        LINUX_NVIDIA,
+        mode="server",
+        sys=machine,
+        ui=face,
+        backends=lambda cfg: backends(cfg, sys=machine, ui=face),
+    )
     # The wizard hands the URL back; the CLI is what opens it.
     assert result is not None and result[1] == "http://localhost:3000"
     assert started == ["qwen3:8b"]

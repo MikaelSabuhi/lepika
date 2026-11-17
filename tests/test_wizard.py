@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from lepika import (
     acquire,
+    backend,
     cli,
     config,
     detect,
@@ -196,7 +197,6 @@ def test_wizard_keeps_the_old_model_when_the_pull_fails(
 ) -> None:
     """Saving before the pull recorded a model the machine does not have."""
     config.save(config.Config(model="previous:model"))
-    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     machine = FakeSystem()  # no Docker: Express, unasked
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
     face = FakeUI(reader=lambda *a, **k: "1")
@@ -211,7 +211,12 @@ def test_wizard_keeps_the_old_model_when_the_pull_fails(
     )
 
     with pytest.raises(FriendlyError):
-        wizard.run_wizard(sys=machine, ui=face)
+        wizard.run_wizard(
+            INFO,
+            sys=machine,
+            ui=face,
+            backends=lambda cfg: backend.backend_for(cfg, sys=machine, ui=face),
+        )
     assert config.load().model == "previous:model"
 
 

@@ -1,4 +1,5 @@
-"""Shared test doubles: `FakeSystem` and its HTTP answers, `FakeUI`, and `FakeBackend`."""
+"""Shared test doubles: `FakeSystem` and its HTTP answers, `FakeUI`, `FakeBackend`, and
+the `Deps` a command is handed when built from them."""
 
 from __future__ import annotations
 
@@ -10,7 +11,8 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from lepika import proc, ui
+from lepika import backend, cli, proc, ui
+from lepika.backend import Backend
 from lepika.config import Config
 from lepika.detect import Machine
 from lepika.errors import CommandNotFound, FriendlyError
@@ -514,8 +516,49 @@ class Backends:
         self.by_mode: dict[str, Any] = dict(by_mode)
         self.selected: list[str] = []
 
-    def __call__(self, cfg: Config, *, sys: System, ui: ui.UI) -> Any:
+    def __call__(self, cfg: Config, *, sys: System | None = None, ui: ui.UI | None = None) -> Any:
+        # `sys` and `ui` are optional so this also stands in for `Deps.backends`,
+        # which is handed only the config.
         self.selected.append(cfg.mode)
         if cfg.mode not in self.by_mode:
             raise UnprovidedBackend(f"the test gave no backend for {cfg.mode} mode")
         return self.by_mode[cfg.mode]
+
+
+class UnprovidedMachine(BaseException):
+    """Code detected the machine in a test that did not say which machine it is.
+
+    A BaseException, like the other refusals here: a test must never run against a
+    machine it did not choose, and no `except Exception` in `src/` may hide that.
+    """
+
+
+def _no_machine() -> Machine:
+    raise UnprovidedMachine("the test gave `fakes.deps` no machine")
+
+
+def deps(
+    *,
+    sys: FakeSystem | None = None,
+    ui: ui.UI | None = None,
+    machine: Machine | None = None,
+    backends: Callable[[Config], Backend] | None = None,
+) -> cli.Deps:
+    """The `Deps` a command is handed in a test: `runner.invoke(cli.app, [...], obj=deps())`.
+
+    `sys` and `ui` default to fresh fakes. With no `machine`, detecting one raises
+    `UnprovidedMachine`. `backends` defaults to the real backends over this `sys` and
+    `ui` — what a command reaches when the test gives no stand-in.
+    """
+    the_sys = sys if sys is not None else FakeSystem()
+    the_ui = ui if ui is not None else FakeUI()
+
+    def real_backends(cfg: Config) -> Backend:
+        return backend.backend_for(cfg, sys=the_sys, ui=the_ui)
+
+    return cli.Deps(
+        sys=the_sys,
+        ui=the_ui,
+        machine=_no_machine if machine is None else (lambda: machine),
+        backends=real_backends if backends is None else backends,
+    )

@@ -9,7 +9,7 @@ from fakes import FakeResponse, FakeSystem, routes
 from typer.testing import CliRunner
 
 from lepika import cli, detect, doctor
-from lepika.detect import SystemInfo
+from lepika.detect import Machine
 
 runner = CliRunner()
 
@@ -42,8 +42,8 @@ def engine_probes(fake: FakeSystem) -> list[str]:
     return [r.full_url for r in fake.requested if r.full_url.endswith("/api/version")]
 
 
-def info(ram: float = 32.0, has_ollama: bool = True) -> SystemInfo:
-    return SystemInfo(
+def info(ram: float = 32.0, has_ollama: bool = True) -> Machine:
+    return Machine(
         os="linux",
         arch="x86_64",
         gpu="nvidia",

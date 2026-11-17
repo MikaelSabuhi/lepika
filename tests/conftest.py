@@ -121,7 +121,7 @@ def no_real_processes(request: pytest.FixtureRequest, monkeypatch: pytest.Monkey
 def no_real_docker_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep `docker info` a fake: a real one is slow and answers with the developer's own
     Docker Desktop memory. A test that hands it the real `System` gets "unknown" — what
-    a stopped daemon answers — and sizes against its own SystemInfo, as before."""
+    a stopped daemon answers — and sizes against its own Machine, as before."""
     real = detect.docker_memory_gb
 
     def probe(*, sys: System) -> float:

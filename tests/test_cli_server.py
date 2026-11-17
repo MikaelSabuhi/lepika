@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 from lepika import cli, config, detect, express, health, server
 
 runner = CliRunner()
-DOCKER = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
+DOCKER = detect.Machine("linux", "x86_64", "nvidia", 64.0, True, False, False)
 
 
 @pytest.fixture()
@@ -70,7 +70,7 @@ def test_up_without_docker_says_so_before_probing_docker(
     "Command not found" instead of the friendly Express hint."""
     from lepika.errors import FriendlyError
 
-    no_docker = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, False, False, False)
+    no_docker = detect.Machine("linux", "x86_64", "nvidia", 64.0, False, False, False)
     config.save(config.Config(mode="server"))
     monkeypatch.setattr(detect, "detect", lambda **k: no_docker)
     monkeypatch.setattr(

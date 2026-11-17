@@ -28,8 +28,8 @@ from lepika import (
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
-LINUX_NVIDIA = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
-MAC = detect.SystemInfo("macos", "arm64", "apple", 32.0, True, False, False)
+LINUX_NVIDIA = detect.Machine("linux", "x86_64", "nvidia", 64.0, True, False, False)
+MAC = detect.Machine("macos", "arm64", "apple", 32.0, True, False, False)
 REPO = "meta-llama/Llama-3.1-8B-Instruct"
 
 
@@ -63,7 +63,7 @@ def test_vllm_active_is_the_one_predicate_for_a_running_vllm() -> None:
     assert serving.vllm_active(config.Config(mode="express", model=REPO)) is False
 
 
-CPU_LINUX = detect.SystemInfo("linux", "x86_64", "none", 64.0, True, False, False)
+CPU_LINUX = detect.Machine("linux", "x86_64", "none", 64.0, True, False, False)
 
 
 def test_validate_accepts_hf_repo_where_vllm_or_an_import_runs_and_rejects_elsewhere() -> None:

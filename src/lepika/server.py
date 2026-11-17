@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 from lepika import health, log, serving, stack_env
 from lepika.backend import UpdateStep
 from lepika.config import Config
-from lepika.detect import SystemInfo
+from lepika.detect import Machine
 from lepika.errors import FriendlyError
 from lepika.paths import logs_dir, stack_dir
 from lepika.system import System
@@ -174,7 +174,7 @@ def hf_token_prompt(env_path: Path, *, sys: System, ui: UI) -> None:
     stack_env.write_env(env_path, {"HF_TOKEN": token})
 
 
-def nvidia_in_docker(info: SystemInfo, *, sys: System) -> bool:
+def nvidia_in_docker(info: Machine, *, sys: System) -> bool:
     """Can Docker hand the NVIDIA GPU to a container? (Linux: the toolkit registers a runtime.)"""
     if info.gpu != "nvidia":
         return False
@@ -202,7 +202,7 @@ def compose_cmd(stack: Path, active: list[str], gpu_overlay: bool) -> list[str]:
     return cmd
 
 
-def ensure_docker(info: SystemInfo, retry: str = "lepika up", *, sys: System) -> None:
+def ensure_docker(info: Machine, retry: str = "lepika up", *, sys: System) -> None:
     if not info.has_docker:
         raise FriendlyError(
             "Server mode needs Docker, which is not installed.",
@@ -245,7 +245,7 @@ def _compose_failed(step: str) -> FriendlyError:
     )
 
 
-def gpu_note(info: SystemInfo, *, sys: System) -> str | None:
+def gpu_note(info: Machine, *, sys: System) -> str | None:
     """One line when an NVIDIA GPU exists but Docker can't see it; None otherwise."""
     if info.gpu == "nvidia" and info.os == "linux" and not nvidia_in_docker(info, sys=sys):
         return (
@@ -256,7 +256,7 @@ def gpu_note(info: SystemInfo, *, sys: System) -> str | None:
 
 
 def start_stack(
-    info: SystemInfo,
+    info: Machine,
     cfg: Config,
     after_engine: Callable[[], None] | None = None,
     *,
@@ -338,7 +338,7 @@ def start_stack(
     return health.webui_url(cfg.webui_port)
 
 
-def stop(info: SystemInfo, cfg: Config, *, sys: System) -> bool:
+def stop(info: Machine, cfg: Config, *, sys: System) -> bool:
     """`lepika down` in Server mode: stop and remove the containers; volumes stay."""
     ensure_docker(info, retry="lepika down", sys=sys)
     stack = install_stack()
@@ -351,7 +351,7 @@ def stop(info: SystemInfo, cfg: Config, *, sys: System) -> bool:
 
 
 def update(
-    info: SystemInfo,
+    info: Machine,
     cfg: Config,
     *,
     sys: System,

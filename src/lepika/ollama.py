@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 from lepika import engine, health, log
 from lepika.backend import UpdateStep, changed
 from lepika.config import DEFAULT_CONTEXT_LENGTH, DEFAULT_ENGINE_URL, Config
-from lepika.detect import SystemInfo
+from lepika.detect import Machine
 from lepika.errors import CommandNotFound, FriendlyError
 from lepika.paths import lepika_home, logs_dir, pid_file
 from lepika.system import System
@@ -65,7 +65,7 @@ def _systemctl(*args: str, sys: System) -> list[str]:
     return ["systemctl", *args] if sys.euid() == 0 else ["sudo", "systemctl", *args]
 
 
-def install_ollama(info: SystemInfo, *, sys: System) -> None:
+def install_ollama(info: Machine, *, sys: System) -> None:
     if info.os == "macos":
         if sys.which("brew") is not None:
             sys.run(["brew", "install", "ollama"])
@@ -240,7 +240,7 @@ def stop_ollama(
 
 
 def ensure_ollama(
-    info: SystemInfo,
+    info: Machine,
     *,
     context_length: int,
     url: str = DEFAULT_ENGINE_URL,
@@ -283,7 +283,7 @@ def _ours(os_name: str, *, sys: System) -> bool:
     return pid > 0 and _is_ollama_process(pid, os_name, sys=sys)
 
 
-def context_note(info: SystemInfo, cfg: Config, *, sys: System) -> str | None:
+def context_note(info: Machine, cfg: Config, *, sys: System) -> str | None:
     """One line for `lepika up` when the context length in config.toml cannot apply.
 
     `ensure_ollama` adopts an engine that already answers instead of starting one,
@@ -382,7 +382,7 @@ def _restore_unit(state: tuple[bool, bool] | None, *, sys: System) -> bool:
         return False
 
 
-def upgrade_ollama(info: SystemInfo, *, sys: System) -> None:
+def upgrade_ollama(info: Machine, *, sys: System) -> None:
     """Upgrade the native Ollama in place, each OS through its own package manager.
 
     On Linux the install script re-enables and starts `ollama.service`; the caller
@@ -429,7 +429,7 @@ def upgrade_ollama(info: SystemInfo, *, sys: System) -> None:
             )
 
 
-def update(info: SystemInfo, cfg: Config, *, sys: System) -> list[UpdateStep]:
+def update(info: Machine, cfg: Config, *, sys: System) -> list[UpdateStep]:
     """The Ollama steps of `lepika update` in Express mode, for an engine LePika manages."""
     steps: list[UpdateStep] = []
     # Read before the install script runs: it re-enables and starts the unit.
@@ -463,7 +463,7 @@ def update(info: SystemInfo, cfg: Config, *, sys: System) -> list[UpdateStep]:
 
 
 def _update_ollama(
-    info: SystemInfo, cfg: Config, unit: tuple[bool, bool] | None, *, sys: System
+    info: Machine, cfg: Config, unit: tuple[bool, bool] | None, *, sys: System
 ) -> tuple[UpdateStep, bool]:
     """The Ollama step, and whether `ollama.service` is back as `unit` recorded it.
 

@@ -25,14 +25,14 @@ from lepika import (
     system,
     ui,
 )
-from lepika.detect import SystemInfo
+from lepika.detect import Machine
 from lepika.errors import FriendlyError
 from lepika.models import CuratedModel, ModelRef
 from lepika.system import System
 from lepika.ui import UI, NoTerminal
 
 
-def _validate(ref: ModelRef, cfg: config.Config, info: SystemInfo) -> ModelRef:
+def _validate(ref: ModelRef, cfg: config.Config, info: Machine) -> ModelRef:
     if ref.kind != "hf_repo":
         return ref
     if serving.vllm_allowed(cfg, info) or serving.import_allowed(cfg, info):
@@ -71,7 +71,7 @@ class EngineMemory:
 _MORE_FOR_DOCKER = "Docker Desktop → Settings → Resources gives it more."
 
 
-def engine_memory(info: SystemInfo, cfg: config.Config, *, sys: System) -> EngineMemory:
+def engine_memory(info: Machine, cfg: config.Config, *, sys: System) -> EngineMemory:
     """Server mode's engine is a container: on Docker Desktop it gets the VM's memory,
     not the machine's. Sized against the Mac's 16 GB, a 12 GB build looks fine and
     then never loads in the 7.75 GiB the VM really has. Anything else — Express, a
@@ -89,7 +89,7 @@ def engine_memory(info: SystemInfo, cfg: config.Config, *, sys: System) -> Engin
 def choose_quant(
     ref: ModelRef,
     cfg: config.Config,
-    info: SystemInfo,
+    info: Machine,
     *,
     sys: System,
     ui: UI,
@@ -196,7 +196,7 @@ def choose_quant(
 def resolve(
     ref: ModelRef,
     cfg: config.Config,
-    info: SystemInfo,
+    info: Machine,
     *,
     sys: System,
     ui: UI,
@@ -206,7 +206,7 @@ def resolve(
 
 
 def choose_model(
-    info: SystemInfo,
+    info: Machine,
     cfg: config.Config,
     curated: list[CuratedModel] | None = None,
     *,
@@ -272,7 +272,7 @@ def choose_model(
     return resolve(models.parse_model_ref(answer), cfg, info, sys=sys, ui=ui)
 
 
-def choose_mode(info: SystemInfo, current: str, *, ui: UI) -> str:
+def choose_mode(info: Machine, current: str, *, ui: UI) -> str:
     """Express unless Docker is present AND the user picks Server.
 
     A machine without Docker never hears the question — and so is never nudged
@@ -320,7 +320,7 @@ def _report_stop_failure(exc: FriendlyError, *, ui: UI) -> None:
     ui.say(f"[yellow]Could not stop it cleanly: {escape(exc.problem)}[/yellow]")
 
 
-def leave_mode(info: SystemInfo, previous: str, cfg: config.Config, *, ui: UI) -> SystemInfo:
+def leave_mode(info: Machine, previous: str, cfg: config.Config, *, ui: UI) -> Machine:
     """Stop the stack we are switching away from, best effort.
 
     Both modes serve OpenWebUI on the same host port, so an abandoned stack does not

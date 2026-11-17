@@ -28,7 +28,7 @@ def _plain(output: str) -> str:
     return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", output).split())
 
 
-INFO = detect.SystemInfo(
+INFO = detect.Machine(
     os="linux",
     arch="x86_64",
     gpu="nvidia",
@@ -164,8 +164,8 @@ def test_model_add_never_rebuilds_on_a_remote_engine(
     assert runner.invoke(cli.app, ["model", "add", "hf.co/o/r-GGUF:Q4_K_M"]).exit_code == 0
 
 
-CPU = detect.SystemInfo("linux", "x86_64", "none", 32.0, False, True, True)
-MAC = detect.SystemInfo("macos", "arm64", "apple", 32.0, False, True, True)
+CPU = detect.Machine("linux", "x86_64", "none", 32.0, False, True, True)
+MAC = detect.Machine("macos", "arm64", "apple", 32.0, False, True, True)
 SAFETENSORS = hf.Preflight(
     files=("config.json", "model.safetensors"),
     total_bytes=4_000_000_000,

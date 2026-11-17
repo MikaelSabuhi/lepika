@@ -218,7 +218,7 @@ def test_run_treats_an_os_error_without_a_file_as_unexpected(
 def test_run_without_a_terminal_is_two_lines_not_a_traceback(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    info = detect.SystemInfo("macos", "arm64", "apple", 16.0, False, True, True)
+    info = detect.Machine("macos", "arm64", "apple", 16.0, False, True, True)
 
     def no_terminal(*a: Any, **k: Any) -> str:
         raise EOFError("stdin is not a terminal")

@@ -13,13 +13,13 @@ from lepika import cli, config, detect, engine, express, models, ollama, server,
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
-DOCKER = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
-NO_DOCKER = detect.SystemInfo("macos", "arm64", "apple", 16.0, False, True, True)
+DOCKER = detect.Machine("linux", "x86_64", "nvidia", 64.0, True, False, False)
+NO_DOCKER = detect.Machine("macos", "arm64", "apple", 16.0, False, True, True)
 CURATED = [models.CuratedModel(name="Small", ref="llama3.2:3b", min_ram_gb=6)]
 
 
 def started(
-    info: detect.SystemInfo,
+    info: detect.Machine,
     cfg: config.Config,
     after_engine: Callable[[], None] | None = None,
     **k: Any,
@@ -99,7 +99,7 @@ def test_wizard_in_server_mode_uses_the_server_backend(
     events: list[str] = []
 
     def fake_server_start(
-        info: detect.SystemInfo,
+        info: detect.Machine,
         cfg: config.Config,
         after_engine: Callable[[], None] | None = None,
         **k: Any,
@@ -288,7 +288,7 @@ def test_failure_after_the_mode_was_saved_keeps_the_visible_stack(
     visible to `lepika down` — a later failure (OpenWebUI timeout) sweeps nothing."""
 
     def engine_up_then_webui_times_out(
-        info: detect.SystemInfo,
+        info: detect.Machine,
         cfg: config.Config,
         after_engine: Callable[[], None] | None = None,
         **k: Any,
@@ -336,9 +336,9 @@ def test_server_start_sees_the_ollama_as_stopped_after_the_switch(
         detect, "detect", lambda **k: dataclasses.replace(DOCKER, ollama_running=True)
     )
     monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: True)
-    seen: list[detect.SystemInfo] = []
+    seen: list[detect.Machine] = []
 
-    def start(info: detect.SystemInfo, cfg: config.Config, **k: Any) -> str:
+    def start(info: detect.Machine, cfg: config.Config, **k: Any) -> str:
         seen.append(info)
         return started(info, cfg, **k)
 
@@ -393,7 +393,7 @@ def test_the_mode_is_saved_only_once_the_engine_is_up(
 ) -> None:
     """A pre-flight that refuses must not leave a config claiming a mode that never started."""
 
-    def refuse(info: detect.SystemInfo, cfg: config.Config, **k: Any) -> str:
+    def refuse(info: detect.Machine, cfg: config.Config, **k: Any) -> str:
         raise FriendlyError("Ollama is already running natively on port 11434.", "Stop it.")
 
     config.save(config.Config(mode="express", model="previous:model"))
@@ -412,7 +412,7 @@ def test_a_backend_too_broken_to_stop_does_not_trap_the_user_in_it(
 ) -> None:
     """Docker being down is usually *why* someone is leaving Server mode."""
 
-    def boom(info: detect.SystemInfo, cfg: config.Config, **k: Any) -> bool:
+    def boom(info: detect.Machine, cfg: config.Config, **k: Any) -> bool:
         raise FriendlyError("Docker is installed but not running.", "Start Docker Desktop.")
 
     config.save(config.Config(mode="server"))
@@ -434,7 +434,7 @@ def test_a_ui_that_will_not_stop_still_lets_the_engine_stop(
     entirely, and Server's pre-flight then refuses the port 11434 it still holds.
     """
 
-    def boom(info: detect.SystemInfo, cfg: config.Config, **k: Any) -> bool:
+    def boom(info: detect.Machine, cfg: config.Config, **k: Any) -> bool:
         raise FriendlyError("OpenWebUI on port 3000 is still answering.", "Stop it yourself.")
 
     monkeypatch.setattr(express, "stop", boom)

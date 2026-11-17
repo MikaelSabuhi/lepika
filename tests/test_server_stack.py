@@ -11,9 +11,9 @@ from lepika import config, detect, log, paths, server, stack_env
 from lepika.backend import UpdateStep
 from lepika.errors import FriendlyError
 
-LINUX_NVIDIA = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
-MAC = detect.SystemInfo("macos", "arm64", "apple", 32.0, True, False, False)
-NO_DOCKER = detect.SystemInfo("linux", "x86_64", "none", 16.0, False, False, False)
+LINUX_NVIDIA = detect.Machine("linux", "x86_64", "nvidia", 64.0, True, False, False)
+MAC = detect.Machine("macos", "arm64", "apple", 32.0, True, False, False)
+NO_DOCKER = detect.Machine("linux", "x86_64", "none", 16.0, False, False, False)
 
 
 def test_profiles_follow_config() -> None:
@@ -117,7 +117,7 @@ def test_start_stack_takes_the_shell_hf_token_from_the_system(isolated_home: Pat
 
 # Port 11434 already answers: either our own ollama container (a second `lepika up`)
 # or a native Ollama the container could never bind over.
-ENGINE_ANSWERING = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, True, True)
+ENGINE_ANSWERING = detect.Machine("linux", "x86_64", "nvidia", 64.0, True, True, True)
 
 
 def _with_ps(ps_stdout: str) -> FakeSystem:

@@ -13,14 +13,14 @@ import pytest
 from fakes import FakeResponse, FakeSystem, UnansweredURL, routes
 
 from lepika import config, health, mlx, ollama, paths, serving
-from lepika.detect import SystemInfo
+from lepika.detect import Machine
 from lepika.errors import FriendlyError
 from lepika.paths import logs_dir
 from lepika.system import Response
 
 
-def info_for(os_name: str, has_ollama: bool = False) -> SystemInfo:
-    return SystemInfo(
+def info_for(os_name: str, has_ollama: bool = False) -> Machine:
+    return Machine(
         os=os_name,  # type: ignore[arg-type]
         arch="x86_64",
         gpu="none",
@@ -367,8 +367,8 @@ def test_wait_for_raises_after_timeout() -> None:
         health.wait_for(lambda: False, seconds=3, what="Ollama API", sys=FakeSystem())
 
 
-def _info(os_name: str, arch: str, gpu: str) -> SystemInfo:
-    return SystemInfo(os_name, arch, gpu, 32.0, False, True, True)  # type: ignore[arg-type]
+def _info(os_name: str, arch: str, gpu: str) -> Machine:
+    return Machine(os_name, arch, gpu, 32.0, False, True, True)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -466,8 +466,8 @@ def _linux_install(tmp_path: Path, with_mlx: bool = False) -> tuple[Path, dict[s
 # The rest of the Linux pipeline, on PATH.
 _PIPELINE = {name: f"/usr/bin/{name}" for name in ("zstd", "curl", "tar")}
 
-NVIDIA_LINUX = SystemInfo("linux", "x86_64", "nvidia", 64.0, False, True, True)
-NVIDIA_WINDOWS = SystemInfo("windows", "amd64", "nvidia", 64.0, False, True, True)
+NVIDIA_LINUX = Machine("linux", "x86_64", "nvidia", 64.0, False, True, True)
+NVIDIA_WINDOWS = Machine("windows", "amd64", "nvidia", 64.0, False, True, True)
 
 
 class NeverProbes(FakeSystem):
@@ -479,7 +479,7 @@ def test_ensure_mlx_is_a_no_op_on_macos_and_when_the_bundle_is_present(tmp_path:
     _root, which = _linux_install(tmp_path, with_mlx=True)
     # macOS returns before it looks at anything: every effect is faked, and none is used.
     mac = NeverProbes(stdout=SMI13)
-    mlx.ensure_mlx(SystemInfo("macos", "arm64", "apple", 32.0, False, True, True), sys=mac)
+    mlx.ensure_mlx(Machine("macos", "arm64", "apple", 32.0, False, True, True), sys=mac)
     assert (mac.ran, mac.called, mac.write_probes) == ([], [], [])
     linux = FakeSystem(which=which, stdout=SMI13)
     mlx.ensure_mlx(NVIDIA_LINUX, sys=linux)

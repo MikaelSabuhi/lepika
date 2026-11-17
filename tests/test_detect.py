@@ -128,7 +128,7 @@ def test_api_up_without_key_sends_no_authorization_header() -> None:
 
 
 def test_plan_sentence_mentions_gpu_and_mode() -> None:
-    info = detect.SystemInfo(
+    info = detect.Machine(
         os="macos",
         arch="arm64",
         gpu="apple",
@@ -143,25 +143,25 @@ def test_plan_sentence_mentions_gpu_and_mode() -> None:
 
 
 def test_plan_sentence_describes_server_mode() -> None:
-    info = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
+    info = detect.Machine("linux", "x86_64", "nvidia", 64.0, True, False, False)
     assert "Server mode" in detect.plan_sentence(info, mode="server")
     assert "docker compose" in detect.plan_sentence(info, mode="server")
 
 
 def test_plan_sentence_names_the_engine_it_is_given() -> None:
-    info = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
+    info = detect.Machine("linux", "x86_64", "nvidia", 64.0, True, False, False)
     assert "OpenWebUI + vLLM" in detect.plan_sentence(info, mode="server", engine="vLLM")
     assert "OpenWebUI + Ollama" in detect.plan_sentence(info, mode="server")
 
 
 def test_plan_sentence_names_a_remote_engine() -> None:
-    info = detect.SystemInfo("linux", "x86_64", "nvidia", 64.0, True, False, False)
+    info = detect.Machine("linux", "x86_64", "nvidia", 64.0, True, False, False)
     sentence = detect.plan_sentence(info, mode="server", engine="a remote engine")
     assert "OpenWebUI + a remote engine)." in sentence
 
 
-def _info(gpu: detect.Gpu, ram_gb: float) -> detect.SystemInfo:
-    return detect.SystemInfo(
+def _info(gpu: detect.Gpu, ram_gb: float) -> detect.Machine:
+    return detect.Machine(
         os="linux",
         arch="x86_64",
         gpu=gpu,

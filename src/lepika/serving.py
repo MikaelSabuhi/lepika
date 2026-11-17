@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from lepika import models
 from lepika.config import Config
-from lepika.detect import SystemInfo
+from lepika.detect import Machine
 
 
-def import_allowed(cfg: Config, info: SystemInfo) -> bool:
+def import_allowed(cfg: Config, info: Machine) -> bool:
     """Can this machine import a full-weight repo into Ollama? (rule 10, Express)
 
     Imports run on Ollama's MLX engine, which is built into the macOS arm64 build.
@@ -24,7 +24,7 @@ def import_allowed(cfg: Config, info: SystemInfo) -> bool:
     return info.os != "macos" and info.gpu == "nvidia" and info.arch in ("x86_64", "amd64")
 
 
-def vllm_allowed(cfg: Config, info: SystemInfo) -> bool:
+def vllm_allowed(cfg: Config, info: Machine) -> bool:
     """Could this machine serve a full-weight repo? vLLM is a CUDA container we start.
 
     `engine_managed` is part of it: with a remote engine we start no containers at

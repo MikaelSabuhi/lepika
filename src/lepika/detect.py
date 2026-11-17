@@ -14,7 +14,7 @@ Gpu = Literal["apple", "nvidia", "none"]
 
 
 @dataclass(frozen=True)
-class SystemInfo:
+class Machine:
     os: OsName
     arch: str
     gpu: Gpu
@@ -49,7 +49,7 @@ def detect_gpu(os_name: OsName, arch: str, *, sys: System) -> Gpu:
 _NVIDIA_SMI_MEMORY = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
 
 
-def gpu_memory_gb(info: SystemInfo, *, sys: System) -> float:
+def gpu_memory_gb(info: Machine, *, sys: System) -> float:
     """Memory a model can be loaded into on the GPU, in GiB; 0.0 without one.
 
     Asked by the quant picker alone, never by `detect()`: on NVIDIA it is a
@@ -108,11 +108,11 @@ def detect_ram_gb(*, sys: System) -> float:
     return float(total_bytes) / 2**30
 
 
-def detect(*, sys: System) -> SystemInfo:
+def detect(*, sys: System) -> Machine:
     """The machine as LePika needs it, read without starting a process (rule 6)."""
     os_name = detect_os(sys.platform())
     arch = sys.architecture().lower()
-    return SystemInfo(
+    return Machine(
         os=os_name,
         arch=arch,
         gpu=detect_gpu(os_name, arch, sys=sys),
@@ -127,7 +127,7 @@ _GPU_LABEL = {"apple": "Apple Metal GPU", "nvidia": "NVIDIA GPU", "none": "CPU o
 _OS_LABEL = {"macos": "macOS", "linux": "Linux", "windows": "Windows"}
 
 
-def plan_sentence(info: SystemInfo, mode: str = "express", engine: str = "Ollama") -> str:
+def plan_sentence(info: Machine, mode: str = "express", engine: str = "Ollama") -> str:
     speed_note = "" if info.gpu != "none" else " (no GPU found — models will run slowly)"
     hardware = (
         f"Detected {_OS_LABEL[info.os]} on {info.arch} with {info.ram_gb:.0f} GB RAM "

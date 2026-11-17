@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from lepika import config, health, server, serving
-from lepika.detect import SystemInfo
+from lepika.detect import Machine
 from lepika.errors import FriendlyError
 from lepika.system import System
 
@@ -39,7 +39,7 @@ def _answers(cmd: list[str], *, sys: System) -> bool:
     return _finding(lambda: bool(sys.run(cmd, check=False, timeout=20, log=False).returncode == 0))
 
 
-def run_checks(info: SystemInfo, *, sys: System) -> list[CheckResult]:
+def run_checks(info: Machine, *, sys: System) -> list[CheckResult]:
     cfg = config.load()
     checks: list[CheckResult] = []
     if cfg.mode == "server":

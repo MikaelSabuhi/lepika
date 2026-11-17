@@ -12,8 +12,8 @@ from lepika.backend import UpdateStep
 from lepika.errors import FriendlyError
 
 
-def _info(os_name: str) -> detect.SystemInfo:
-    return detect.SystemInfo(
+def _info(os_name: str) -> detect.Machine:
+    return detect.Machine(
         os=os_name,
         arch="x86_64",
         gpu="nvidia",
@@ -66,7 +66,7 @@ def restarts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 def _update(
-    info: detect.SystemInfo,
+    info: detect.Machine,
     machine: FakeSystem,
     *,
     engine: Answer | list[Answer] | None = None,

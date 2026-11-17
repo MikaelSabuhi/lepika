@@ -15,7 +15,7 @@ from fakes import FakeResponse, FakeSystem, FakeUI, routes
 
 from lepika import express, health, log, ollama, openwebui, paths, ports, system
 from lepika.config import Config
-from lepika.detect import SystemInfo
+from lepika.detect import Machine
 from lepika.errors import FriendlyError
 from lepika.system import Response
 
@@ -175,7 +175,7 @@ def test_start_openwebui_replaces_an_unreadable_secret_file(isolated_home: Path)
 
 def test_stop_is_the_backend_stop_for_express(monkeypatch: pytest.MonkeyPatch) -> None:
     """`lepika down` in Express stops the UI only — Ollama is a shared service."""
-    info = SystemInfo(
+    info = Machine(
         os="linux",
         arch="x86_64",
         gpu="none",
@@ -203,7 +203,7 @@ def _log_events() -> list[str]:
 
 def test_start_stack_writes_one_stack_up_line(monkeypatch: pytest.MonkeyPatch) -> None:
     """Server mode logs `stack.up`; the log must say the same about Express."""
-    info = SystemInfo("linux", "x86_64", "none", 16.0, False, True, True)
+    info = Machine("linux", "x86_64", "none", 16.0, False, True, True)
     monkeypatch.setattr(ollama, "ensure_ollama", lambda info, url=None, **k: None)
     monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
     express.start_stack(info, Config(), sys=FakeSystem(), ui=FakeUI())
@@ -214,9 +214,9 @@ def test_start_stack_logs_nothing_when_the_engine_pre_flight_refuses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A run that never started leaves the failure line only, exactly as Server does."""
-    info = SystemInfo("linux", "x86_64", "none", 16.0, False, True, True)
+    info = Machine("linux", "x86_64", "none", 16.0, False, True, True)
 
-    def refuse(info: SystemInfo, url: str | None = None, **k: Any) -> None:
+    def refuse(info: Machine, url: str | None = None, **k: Any) -> None:
         raise FriendlyError("Ollama is already running natively.", "Stop it.")
 
     monkeypatch.setattr(ollama, "ensure_ollama", refuse)
@@ -227,7 +227,7 @@ def test_start_stack_logs_nothing_when_the_engine_pre_flight_refuses(
 
 
 def test_stop_writes_a_stack_down_line(monkeypatch: pytest.MonkeyPatch) -> None:
-    info = SystemInfo("linux", "x86_64", "none", 16.0, False, True, True)
+    info = Machine("linux", "x86_64", "none", 16.0, False, True, True)
     monkeypatch.setattr(openwebui, "stop_openwebui", lambda os_name, port=None, **k: False)
     assert express.stop(info, Config(), sys=FakeSystem()) is False
     assert "stack.down" in _log_events()

@@ -9,7 +9,7 @@ from lepika import cli, config, detect, health, ollama, openwebui, paths
 
 runner = CliRunner()
 
-INFO = detect.SystemInfo(
+INFO = detect.Machine(
     os="linux",
     arch="x86_64",
     gpu="nvidia",

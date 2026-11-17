@@ -82,7 +82,12 @@ def import_repo(
         # A GGUF build typed without `hf.co/`: Ollama pulls those itself.
         gguf = models.parse_model_ref(f"hf.co/{repo}")
         engine.pull_model(
-            cfg.engine_url, gguf, key=cfg.engine_key, managed=cfg.engine_managed, sys=system.REAL
+            cfg.engine_url,
+            gguf,
+            key=cfg.engine_key,
+            managed=cfg.engine_managed,
+            sys=system.REAL,
+            ui=ui,
         )
         return gguf.raw
     if not pre.has_safetensors:
@@ -250,7 +255,12 @@ def acquire(
         return import_repo(info, cfg, ref, quant=quant, ui=ui)
     try:
         engine.pull_model(
-            cfg.engine_url, ref, key=cfg.engine_key, managed=cfg.engine_managed, sys=system.REAL
+            cfg.engine_url,
+            ref,
+            key=cfg.engine_key,
+            managed=cfg.engine_managed,
+            sys=system.REAL,
+            ui=ui,
         )
     except engine.NotGGUF:
         if ref.kind != "hf_gguf" or not serving.import_allowed(cfg, info):

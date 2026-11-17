@@ -10,15 +10,27 @@ guessed, so it becomes a `NoTerminal` (a `FriendlyError`) rather than a tracebac
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import contextlib
+import sys as _sys
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from rich.console import Console
 from rich.markup import escape
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    Task,
+    TextColumn,
+    TransferSpeedColumn,
+)
 from rich.prompt import Confirm, Prompt
+from rich.text import Text
 
 from lepika.errors import FriendlyError
 
+ProgressFn = Callable[[int, int], None]
 Reader = Callable[..., Any]
 
 _console = Console()
@@ -108,6 +120,46 @@ class UI:
                 raise _no_terminal(prompt) from exc
             self.say(f"[dim]No terminal to ask — using {'yes' if default else 'no'}.[/dim]")
             return default
+
+    @contextlib.contextmanager
+    def progress(self, label: str) -> Iterator[ProgressFn]:
+        """Yield a `(completed, total)` reporter drawn as one rich bar.
+
+        Ollama reports `completed`/`total` per layer digest, so the single bar tracks
+        the layer being downloaded — the same thing `ollama pull` shows.
+        """
+        bar = Progress(
+            TextColumn("[bold]{task.description}"),
+            BarColumn(),
+            DownloadColumn(),
+            _SpeedColumn(),
+            # Piped or redirected, a live bar renders as one frozen "0/549 bytes" line
+            # that never updates. The JSON log already records the pull.
+            disable=not _sys.stdout.isatty(),
+        )
+        bar.start()
+        task = bar.add_task(label, total=None)
+
+        def report(completed: int, total: int) -> None:
+            bar.update(task, completed=completed, total=total)
+
+        try:
+            yield report
+        finally:
+            bar.stop()
+
+
+class _SpeedColumn(TransferSpeedColumn):
+    """`TransferSpeedColumn` that stays blank while no speed has been measured.
+
+    A model already on disk arrives as one `completed == total` event, and rich
+    renders the unmeasured speed as a bare `?` after the byte count.
+    """
+
+    def render(self, task: Task) -> Text:
+        if (task.finished_speed or task.speed) is None:
+            return Text("")
+        return super().render(task)
 
 
 # The one the CLI hands down; looked up when used, never bound, so a test can replace it.

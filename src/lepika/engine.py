@@ -6,30 +6,18 @@ import contextlib
 import importlib.resources
 import json
 import re
-import sys as _sys
 import tempfile
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-
-from rich.progress import (
-    BarColumn,
-    DownloadColumn,
-    Progress,
-    Task,
-    TextColumn,
-    TransferSpeedColumn,
-)
-from rich.text import Text
 
 from lepika import log
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
 from lepika.system import System
-
-ProgressFn = Callable[[int, int], None]
+from lepika.ui import UI
 
 _TAGS_TIMEOUT = 5.0
 _DELETE_TIMEOUT = 30.0
@@ -183,9 +171,9 @@ def pull_model(
     ref: ModelRef,
     key: str = "",
     managed: bool = True,
-    progress: ProgressFn | None = None,
     *,
     sys: System,
+    ui: UI,
 ) -> None:
     """Stream `POST /api/pull`, showing Ollama's per-layer progress as one bar."""
     logger = log.get_logger()
@@ -204,7 +192,7 @@ def pull_model(
     # every subsequent read, so a stall, a dropped connection or a truncated JSON
     # line all surface here — mid-download, long after the request succeeded.
     try:
-        with response, _bar(ref, progress) as report:
+        with response, ui.progress(ref.raw) as report:
             for raw_line in response:
                 line = raw_line.decode("utf-8", "replace").strip()
                 if not line:
@@ -227,50 +215,6 @@ def pull_model(
         logger.warning("engine.pull", model=ref.raw, result="stream ended early")
         raise _pull_failed(ref, "the download ended before it completed")
     logger.info("engine.pull", model=ref.raw, result="success")
-
-
-class _SpeedColumn(TransferSpeedColumn):
-    """`TransferSpeedColumn` that stays blank while no speed has been measured.
-
-    A model already on disk arrives as one `completed == total` event, and rich
-    renders the unmeasured speed as a bare `?` after the byte count.
-    """
-
-    def render(self, task: Task) -> Text:
-        if (task.finished_speed or task.speed) is None:
-            return Text("")
-        return super().render(task)
-
-
-@contextlib.contextmanager
-def _bar(ref: ModelRef, progress: ProgressFn | None) -> Iterator[ProgressFn]:
-    """Yield a `(completed, total)` reporter: the injected one, or a rich bar.
-
-    Ollama reports `completed`/`total` per layer digest, so the single bar tracks
-    the layer being downloaded — the same thing `ollama pull` shows.
-    """
-    if progress is not None:
-        yield progress
-        return
-    bar = Progress(
-        TextColumn("[bold]{task.description}"),
-        BarColumn(),
-        DownloadColumn(),
-        _SpeedColumn(),
-        # Piped or redirected, a live bar renders as one frozen "0/549 bytes" line
-        # that never updates. The JSON log already records the pull.
-        disable=not _sys.stdout.isatty(),
-    )
-    bar.start()
-    task = bar.add_task(ref.raw, total=None)
-
-    def report(completed: int, total: int) -> None:
-        bar.update(task, completed=completed, total=total)
-
-    try:
-        yield report
-    finally:
-        bar.stop()
 
 
 def version(url: str, key: str = "", *, sys: System) -> str:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import subprocess
 import urllib.request
@@ -321,7 +322,8 @@ class FakeUI(ui.UI):
     handed keeps doing so. `no_terminal` makes every question meet EOF, which the real
     policy in `UI.ask`/`UI.confirm` then handles. Every question is recorded in
     `asked`/`confirmed` with the keywords its reader received; one nobody scripted
-    raises `UnansweredQuestion`.
+    raises `UnansweredQuestion`. `progress` draws nothing: it records each bar's label
+    in `progress_labels` and every `(completed, total)` report in `reports`.
     """
 
     def __init__(
@@ -340,6 +342,8 @@ class FakeUI(ui.UI):
         self.no_terminal = no_terminal
         self.asked: list[tuple[str, dict[str, Any]]] = []
         self.confirmed: list[tuple[str, dict[str, Any]]] = []
+        self.progress_labels: list[str] = []
+        self.reports: list[tuple[int, int]] = []
         super().__init__(reader=self._read, confirm_reader=self._read_confirm)
 
     def _read(self, prompt: str, **kwargs: Any) -> Any:
@@ -361,3 +365,12 @@ class FakeUI(ui.UI):
         if not self.confirms:
             raise UnansweredQuestion(f"FakeUI was not given a yes/no for {prompt!r}")
         return self.confirms.pop(0)
+
+    @contextlib.contextmanager
+    def progress(self, label: str) -> Iterator[ui.ProgressFn]:
+        self.progress_labels.append(label)
+
+        def report(completed: int, total: int) -> None:
+            self.reports.append((completed, total))
+
+        yield report

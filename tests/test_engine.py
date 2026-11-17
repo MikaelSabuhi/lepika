@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import importlib.resources
 import io
-import itertools
 import json
-import sys
 import urllib.error
 from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import FakeResponse, FakeSystem, routes
-from rich.progress import Progress
+from fakes import FakeResponse, FakeSystem, FakeUI, routes
 
 from lepika import engine, paths
 from lepika.errors import FriendlyError
@@ -119,21 +116,37 @@ def test_pull_streams_progress_and_finishes_on_success() -> None:
         {"status": "success"},
     ]
     body = "\n".join(json.dumps(line) for line in lines).encode()
-    ticks: list[tuple[int, int]] = []
+    ui = FakeUI()
     engine.pull_model(
         "http://x",
         ModelRef(raw="qwen3:8b", kind="ollama"),
         sys=serving("/api/pull", body),
-        progress=lambda done, total: ticks.append((done, total)),
+        ui=ui,
     )
-    assert ticks == [(40, 100), (100, 100)]
+    assert ui.progress_labels == ["qwen3:8b"]
+    assert ui.reports == [(40, 100), (100, 100)]
+
+
+def test_pull_draws_no_bar_when_the_engine_is_unreachable() -> None:
+    ui = FakeUI()
+    with pytest.raises(FriendlyError):
+        engine.pull_model(
+            "http://x",
+            ModelRef(raw="qwen3:8b", kind="ollama"),
+            sys=answering({"/api/pull": OSError("connection refused")}),
+            ui=ui,
+        )
+    assert ui.progress_labels == []
 
 
 def test_pull_error_line_is_friendly() -> None:
     body = json.dumps({"error": "pull model manifest: file does not exist"}).encode()
     with pytest.raises(FriendlyError) as exc:
         engine.pull_model(
-            "http://x", ModelRef(raw="nope:1b", kind="ollama"), sys=serving("/api/pull", body)
+            "http://x",
+            ModelRef(raw="nope:1b", kind="ollama"),
+            sys=serving("/api/pull", body),
+            ui=FakeUI(),
         )
     assert "nope:1b" in exc.value.problem
     assert "GGUF" in exc.value.fix
@@ -143,14 +156,17 @@ def test_pull_that_ends_without_success_is_friendly() -> None:
     body = json.dumps({"status": "pulling manifest"}).encode()
     with pytest.raises(FriendlyError):
         engine.pull_model(
-            "http://x", ModelRef(raw="q:1b", kind="ollama"), sys=serving("/api/pull", body)
+            "http://x",
+            ModelRef(raw="q:1b", kind="ollama"),
+            sys=serving("/api/pull", body),
+            ui=FakeUI(),
         )
 
 
 def test_pull_sends_stream_true_and_timeout_is_generous() -> None:
     body = json.dumps({"status": "success"}).encode()
     sys = serving("/api/pull", body)
-    engine.pull_model("http://x", ModelRef(raw="q:1b", kind="ollama"), sys=sys)
+    engine.pull_model("http://x", ModelRef(raw="q:1b", kind="ollama"), sys=sys, ui=FakeUI())
     seen = sys.requested
     assert json.loads(seen[0].data) == {"model": "q:1b", "stream": True}
     assert sys.request_timeouts == [engine._PULL_IDLE_TIMEOUT]
@@ -164,7 +180,7 @@ def test_pull_that_dies_mid_stream_is_friendly() -> None:
             "http://x",
             ModelRef(raw="qwen3:8b", kind="ollama"),
             sys=answering({"/api/pull": exploding}),
-            progress=lambda done, total: None,
+            ui=FakeUI(),
         )
     assert "qwen3:8b" in exc.value.problem
 
@@ -176,6 +192,7 @@ def test_pull_with_a_malformed_line_is_friendly() -> None:
             "http://x",
             ModelRef(raw="q:1b", kind="ollama"),
             sys=serving("/api/pull", b'{"status": "pulling ma'),
+            ui=FakeUI(),
         )
     assert "q:1b" in exc.value.problem
 
@@ -206,7 +223,7 @@ CALLS: list[tuple[str, Any]] = [
     (
         "pull_model",
         lambda sys: engine.pull_model(
-            "http://gpu-box:11435", ModelRef(raw="q:1b", kind="ollama"), sys=sys
+            "http://gpu-box:11435", ModelRef(raw="q:1b", kind="ollama"), sys=sys, ui=FakeUI()
         ),
     ),
 ]
@@ -229,34 +246,6 @@ def test_a_server_error_is_still_unreachable(name: str, call: Any) -> None:
     assert "Could not reach the engine" in exc.value.problem
 
 
-def test_the_pull_bar_is_disabled_when_stdout_is_not_a_tty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A non-tty run got one frozen '0/549 bytes' line; the JSON log is the record."""
-    out = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", out)
-    with engine._bar(ModelRef(raw="q:1b", kind="ollama"), None) as report:
-        report(40, 100)
-    assert out.getvalue() == ""
-
-
-def test_speed_column_is_blank_until_a_speed_is_known() -> None:
-    """A cached model completes in one event; rich would print '489/489 bytes ?'."""
-    bar = Progress(disable=True)
-    task_id = bar.add_task("q:1b", total=None)
-    bar.update(task_id, completed=489, total=489)
-    assert engine._SpeedColumn().render(bar.tasks[0]).plain == ""
-
-
-def test_speed_column_shows_a_rate_once_bytes_flow() -> None:
-    clock = itertools.count(0.0, 0.5)
-    bar = Progress(disable=True, get_time=lambda: next(clock))
-    task_id = bar.add_task("q:1b", total=1000)
-    bar.update(task_id, completed=100)
-    bar.update(task_id, completed=300)
-    assert engine._SpeedColumn().render(bar.tasks[0]).plain.endswith("/s")
-
-
 def test_human_size() -> None:
     assert engine.human_size(512) == "512 B"
     assert engine.human_size(4_700_000_000) == "4.7 GB"
@@ -272,6 +261,7 @@ def test_pull_of_full_weight_hf_repo_says_use_a_gguf_build() -> None:
             "http://x",
             ModelRef(raw="hf.co/Qwen/Qwen3.8-27B", kind="hf_gguf"),
             sys=serving("/api/pull", body),
+            ui=FakeUI(),
         )
     assert "full weights" in exc.value.problem
     assert "Qwen3.8-27B-GGUF" in exc.value.fix

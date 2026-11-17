@@ -6,7 +6,8 @@ import pytest
 from fakes import Backends, FakeBackend, FakeSystem
 from typer.testing import CliRunner
 
-from lepika import backend, cli, config, detect, health, server, system
+from lepika import backend, cli, config, detect, health, server, system, ui
+from lepika.server import ServerBackend
 
 runner = CliRunner()
 DOCKER = detect.Machine("linux", "x86_64", "nvidia", 64.0)
@@ -24,6 +25,8 @@ def server_mode(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> list[st
         on_stop=lambda info, cfg, **k: calls.append("stop") or True,
         on_update=lambda info, cfg, **k: calls.append("update") or [],
         on_logs=lambda lines, **k: [("docker compose", "ollama-1 | ready")],
+        # The notes `up` prints are the real backend's: what they say is under test here.
+        on_notes=lambda info, cfg: ServerBackend(sys=system.REAL, ui=ui.REAL).notes(info, cfg),
     )
     monkeypatch.setattr(server, "gpu_note", lambda info, **k: None)
     # No Express backend at all: selecting one fails the test (`UnprovidedBackend`).

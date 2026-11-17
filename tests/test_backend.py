@@ -13,7 +13,16 @@ from lepika.backend import Backend
 from lepika.express import ExpressBackend
 from lepika.server import ServerBackend
 
-_METHODS = ("start", "stop", "update", "logs")
+_METHODS = (
+    "start",
+    "stop",
+    "update",
+    "logs",
+    "notes",
+    "apply_engine_change",
+    "ensure_engine",
+    "release",
+)
 
 
 def _shape(func: Any) -> list[tuple[str, Any, Any]]:
@@ -71,11 +80,18 @@ def test_the_fake_records_every_call_and_returns_what_it_was_given() -> None:
     assert fake.stop(info, cfg) is False
     assert fake.update(info, cfg) == ["s"]
     assert fake.logs(7) == [("t", "x")]
+    # Unscripted, the rest are a quiet backend: no notes, a restart, nothing freed.
+    assert fake.notes(info, cfg) == []
+    assert fake.apply_engine_change(info, cfg) is True
+    assert fake.ensure_engine(info, cfg) is None
+    assert fake.release(info, cfg) is None
     # The hook runs, as both real starts run it once the engine is up.
     assert hooked == ["hook"]
     assert [(i, c) for i, c, _ in fake.started] == [(info, cfg)]
     assert fake.stopped == [(info, cfg)] and fake.updated == [(info, cfg)]
     assert fake.logged == [7]
+    assert fake.noted == [(info, cfg)] and fake.engine_changes == [(info, cfg)]
+    assert fake.engines_ensured == [(info, cfg)] and fake.released == [(info, cfg)]
 
 
 def test_the_fake_hands_each_call_to_the_tests_own_behaviour() -> None:
@@ -85,14 +101,33 @@ def test_the_fake_hands_each_call_to_the_tests_own_behaviour() -> None:
         on_stop=lambda info, cfg: seen.append("stop") or True,
         on_update=lambda info, cfg: seen.append("update") or [],
         on_logs=lambda lines: seen.append(("logs", lines)) or [],
+        on_notes=lambda info, cfg: seen.append("notes") or ["a note"],
+        on_apply_engine_change=lambda info, cfg: seen.append("change") or False,
+        on_ensure_engine=lambda info, cfg: seen.append("ensure"),
+        on_release=lambda info, cfg: seen.append("release") or "freed",
     )
     cfg = config.Config()
     assert fake.start(None, cfg) == "custom"
     assert fake.stop(None, cfg) is True
     assert fake.update(None, cfg) == []
     assert fake.logs(3) == []
-    assert seen == [("start", {"after_engine": None}), "stop", "update", ("logs", 3)]
+    assert fake.notes(None, cfg) == ["a note"]
+    assert fake.apply_engine_change(None, cfg) is False
+    assert fake.ensure_engine(None, cfg) is None
+    assert fake.release(None, cfg) == "freed"
+    assert seen == [
+        ("start", {"after_engine": None}),
+        "stop",
+        "update",
+        ("logs", 3),
+        "notes",
+        "change",
+        "ensure",
+        "release",
+    ]
     assert len(fake.started) == 1 and len(fake.stopped) == 1
+    assert len(fake.noted) == 1 and len(fake.engine_changes) == 1
+    assert len(fake.engines_ensured) == 1 and len(fake.released) == 1
 
 
 def test_a_mode_the_test_gave_no_backend_for_fails_loudly() -> None:

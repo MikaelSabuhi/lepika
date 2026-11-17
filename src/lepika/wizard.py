@@ -17,7 +17,6 @@ from lepika import (
     health,
     hf,
     models,
-    ollama,
     paths,
     server,
     serving,
@@ -331,23 +330,21 @@ def leave_mode(info: Machine, previous: str, cfg: config.Config, *, sys: System,
     )
     # The config as it was loaded: `stop` reads the old mode's ports, not the new mode's.
     old_cfg = dataclasses.replace(cfg, mode=previous)
+    leaving = backend.backend_for(old_cfg, sys=sys, ui=ui)
     # A try each, not one around both: a UI that will not die would otherwise take
     # the engine stop down with it, and the port 11434 the next mode needs stays held.
     try:
         # The bool is "was anything running", which is not a reason to stop switching.
-        backend.backend_for(old_cfg, sys=sys, ui=ui).stop(info, old_cfg)
+        leaving.stop(info, old_cfg)
     except FriendlyError as exc:
         _report_stop_failure(exc, ui=ui)
-    # `lepika down` leaves Ollama up on purpose, but Server's pre-flight refuses a
-    # port 11434 that a native engine holds. Only the one LePika started is stopped
-    # — anything else has no pid file — and rule 9 keeps a remote engine untouched,
-    # which is what `engine_managed` short-circuits before the call.
-    if previous == "express" and old_cfg.engine_managed:
-        try:
-            if ollama.stop_ollama(info.os, old_cfg.engine_url, key=old_cfg.engine_key, sys=sys):
-                ui.say("Stopped the Ollama LePika had started.")
-        except FriendlyError as exc:
-            _report_stop_failure(exc, ui=ui)
+    try:
+        freed = leaving.release(info, old_cfg)
+    except FriendlyError as exc:
+        _report_stop_failure(exc, ui=ui)
+    else:
+        if freed is not None:
+            ui.say(freed)
 
 
 def run_wizard(

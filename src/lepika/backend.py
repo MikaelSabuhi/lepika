@@ -27,6 +27,25 @@ class Backend(Protocol):
 
     def logs(self, lines: int) -> list[tuple[str, str]]: ...
 
+    def notes(self, info: Machine, cfg: Config) -> list[str]:
+        """Lines `lepika up` shows before it starts anything, in order. Asked before `start`."""
+        ...
+
+    def apply_engine_change(self, info: Machine, cfg: Config) -> bool:
+        """Make a running stack use the engine the config now names; did anything restart?"""
+        ...
+
+    def ensure_engine(self, info: Machine, cfg: Config) -> None:
+        """Have the engine `cfg` names ready to pull a model into."""
+        ...
+
+    def release(self, info: Machine, cfg: Config) -> str | None:
+        """After `stop`, on the way to the other mode: free what that mode needs.
+
+        A line to show if something was freed.
+        """
+        ...
+
 
 def backend_for(cfg: Config, *, sys: System, ui: UI) -> Backend:
     """The backend for this config's mode — the only place the two modes are told apart."""

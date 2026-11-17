@@ -435,3 +435,34 @@ class ServerBackend:
             text = lepika_log.read_text(encoding="utf-8", errors="replace").splitlines()
             sections.append((log.LOG_FILE, "\n".join(text[-lines:])))
         return sections
+
+    def notes(self, info: Machine, cfg: Config) -> list[str]:
+        """Before `lepika up` starts anything: a GPU the containers cannot use."""
+        # A CPU-bound container on a GPU machine is a mystery worth one line up front.
+        # Docker's presence first: gpu_note runs `docker info`, and without the binary that
+        # would replace Server mode's Express hint with a generic "command not found".
+        if self.sys.which("docker") is None:
+            return []
+        note = gpu_note(info, sys=self.sys)
+        return [] if note is None else [note]
+
+    def apply_engine_change(self, info: Machine, cfg: Config) -> bool:
+        """Make the stack use the engine just configured; it always restarts what changed."""
+        # `compose up -d` is the Server-mode reconciler: it rewrites .env and
+        # recreates whatever the new engine URL changed, so it needs no probe.
+        self.start(info, cfg)
+        return True
+
+    def ensure_engine(self, info: Machine, cfg: Config) -> None:
+        """Have the engine ready to pull a model into: the stack started for `cfg`."""
+        if cfg.engine_managed:
+            # In Server mode the engine is a container: it has to be up before there is
+            # anything to pull into.
+            self.start(info, cfg)
+        else:
+            # A remote engine is someone else's to run: check it, never install for it.
+            health.check_remote_engine(cfg, sys=self.sys)
+
+    def release(self, info: Machine, cfg: Config) -> str | None:
+        """Nothing outlives `stop` here: the stack's engine is one of its containers."""
+        return None

@@ -29,7 +29,6 @@ from lepika import (
     log,
     models,
     ollama,
-    openwebui,
     paths,
     server,
     serving,
@@ -99,20 +98,13 @@ def up() -> None:
     info = detect.detect(sys=system.REAL)
     cfg = config.load()
     ui.REAL.say(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))
-    # A CPU-bound container on a GPU machine is a mystery worth one line up front.
-    # Docker's presence first: gpu_note runs `docker info`, and without the binary that
-    # would replace Server mode's Express hint with a generic "command not found".
-    if (
-        cfg.mode == "server"
-        and system.REAL.which("docker") is not None
-        and (note := server.gpu_note(info, sys=system.REAL)) is not None
-    ):
+    chosen = backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL)
+    # The notes are asked before the start, and that order is the point: Express asks
+    # whether an engine already answers, and one that does is what the start adopts,
+    # so config.toml's context length cannot reach it.
+    for note in chosen.notes(info, cfg):
         ui.REAL.say(f"[yellow]{escape(note)}[/yellow]")
-    # Asked before the start, and that order is the point: an engine answering
-    # now is one the start will adopt, so config.toml's context length cannot reach it.
-    if (note := ollama.context_note(info, cfg, sys=system.REAL)) is not None:
-        ui.REAL.say(f"[yellow]{escape(note)}[/yellow]")
-    _ready(cfg, backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(info, cfg))
+    _ready(cfg, chosen.start(info, cfg))
 
 
 @app.command()
@@ -214,27 +206,6 @@ def update() -> None:
         ui.REAL.say(f"[green]✓ {step.component}: {verb}{suffix}[/green]")
 
 
-def _apply_engine_change(cfg: config.Config) -> bool:
-    """Make a running OpenWebUI use the engine just configured; did anything restart?
-
-    OpenWebUI reads the engine URL and key from its environment once, at startup, so
-    a UI that is already up keeps talking to the old engine no matter what the config
-    says — and `lepika up` would not fix it in Express mode, because a healthy UI is
-    left alone. This is what makes `lepika connect` take effect on a live stack.
-    """
-    if cfg.mode == "server":
-        # `compose up -d` is the Server-mode reconciler: it rewrites .env and
-        # recreates whatever the new engine URL changed, so it needs no probe.
-        backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(
-            detect.detect(sys=system.REAL), cfg
-        )
-        return True
-    if not health.webui_up(cfg.webui_port, sys=system.REAL):
-        return False
-    openwebui.restart_openwebui(cfg, detect.detect(sys=system.REAL).os, sys=system.REAL)
-    return True
-
-
 @app.command()
 def connect(
     url: str | None = typer.Argument(None, help="Engine URL, e.g. http://gpu-box:11435"),
@@ -247,7 +218,9 @@ def connect(
         cfg.engine_managed, cfg.engine_url, cfg.engine_key = True, config.DEFAULT_ENGINE_URL, ""
         config.save(cfg)
         log.get_logger().info("engine.connect", url=cfg.engine_url, local=True)
-        if _apply_engine_change(cfg):
+        if backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).apply_engine_change(
+            detect.detect(sys=system.REAL), cfg
+        ):
             ui.REAL.say("[green]✓ Using the local engine again[/green] — OpenWebUI restarted.")
         else:
             ui.REAL.say("[green]✓ Using the local engine again.[/green] Run `lepika up`.")
@@ -278,7 +251,9 @@ def connect(
     cfg.engine_managed, cfg.engine_url, cfg.engine_key = False, url, key
     config.save(cfg)
     log.get_logger().info("engine.connect", url=url, key=key)
-    if _apply_engine_change(cfg):
+    if backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).apply_engine_change(
+        detect.detect(sys=system.REAL), cfg
+    ):
         ui.REAL.say(f"[green]✓ Connected to[/green] {escape(url)} — OpenWebUI restarted.")
     else:
         ui.REAL.say(f"[green]✓ Connected to[/green] {escape(url)}. Run `lepika up`.")
@@ -457,21 +432,12 @@ def model_add(
         ui.REAL.say(f"[green]✓ Set:[/green] {escape(model_ref.raw)} — starting vLLM…")
         _ready(cfg, backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(info, cfg))
         return
-    if cfg.engine_managed and cfg.mode == "server":
-        # In Server mode the engine is a container: it has to be up before there is
-        # anything to pull into — and it has to be the engine the *new* model needs.
-        # Switching away from a full-weight repo with the old ref still in the config
-        # would bring up vLLM, leave ollama stopped, and fail the pull.
-        backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(
-            info, dataclasses.replace(cfg, model=model_ref.raw)
-        )
-    elif cfg.engine_managed:
-        ollama.ensure_ollama(
-            info, url=cfg.engine_url, context_length=cfg.context_length, sys=system.REAL
-        )
-    else:
-        # A remote engine is someone else's to run: check it, never install for it.
-        health.check_remote_engine(cfg, sys=system.REAL)
+    # The engine the *new* model needs: in Server mode the profile follows the ref, and
+    # switching away from a full-weight repo with the old ref still in the config
+    # would bring up vLLM, leave ollama stopped, and fail the pull.
+    backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).ensure_engine(
+        info, dataclasses.replace(cfg, model=model_ref.raw)
+    )
     served = acquire.acquire(info, cfg, model_ref, quant=quant, sys=system.REAL, ui=ui.REAL)
     if served is None:
         ui.REAL.say("Nothing added.")

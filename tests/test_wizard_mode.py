@@ -23,6 +23,7 @@ from lepika import (
     wizard,
 )
 from lepika.errors import FriendlyError
+from lepika.express import ExpressBackend
 from lepika.server import ServerBackend
 
 runner = CliRunner()
@@ -48,12 +49,10 @@ def started(
     return "http://localhost:3000"
 
 
-def fake_for(mode: str) -> FakeBackend:
-    """The fake the test installed for this mode."""
-    picker = backend.backend_for
-    assert isinstance(picker, Backends)
-    found: FakeBackend = picker.by_mode[mode]
-    return found
+def released(info: detect.Machine, cfg: config.Config) -> str | None:
+    """The real backend's `release`: what a switch frees is what these tests are about."""
+    real = {"express": ExpressBackend, "server": ServerBackend}[cfg.mode]
+    return real(sys=system.REAL, ui=ui.REAL).release(info, cfg)
 
 
 def test_choose_mode_is_silent_without_docker() -> None:
@@ -173,6 +172,7 @@ def test_wizard_in_server_mode_uses_the_server_backend(
                 on_start=lambda *a, **k: pytest.fail("wrong backend"),
                 # Leaving Express stops its stack: nothing of it runs here.
                 on_stop=lambda info, cfg, **k: False,
+                on_release=released,
             ),
         ),
     )
@@ -198,7 +198,7 @@ def test_mode_flag_skips_the_question(monkeypatch: pytest.MonkeyPatch, isolated_
         Backends(
             server=FakeBackend(on_start=started),
             # Leaving Express stops its stack: nothing of it runs here.
-            express=FakeBackend(on_stop=lambda info, cfg, **k: False),
+            express=FakeBackend(on_stop=lambda info, cfg, **k: False, on_release=released),
         ),
     )
     # Nor did LePika start an Ollama here: there is none to stop.
@@ -265,26 +265,40 @@ def test_mode_with_a_subcommand_is_a_usage_error(isolated_home: Path) -> None:
 
 
 @pytest.fixture()
-def switching(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> list[str]:
+def stops() -> list[str]:
+    """Every backend stop `switching` records, by mode."""
+    return []
+
+
+@pytest.fixture()
+def backends(stops: list[str]) -> Backends:
+    """The two backends `switching` installs: they start silently and record each stop.
+
+    `release` is the real one, over whatever `system.REAL` is when it runs.
+    """
+    return Backends(
+        express=FakeBackend(
+            on_start=started,
+            on_stop=lambda info, cfg, **k: stops.append("express") or True,
+            on_release=released,
+        ),
+        server=FakeBackend(
+            on_start=started,
+            on_stop=lambda info, cfg, **k: stops.append("server") or True,
+            on_release=released,
+        ),
+    )
+
+
+@pytest.fixture()
+def switching(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path, stops: list[str], backends: Backends
+) -> list[str]:
     """A Docker machine where both backends start silently and every stop is recorded."""
-    stops: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
     monkeypatch.setattr(system, "REAL", docker_installed())
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
-    monkeypatch.setattr(
-        backend,
-        "backend_for",
-        Backends(
-            express=FakeBackend(
-                on_start=started,
-                on_stop=lambda info, cfg, **k: stops.append("express") or True,
-            ),
-            server=FakeBackend(
-                on_start=started,
-                on_stop=lambda info, cfg, **k: stops.append("server") or True,
-            ),
-        ),
-    )
+    monkeypatch.setattr(backend, "backend_for", backends)
     # No native Ollama of LePika's runs; a test about that stop replaces this.
     monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: False)
     monkeypatch.setattr(engine, "pull_model", lambda url, ref, **k: None)
@@ -293,7 +307,7 @@ def switching(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> list[str]
 
 
 def test_leaving_server_mode_stops_the_server_stack(
-    switching: list[str], monkeypatch: pytest.MonkeyPatch
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Both modes bind the same port: the abandoned stack does not linger, it answers."""
     config.save(config.Config(mode="server"))
@@ -304,11 +318,11 @@ def test_leaving_server_mode_stops_the_server_stack(
     assert switching == ["server"]
     assert config.load().mode == "express"
     # Stopped with the old mode's backend, started with the new one's.
-    assert fake_for("express").started and not fake_for("server").started
+    assert backends.by_mode["express"].started and not backends.by_mode["server"].started
 
 
 def test_leaving_express_mode_stops_the_express_stack(
-    switching: list[str], monkeypatch: pytest.MonkeyPatch
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     answers = iter(["2", "1"])  # Server, then the model
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
@@ -317,7 +331,7 @@ def test_leaving_express_mode_stops_the_express_stack(
     assert switching == ["express"]
     assert config.load().mode == "server"
     # Stopped with the old mode's backend, started with the new one's.
-    assert fake_for("server").started and not fake_for("express").started
+    assert backends.by_mode["server"].started and not backends.by_mode["express"].started
 
 
 def test_staying_in_the_same_mode_stops_nothing(
@@ -340,7 +354,7 @@ def test_dry_run_switches_nothing_off(
 
 
 def test_failed_switch_to_server_removes_the_containers_it_created(
-    switching: list[str], monkeypatch: pytest.MonkeyPatch
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The config still says express after a failed switch, so `lepika down` cannot
     see what `compose up` created — the error path has to remove it itself."""
@@ -348,7 +362,7 @@ def test_failed_switch_to_server_removes_the_containers_it_created(
     def failing_start(*a: Any, **k: Any) -> str:
         raise FriendlyError("`docker compose up` failed.", "Run `lepika logs`.")
 
-    monkeypatch.setattr(fake_for("server"), "on_start", failing_start)
+    monkeypatch.setattr(backends.by_mode["server"], "on_start", failing_start)
     answers = iter(["2", "1"])  # Server, then the model
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
@@ -359,7 +373,7 @@ def test_failed_switch_to_server_removes_the_containers_it_created(
 
 
 def test_failed_start_while_already_in_server_mode_leaves_the_stack_alone(
-    switching: list[str], monkeypatch: pytest.MonkeyPatch
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No switch, no invisibility: `lepika down` sees these containers, and a wizard
     re-run that fails must not tear down what was running before it."""
@@ -368,7 +382,7 @@ def test_failed_start_while_already_in_server_mode_leaves_the_stack_alone(
     def failing_start(*a: Any, **k: Any) -> str:
         raise FriendlyError("`docker compose up` failed.", "Run `lepika logs`.")
 
-    monkeypatch.setattr(fake_for("server"), "on_start", failing_start)
+    monkeypatch.setattr(backends.by_mode["server"], "on_start", failing_start)
     answers = iter(["2", "1"])
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
@@ -377,7 +391,7 @@ def test_failed_start_while_already_in_server_mode_leaves_the_stack_alone(
 
 
 def test_failure_after_the_mode_was_saved_keeps_the_visible_stack(
-    switching: list[str], monkeypatch: pytest.MonkeyPatch
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Once the engine came up the hook saved mode=server, so the containers are
     visible to `lepika down` — a later failure (OpenWebUI timeout) sweeps nothing."""
@@ -392,7 +406,7 @@ def test_failure_after_the_mode_was_saved_keeps_the_visible_stack(
             after_engine()
         raise FriendlyError("OpenWebUI did not become ready within 180s.", "Run `lepika logs`.")
 
-    monkeypatch.setattr(fake_for("server"), "on_start", engine_up_then_webui_times_out)
+    monkeypatch.setattr(backends.by_mode["server"], "on_start", engine_up_then_webui_times_out)
     answers = iter(["2", "1"])
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
@@ -423,7 +437,7 @@ def test_leaving_express_mode_stops_the_ollama_lepika_started(
 
 
 def test_servers_port_check_asks_again_after_the_switch_stopped_the_ollama(
-    switching: list[str], monkeypatch: pytest.MonkeyPatch
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Leaving Express stops the Ollama LePika started; Server's pre-flight must then
     find port 11434 free. An answer taken before the stop made it refuse an Ollama that
@@ -455,12 +469,11 @@ def test_servers_port_check_asks_again_after_the_switch_stopped_the_ollama(
         return True
 
     monkeypatch.setattr(ollama, "stop_ollama", stop)
-    fakes = backend.backend_for
     monkeypatch.setattr(
         backend,
         "backend_for",
         lambda cfg, *, sys, ui: (
-            ServerBackend(sys=sys, ui=ui) if cfg.mode == "server" else fakes(cfg, sys=sys, ui=ui)
+            ServerBackend(sys=sys, ui=ui) if cfg.mode == "server" else backends(cfg, sys=sys, ui=ui)
         ),
     )
     monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref, **k: ref.raw)
@@ -514,7 +527,7 @@ def test_leaving_server_mode_does_not_stop_a_native_ollama(
 
 
 def test_the_mode_is_saved_only_once_the_engine_is_up(
-    switching: list[str], monkeypatch: pytest.MonkeyPatch
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A pre-flight that refuses must not leave a config claiming a mode that never started."""
 
@@ -523,7 +536,7 @@ def test_the_mode_is_saved_only_once_the_engine_is_up(
 
     config.save(config.Config(mode="express", model="previous:model"))
     monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: False)
-    monkeypatch.setattr(fake_for("server"), "on_start", refuse)
+    monkeypatch.setattr(backends.by_mode["server"], "on_start", refuse)
     answers = iter(["2", "1"])  # Server, then the model
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
@@ -533,7 +546,7 @@ def test_the_mode_is_saved_only_once_the_engine_is_up(
 
 
 def test_a_backend_too_broken_to_stop_does_not_trap_the_user_in_it(
-    switching: list[str], monkeypatch: pytest.MonkeyPatch
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Docker being down is usually *why* someone is leaving Server mode."""
 
@@ -541,7 +554,7 @@ def test_a_backend_too_broken_to_stop_does_not_trap_the_user_in_it(
         raise FriendlyError("Docker is installed but not running.", "Start Docker Desktop.")
 
     config.save(config.Config(mode="server"))
-    monkeypatch.setattr(fake_for("server"), "on_stop", boom)
+    monkeypatch.setattr(backends.by_mode["server"], "on_stop", boom)
     answers = iter(["1", "1"])
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
@@ -551,7 +564,7 @@ def test_a_backend_too_broken_to_stop_does_not_trap_the_user_in_it(
 
 
 def test_a_ui_that_will_not_stop_still_lets_the_engine_stop(
-    switching: list[str], monkeypatch: pytest.MonkeyPatch
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Two stops, two reports: one failure must not swallow the other's work.
 
@@ -562,7 +575,7 @@ def test_a_ui_that_will_not_stop_still_lets_the_engine_stop(
     def boom(info: detect.Machine, cfg: config.Config, **k: Any) -> bool:
         raise FriendlyError("OpenWebUI on port 3000 is still answering.", "Stop it yourself.")
 
-    monkeypatch.setattr(fake_for("express"), "on_stop", boom)
+    monkeypatch.setattr(backends.by_mode["express"], "on_stop", boom)
     monkeypatch.setattr(ollama, "stop_ollama", lambda os_name, url, **k: True)
     answers = iter(["2", "1"])  # Server, then the model
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))

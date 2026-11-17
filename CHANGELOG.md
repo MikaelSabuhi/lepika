@@ -32,6 +32,10 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   OpenWebUI is still upgraded, and if `ollama.service` could not be put back the
   report says so instead of failing with "Could not access sudo". In Server mode, it
   no longer claims the images are up to date when it could not read their ids.
+- In Server mode, `lepika down` no longer says "Stopped" when nothing was running,
+  and a `docker compose down` that fails is reported instead of read as "Nothing was
+  running". Switching modes in the wizard now says so too when the Server stack
+  could not be stopped.
 
 ### Changed
 

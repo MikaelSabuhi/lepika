@@ -6,7 +6,7 @@ import pytest
 from fakes import Backends, FakeBackend, FakeSystem
 from typer.testing import CliRunner
 
-from lepika import backend, cli, config, detect, health, server, system, ui
+from lepika import backend, cli, config, detect, health, paths, server, system, ui
 from lepika.server import ServerBackend
 
 runner = CliRunner()
@@ -62,6 +62,37 @@ def test_up_prints_the_gpu_note_when_docker_cannot_see_the_gpu(
         server, "gpu_note", lambda info, **k: "NVIDIA GPU found, but Docker can't use it"
     )
     assert "can't use it" in runner.invoke(cli.app, ["up"]).output
+
+
+def _docker_host(containers: str) -> FakeSystem:
+    """Docker running, and compose listing these container ids for the stack."""
+    every = server.compose_cmd(paths.stack_dir(), list(server.INACTIVE), gpu_overlay=False)
+    return FakeSystem(
+        which={"docker": "/usr/bin/docker"}, stdout={" ".join([*every, "ps"]): containers}
+    )
+
+
+def test_down_in_server_mode_says_stopped_when_it_removed_containers(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    config.save(config.Config(mode="server"))
+    monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
+    monkeypatch.setattr(system, "REAL", _docker_host("3f2a9c\n"))
+    result = runner.invoke(cli.app, ["down"])
+    assert result.exit_code == 0, result.output
+    assert "✓ Stopped." in result.output
+
+
+def test_down_in_server_mode_says_nothing_was_running_when_there_were_no_containers(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    config.save(config.Config(mode="server"))
+    monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
+    monkeypatch.setattr(system, "REAL", _docker_host(""))
+    result = runner.invoke(cli.app, ["down"])
+    assert result.exit_code == 0, result.output
+    assert "Nothing was running." in result.output
+    assert "Stopped" not in result.output
 
 
 def test_up_without_docker_says_so_before_probing_docker(

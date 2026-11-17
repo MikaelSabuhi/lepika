@@ -18,6 +18,8 @@ from lepika import (
     engine,
     models,
     ollama,
+    paths,
+    server,
     system,
     ui,
     wizard,
@@ -560,6 +562,33 @@ def test_a_backend_too_broken_to_stop_does_not_trap_the_user_in_it(
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     assert "not running" in result.output
+    assert config.load().mode == "express"
+
+
+def test_a_server_stack_whose_down_fails_is_reported_on_the_way_out(
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed `compose down` may leave the old stack answering on the UI's port."""
+    every = server.compose_cmd(paths.stack_dir(), list(server.INACTIVE), gpu_overlay=False)
+    machine = FakeSystem(
+        which={"docker": "/usr/bin/docker"},
+        stdout={" ".join([*every, "ps"]): "3f2a9c\n"},
+        codes={" ".join([*every, "down"]): 1},
+    )
+    monkeypatch.setattr(system, "REAL", machine)
+    monkeypatch.setattr(
+        backend,
+        "backend_for",
+        lambda cfg, *, sys, ui: (
+            ServerBackend(sys=sys, ui=ui) if cfg.mode == "server" else backends(cfg, sys=sys, ui=ui)
+        ),
+    )
+    config.save(config.Config(mode="server"))
+    answers = iter(["1", "1"])  # Express, then the model
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code == 0, result.output
+    assert "Could not stop it cleanly: `docker compose down` failed." in result.output
     assert config.load().mode == "express"
 
 

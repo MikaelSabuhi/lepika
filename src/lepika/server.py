@@ -378,15 +378,30 @@ class ServerBackend:
         return health.webui_url(cfg.webui_port)
 
     def stop(self, info: Machine, cfg: Config) -> bool:
-        """`lepika down` in Server mode: stop and remove the containers; volumes stay."""
+        """`lepika down` in Server mode: stop and remove the containers; volumes stay.
+
+        True iff the stack had containers and they are gone; a failed `down` raises.
+        """
         ensure_docker(retry="lepika down", sys=self.sys)
         stack = install_stack()
         every = list(INACTIVE)  # every profile, so nothing is left behind
-        result = self.sys.run(
-            [*compose_cmd(stack, every, gpu_overlay=False), "down"], check=False, timeout=120
-        )
+        base = compose_cmd(stack, every, gpu_overlay=False)
+        # Asked first, as container ids: `down` exits 0 whether or not there was anything
+        # to remove, and its wording is not an answer. `-a`: a stopped container is still
+        # one `down` removes.
+        try:
+            listed = self.sys.run([*base, "ps", "-a", "-q"], check=False, log=False, timeout=30)
+        except FriendlyError:
+            listed = None  # a hung listing only costs the answer, never the stop
+        # Run either way: it also removes the stack's network.
+        result = self.sys.run([*base, "down"], check=False, timeout=120)
         log.get_logger().info("stack.down", exit=result.returncode)
-        return bool(result.returncode == 0)
+        if result.returncode != 0:
+            raise _compose_failed("down")
+        if listed is None or listed.returncode != 0:
+            # Cannot tell: do not claim nothing was running.
+            return True
+        return bool(str(listed.stdout or "").strip())
 
     def update(self, info: Machine, cfg: Config) -> list[UpdateStep]:
         """`lepika update` in Server mode: pull newer images, then reconcile."""

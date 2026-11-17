@@ -4,22 +4,20 @@ from __future__ import annotations
 
 import importlib.resources
 import json
-import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from rich.console import Console
 
-from lepika import health, log, prompts, serving, stack_env
+from lepika import health, log, serving, stack_env
 from lepika.backend import UpdateStep
 from lepika.config import Config
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.paths import logs_dir, stack_dir
 from lepika.system import System
-
-AskFn = Callable[..., str]
+from lepika.ui import UI
 
 console = Console()
 
@@ -163,20 +161,19 @@ def profiles(cfg: Config) -> list[str]:
     return active
 
 
-def hf_token_prompt(env_path: Path, ask: AskFn | None = None) -> None:
+def hf_token_prompt(env_path: Path, *, sys: System, ui: UI) -> None:
     """Ask for a Hugging Face token once, only when nothing supplied one. Empty is fine.
 
     Gated repos (Llama, Gemma…) 401 without one. The answer goes straight to .env
     (0600) — never onto the command line, and never into LePika's log.
     """
-    if os.environ.get("HF_TOKEN") or stack_env.read_env(env_path).get("HF_TOKEN"):
+    if sys.environ.get("HF_TOKEN") or stack_env.read_env(env_path).get("HF_TOKEN"):
         return
     # No terminal skips, as Enter does.
-    token = prompts.ask(
+    token = ui.ask(
         "Hugging Face token (needed for gated repos; Enter to skip)",
         password=True,
         default="",
-        reader=ask,
     ).strip()
     stack_env.write_env(env_path, {"HF_TOKEN": token})
 

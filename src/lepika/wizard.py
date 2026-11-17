@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable
 
 from rich.console import Console
 from rich.markup import escape
-from rich.prompt import Prompt
 from rich.table import Table
 
 from lepika import (
@@ -22,21 +20,19 @@ from lepika import (
     models,
     ollama,
     paths,
-    prompts,
     server,
     serving,
     stack_env,
     system,
+    ui,
 )
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import CuratedModel, ModelRef
 from lepika.system import System
+from lepika.ui import UI, NoTerminal
 
-AskFn = Callable[..., str]
 console = Console()
-
-_ask: AskFn = Prompt.ask
 
 
 def _validate(ref: ModelRef, cfg: config.Config, info: SystemInfo) -> ModelRef:
@@ -97,9 +93,9 @@ def choose_quant(
     ref: ModelRef,
     cfg: config.Config,
     info: SystemInfo,
-    ask: AskFn | None = None,
     *,
     sys: System,
+    ui: UI,
 ) -> ModelRef:
     """Turn a tagless `hf.co/<org>/<repo>` into `…:<TAG>` by asking, with a ★ default.
 
@@ -164,7 +160,6 @@ def choose_quant(
             "is what runs it.[/dim]"
         )
 
-    ask_fn: AskFn = ask if ask is not None else _ask
     default = str(shown.index(best) + 1) if best is not None else ""
 
     def chosen(quant: str) -> ModelRef:
@@ -176,13 +171,12 @@ def choose_quant(
         # No stdin to answer with — a script or CI — is not an error: the ★ is the
         # answer Enter would give, and the line below names it rather than its number.
         try:
-            raw = prompts.ask(
+            raw = ui.ask(
                 "Pick a number",
                 default=default or None,
-                reader=ask_fn,
                 require_terminal=True,
             )
-        except prompts.NoTerminal:
+        except NoTerminal:
             if best is not None:
                 console.print(f"[dim]No terminal to ask — taking {escape(best.quant)}.[/dim]")
                 return chosen(best.quant)
@@ -206,23 +200,22 @@ def resolve(
     ref: ModelRef,
     cfg: config.Config,
     info: SystemInfo,
-    ask: AskFn | None = None,
     *,
     sys: System,
+    ui: UI,
 ) -> ModelRef:
     """Validate a typed ref, then settle the one choice it may have left open."""
-    return choose_quant(_validate(ref, cfg, info), cfg, info, ask=ask, sys=sys)
+    return choose_quant(_validate(ref, cfg, info), cfg, info, sys=sys, ui=ui)
 
 
 def choose_model(
     info: SystemInfo,
     cfg: config.Config,
-    ask: AskFn | None = None,
     curated: list[CuratedModel] | None = None,
     *,
     sys: System,
+    ui: UI,
 ) -> ModelRef:
-    ask_fn: AskFn = ask if ask is not None else _ask
     candidates = curated if curated is not None else models.load_curated(sys=sys)
     memory = engine_memory(info, cfg, sys=sys)
     fitting = models.fitting(candidates, memory.gb)
@@ -253,8 +246,8 @@ def choose_model(
 
     def ask_model() -> str:
         try:
-            return prompts.ask(prompt, reader=ask_fn).strip()
-        except prompts.NoTerminal as exc:
+            return ui.ask(prompt).strip()
+        except NoTerminal as exc:
             # There is no default model to fall back on — a guess would download
             # gigabytes nobody asked for.
             raise FriendlyError(
@@ -279,10 +272,10 @@ def choose_model(
         chosen = picked(answer)
         if chosen is not None:
             return chosen
-    return resolve(models.parse_model_ref(answer), cfg, info, ask=ask_fn, sys=sys)
+    return resolve(models.parse_model_ref(answer), cfg, info, sys=sys, ui=ui)
 
 
-def choose_mode(info: SystemInfo, current: str, ask: AskFn | None = None) -> str:
+def choose_mode(info: SystemInfo, current: str, *, ui: UI) -> str:
     """Express unless Docker is present AND the user picks Server.
 
     A machine without Docker never hears the question — and so is never nudged
@@ -290,7 +283,6 @@ def choose_mode(info: SystemInfo, current: str, ask: AskFn | None = None) -> str
     """
     if not info.has_docker:
         return "express"
-    ask_fn: AskFn = ask if ask is not None else _ask
     default = "2" if current == "server" else "1"
     console.print("How should LePika run?")
     console.print(
@@ -305,10 +297,8 @@ def choose_mode(info: SystemInfo, current: str, ask: AskFn | None = None) -> str
         # `or default`: Prompt.ask already returns the default on an empty line, but a
         # bare Enter must mean "keep what I have" whatever the prompt is.
         try:
-            answer = prompts.ask(
-                "Pick 1 or 2", default=default, reader=ask_fn, require_terminal=True
-            )
-        except prompts.NoTerminal:
+            answer = ui.ask("Pick 1 or 2", default=default, require_terminal=True)
+        except NoTerminal:
             # No terminal keeps the mode too — said by name, not as "1".
             kept = choices[default]
             console.print(f"[dim]No terminal to ask — staying with {_MODE_LABEL[kept]}.[/dim]")
@@ -381,7 +371,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     info = detect.detect(sys=system.REAL)
     cfg = config.load()
     previous = cfg.mode
-    cfg.mode = mode if mode is not None else choose_mode(info, cfg.mode)
+    cfg.mode = mode if mode is not None else choose_mode(info, cfg.mode, ui=ui.REAL)
     if cfg.mode == "server" and not info.has_docker:
         # Only reachable via `--mode server`: a clear error naming Express, never an
         # install prompt. Whether a present Docker is *running* is start_stack's
@@ -392,7 +382,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     console.print(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))
     # The quant picker may read the Hub and ask nvidia-smi here, dry run or not: both are
     # reads, and the dry-run report then names the tag it would pull.
-    ref = choose_model(info, cfg, sys=system.REAL)
+    ref = choose_model(info, cfg, sys=system.REAL, ui=ui.REAL)
     if dry_run:
         # Nothing is written: a dry run that saved the config would leave the machine
         # in a state the run said it would only describe.
@@ -413,7 +403,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         console.print(f"would: open {health.webui_url(cfg.webui_port)}")
         return
     if models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info):
-        server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE)
+        server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE, sys=system.REAL, ui=ui.REAL)
         # compose interpolates VLLM_MODEL from the config, so this one has to be
         # saved before the stack starts rather than after. A start that then fails
         # is fixed by `lepika model add`, not by a stale config.
@@ -430,7 +420,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         # The model is saved only once it is actually there: recording a model the
         # machine failed to download or import leaves the config pointing at
         # something that isn't.
-        served = acquire.acquire(info, cfg, ref)
+        served = acquire.acquire(info, cfg, ref, ui=ui.REAL)
         if served is None:
             return  # declined: the stack is up, the model is chosen next time
         cfg.model = served

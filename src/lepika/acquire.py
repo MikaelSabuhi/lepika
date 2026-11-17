@@ -12,27 +12,27 @@ from __future__ import annotations
 import contextlib
 import re
 import shutil
-from collections.abc import Callable
 from pathlib import Path
 
 from rich.console import Console
 from rich.markup import escape
-from rich.prompt import Confirm
 
-from lepika import config, engine, gguf, hf, mlx, models, paths, prompts, serving, system
+from lepika import config, engine, gguf, hf, mlx, models, paths, serving, system
 from lepika.detect import SystemInfo
 from lepika.errors import FriendlyError
 from lepika.models import ModelRef
+from lepika.ui import UI, NoTerminal
 
 console = Console()
 
 
-def ask_confirm(question: str) -> bool:
+def _confirm(question: str, *, ui: UI) -> bool:
+    """The one interactive question on the import path."""
     try:
         # Enter means no, as it always has; no terminal is not taken as a no, because
         # the caller would then report a decline nobody made.
-        return prompts.confirm(question, default=False, reader=Confirm.ask, require_terminal=True)
-    except prompts.NoTerminal as exc:
+        return ui.confirm(question, default=False, require_terminal=True)
+    except NoTerminal as exc:
         # Piped, redirected or in CI: rich sees EOF on stdin. A download this size is
         # never started on a guess, so say what is missing instead of tracebacking.
         raise FriendlyError(
@@ -41,17 +41,13 @@ def ask_confirm(question: str) -> bool:
         ) from exc
 
 
-# Patched in tests; the one interactive question on the import path.
-confirm: Callable[[str], bool] = ask_confirm
-
-
-def preflight_with_token(repo: str, cfg: config.Config) -> tuple[hf.Preflight, str]:
+def preflight_with_token(repo: str, cfg: config.Config, *, ui: UI) -> tuple[hf.Preflight, str]:
     """List the repo; on a gated answer ask for a token once and try again."""
     token = hf.token_for(cfg, sys=system.REAL)
     try:
         return hf.preflight(repo, token, sys=system.REAL), token
     except hf.GatedRepo:
-        token = hf.ask_token(cfg)
+        token = hf.ask_token(cfg, ui=ui)
         if not token:
             raise
         return hf.preflight(repo, token, sys=system.REAL), token
@@ -67,7 +63,12 @@ def _ram_advisory(label: str, quantized: int, info: SystemInfo) -> None:
 
 
 def import_repo(
-    info: SystemInfo, cfg: config.Config, ref: ModelRef, quant: str = engine.IMPORT_QUANT
+    info: SystemInfo,
+    cfg: config.Config,
+    ref: ModelRef,
+    quant: str = engine.IMPORT_QUANT,
+    *,
+    ui: UI,
 ) -> str | None:
     """Download a full-weight repo and import it into Ollama; the name it now serves."""
     repo = ref.raw
@@ -79,7 +80,7 @@ def import_repo(
         # model is minutes and gigabytes for nothing.
         console.print(f"{escape(repo)} is already imported.")
         return repo
-    pre, token = preflight_with_token(repo, cfg)
+    pre, token = preflight_with_token(repo, cfg, ui=ui)
     if pre.has_gguf and not pre.has_safetensors:
         # A GGUF build typed without `hf.co/`: Ollama pulls those itself.
         gguf = models.parse_model_ref(f"hf.co/{repo}")
@@ -123,7 +124,7 @@ def import_repo(
         if method is not None
         else f"import as {quant} (~{engine.human_size(store_bytes)})"
     )
-    if not confirm(f"Fetch {engine.human_size(pre.download_bytes)} onto disk and {how}?"):
+    if not _confirm(f"Fetch {engine.human_size(pre.download_bytes)} onto disk and {how}?", ui=ui):
         return None
     if info.os != "macos":
         console.print("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
@@ -178,7 +179,9 @@ def check_local(source: Path, name: str) -> None:
         )
 
 
-def import_local(info: SystemInfo, cfg: config.Config, source: Path, name: str, quant: str) -> str:
+def import_local(
+    info: SystemInfo, cfg: config.Config, source: Path, name: str, quant: str, *, ui: UI
+) -> str:
     """Import weights the user already has on disk; the name Ollama now serves.
 
     Nothing here downloads, writes into `source`, or touches `~/.lepika/hf` — the
@@ -232,7 +235,12 @@ def import_local(info: SystemInfo, cfg: config.Config, source: Path, name: str, 
 
 
 def acquire(
-    info: SystemInfo, cfg: config.Config, ref: ModelRef, quant: str = engine.IMPORT_QUANT
+    info: SystemInfo,
+    cfg: config.Config,
+    ref: ModelRef,
+    quant: str = engine.IMPORT_QUANT,
+    *,
+    ui: UI,
 ) -> str | None:
     """Get `ref` into Ollama — pulled or imported — and return the name it serves.
 
@@ -242,7 +250,7 @@ def acquire(
     someone else already quantized.
     """
     if ref.kind == "hf_repo":
-        return import_repo(info, cfg, ref, quant=quant)
+        return import_repo(info, cfg, ref, quant=quant, ui=ui)
     try:
         engine.pull_model(
             cfg.engine_url, ref, key=cfg.engine_key, managed=cfg.engine_managed, sys=system.REAL
@@ -253,7 +261,7 @@ def acquire(
         # `hf.co/<org>/<repo>:tag` — the tag is Ollama's, not part of the repo id.
         repo, _tag = gguf.split_tag(ref.raw)
         console.print(f"{escape(ref.raw)} ships full weights — importing it into Ollama instead.")
-        return import_repo(info, cfg, models.parse_model_ref(repo), quant=quant)
+        return import_repo(info, cfg, models.parse_model_ref(repo), quant=quant, ui=ui)
     if ref.kind == "hf_gguf" and cfg.engine_managed:
         # Registry models are Ollama-curated; only hf.co pulls carry community
         # templates — sometimes stripped of their tool handling, which turns every

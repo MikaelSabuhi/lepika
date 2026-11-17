@@ -36,6 +36,7 @@ from lepika import (
     serving,
     stack_env,
     system,
+    ui,
 )
 from lepika.backend import UpdateStep
 from lepika.errors import ISSUES_URL, CommandNotFound, FriendlyError
@@ -449,14 +450,16 @@ def model_add(
     info = detect.detect(sys=system.REAL)
     cfg = config.load()
     if ref is None:
-        model_ref = wizard.choose_model(info, cfg, sys=system.REAL)
+        model_ref = wizard.choose_model(info, cfg, sys=system.REAL, ui=ui.REAL)
     else:
         # Same rejection — and the same quant picker — as the wizard's, by reusing it.
-        model_ref = wizard.resolve(models.parse_model_ref(ref), cfg, info, sys=system.REAL)
+        model_ref = wizard.resolve(
+            models.parse_model_ref(ref), cfg, info, sys=system.REAL, ui=ui.REAL
+        )
     if models.uses_vllm(model_ref.raw) and serving.vllm_allowed(cfg, info):
         # Nothing to pull: vLLM downloads the weights itself when it starts, and it
         # only starts once the config names the model compose interpolates.
-        server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE)
+        server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE, sys=system.REAL, ui=ui.REAL)
         cfg.model = model_ref.raw
         config.save(cfg)
         console.print(f"[green]✓ Set:[/green] {escape(model_ref.raw)} — starting vLLM…")
@@ -475,7 +478,7 @@ def model_add(
     else:
         # A remote engine is someone else's to run: check it, never install for it.
         health.check_remote_engine(cfg, sys=system.REAL)
-    served = acquire.acquire(info, cfg, model_ref, quant=quant)
+    served = acquire.acquire(info, cfg, model_ref, quant=quant, ui=ui.REAL)
     if served is None:
         console.print("Nothing added.")
         return
@@ -514,7 +517,7 @@ def model_import(
     )
     # Resolved from here on: the "Importing … from …" line and the `source=` log field
     # name the folder unambiguously, whatever the shell was sitting in.
-    served = acquire.import_local(info, cfg, path.resolve(), name, quant)
+    served = acquire.import_local(info, cfg, path.resolve(), name, quant, ui=ui.REAL)
     cfg.model = served
     config.save(cfg)
     console.print(f"[green]✓ Imported:[/green] {escape(served)}")

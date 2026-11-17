@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes import FakeUI
 from typer.testing import CliRunner
 
-from lepika import cli, detect, health, models, wizard
+from lepika import cli, detect, health, models, ui
 from lepika.cli import app
 
 runner = CliRunner()
@@ -230,7 +231,7 @@ def test_run_without_a_terminal_is_two_lines_not_a_traceback(
         lambda **k: [models.CuratedModel(name="Small", ref="llama3.2:3b", min_ram_gb=6)],
     )
     monkeypatch.setattr(health, "webui_up", lambda port, **k: True)
-    monkeypatch.setattr(wizard, "_ask", no_terminal)
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=no_terminal))
     with pytest.raises(SystemExit) as exit_info:
         cli.run()
     assert exit_info.value.code == 1

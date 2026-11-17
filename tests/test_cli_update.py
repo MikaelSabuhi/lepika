@@ -4,11 +4,12 @@ import shutil
 import subprocess
 from typing import Any
 
+import fakes
 import pytest
-from fakes import Backends, FakeBackend
+from fakes import Backends, FakeBackend, FakeSystem
 from typer.testing import CliRunner
 
-from lepika import backend, cli, detect, health, ollama, openwebui, proc
+from lepika import cli, detect, health, ollama, openwebui, proc
 from lepika.updates import UpdateStep
 
 runner = CliRunner()
@@ -36,7 +37,6 @@ def test_update_upgrades_engine_and_webui(monkeypatch: pytest.MonkeyPatch) -> No
         gpu="nvidia",
         ram_gb=32.0,
     )
-    monkeypatch.setattr(detect, "detect", lambda **k: info)
     monkeypatch.setattr(proc, "run_logged", fake_run)
     monkeypatch.setattr(ollama, "upgrade_ollama", lambda i, **k: installed.append(i))
     monkeypatch.setattr(health, "api_up", lambda url, **k: False)
@@ -44,7 +44,10 @@ def test_update_upgrades_engine_and_webui(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(openwebui, "stop_openwebui", lambda os_name, **k: True)
     monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
 
-    result = runner.invoke(cli.app, ["update"])
+    # The CLI used to reach `proc.run_logged` through the real system; the fake system
+    # hands every command it runs to the same recorder.
+    machine = FakeSystem(while_running=fake_run)
+    result = runner.invoke(cli.app, ["update"], obj=fakes.deps(sys=machine, machine=info))
     assert result.exit_code == 0
     # The install script must stream (it may prompt for sudo), so it goes through
     # ollama.upgrade_ollama — never through captured run_logged.
@@ -67,7 +70,6 @@ def test_update_restarts_openwebui_rather_than_probing_the_dying_one(
         ram_gb=32.0,
     )
     restarts: list[tuple[int, str]] = []
-    monkeypatch.setattr(detect, "detect", lambda **k: info)
     monkeypatch.setattr(
         proc, "run_logged", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "", "")
     )
@@ -82,7 +84,7 @@ def test_update_restarts_openwebui_rather_than_probing_the_dying_one(
         openwebui, "stop_openwebui", lambda *a, **k: pytest.fail("update must go through restart")
     )
 
-    result = runner.invoke(cli.app, ["update"])
+    result = runner.invoke(cli.app, ["update"], obj=fakes.deps(machine=info))
     assert result.exit_code == 0
     assert restarts == [(3000, "linux")]
 
@@ -95,13 +97,11 @@ def test_update_prints_what_happened(monkeypatch: pytest.MonkeyPatch) -> None:
         UpdateStep("Container images", "current"),
         UpdateStep("Ollama service", "note", "could not put ollama.service back as it was"),
     ]
-    monkeypatch.setattr(detect, "detect", lambda **k: LINUX)
-    monkeypatch.setattr(
-        backend,
-        "backend_for",
-        Backends(express=FakeBackend(on_update=lambda info, cfg, **k: steps)),
+    deps = fakes.deps(
+        machine=LINUX,
+        backends=Backends(express=FakeBackend(on_update=lambda info, cfg, **k: steps)),
     )
-    result = runner.invoke(cli.app, ["update"])
+    result = runner.invoke(cli.app, ["update"], obj=deps)
     assert result.exit_code == 0, result.output
     assert "✓ Ollama: upgraded (0.33.2 → 0.34.0)" in result.output
     assert "✓ OpenWebUI: up to date (0.6.5)" in result.output
@@ -120,12 +120,11 @@ def test_down_gates_the_signal_on_the_configured_port(monkeypatch: pytest.Monkey
         ram_gb=32.0,
     )
     seen: list[int | None] = []
-    monkeypatch.setattr(detect, "detect", lambda **k: info)
     monkeypatch.setattr(
         openwebui,
         "stop_openwebui",
         lambda os_name, port=None, **k: bool(seen.append(port)),
     )
-    result = runner.invoke(cli.app, ["down"])
+    result = runner.invoke(cli.app, ["down"], obj=fakes.deps(machine=info))
     assert result.exit_code == 0
     assert seen == [3000]

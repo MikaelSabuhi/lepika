@@ -179,9 +179,8 @@ def test_model_add_hf_repo_in_server_mode_saves_without_pulling(
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
     monkeypatch.setattr(engine, "pull_model", lambda *a, **k: pytest.fail("no pull for vLLM"))
     monkeypatch.setattr(server, "hf_token_prompt", lambda env, **k: None)
-    monkeypatch.setattr(
-        backend, "backend_for", Backends(server=FakeBackend(on_start=lambda info, cfg, **k: "u"))
-    )
+    # A start that succeeds runs its hook, as the real one does once `compose up` has.
+    monkeypatch.setattr(backend, "backend_for", Backends(server=FakeBackend(url="u")))
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
     result = runner.invoke(cli.app, ["model", "add", REPO])
     assert result.exit_code == 0, result.output
@@ -189,10 +188,10 @@ def test_model_add_hf_repo_in_server_mode_saves_without_pulling(
     assert "lepika up" in result.output or "starting" in result.output.lower()
 
 
-def test_wizard_saves_the_vllm_model_before_starting_the_stack(
+def test_wizard_saves_the_vllm_model_once_compose_up_has_succeeded(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
-    """compose interpolates VLLM_MODEL from the saved config, so it must be saved first."""
+    """The stack is started for the model it is given; the file follows once it is up."""
     config.save(config.Config(mode="server"))
     seen: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
@@ -203,17 +202,37 @@ def test_wizard_saves_the_vllm_model_before_starting_the_stack(
     monkeypatch.setattr(engine, "pull_model", lambda *a, **k: pytest.fail("no pull for vLLM"))
 
     def fake_start(info: Any, cfg: Any, after_engine: Any = None, **k: Any) -> str:
-        seen.append(f"start:{config.load().model}")
+        seen.append(f"start:{cfg.model}:{config.load().model}")
         if after_engine is not None:
             after_engine()
+        seen.append(f"hook:{config.load().model}")
         return "http://localhost:3000"
 
     monkeypatch.setattr(backend, "backend_for", Backends(server=FakeBackend(on_start=fake_start)))
     result = wizard.run_wizard(mode="server", sys=machine, ui=face)
     # The wizard hands the URL back; the CLI is what opens it.
     assert result is not None and result[1] == "http://localhost:3000"
-    assert seen == ["token", f"start:{REPO}"]
+    assert seen == ["token", f"start:{REPO}:", f"hook:{REPO}"]
     assert config.load().model == REPO
+
+
+def test_wizard_keeps_the_old_model_when_vllm_never_got_to_compose_up(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    config.save(config.Config(mode="server", model="qwen3:8b"))
+    monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
+    monkeypatch.setattr(models, "load_curated", lambda **k: [])
+    monkeypatch.setattr(server, "hf_token_prompt", lambda env, **k: None)
+
+    def no_toolkit(info: Any, cfg: Any, **k: Any) -> str:
+        raise FriendlyError("vLLM needs the GPU inside Docker, and Docker can't see it.", "x")
+
+    monkeypatch.setattr(backend, "backend_for", Backends(server=FakeBackend(on_start=no_toolkit)))
+    with pytest.raises(FriendlyError):
+        wizard.run_wizard(
+            mode="server", sys=FakeSystem(which=DOCKER), ui=FakeUI(reader=lambda *a, **k: REPO)
+        )
+    assert config.load() == config.Config(mode="server", model="qwen3:8b")
 
 
 def test_dry_run_says_it_would_start_vllm(
@@ -406,3 +425,77 @@ def test_up_says_vllm_in_the_plan_sentence(
     result = runner.invoke(cli.app, ["up"])
     assert result.exit_code == 0, result.output
     assert "OpenWebUI + vLLM" in result.output
+
+
+def _add_vllm_model(monkeypatch: pytest.MonkeyPatch, machine: FakeSystem) -> Any:
+    """`lepika model add REPO` on a Server box, over the real `ServerBackend`."""
+    config.save(config.Config(mode="server", model="qwen3:8b"))
+    monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
+    monkeypatch.setattr(system, "REAL", machine)
+    monkeypatch.setattr(server, "hf_token_prompt", lambda env, **k: None)
+    monkeypatch.setattr(cli, "_open_browser", lambda url: None)
+    return runner.invoke(cli.app, ["model", "add", REPO])
+
+
+def _vllm_box(vllm: Any, **kwargs: Any) -> FakeSystem:
+    """Docker sees the GPU and port 11434 is free; vLLM's health answers `vllm`."""
+    return FakeSystem(
+        stdout={"docker info": '{"nvidia": {}}'},
+        which=DOCKER,
+        urls=routes(
+            {
+                **PORT_FREE,
+                "http://127.0.0.1:8000/health": vllm,
+                "http://127.0.0.1:3000/health": FakeResponse(),
+            }
+        ),
+        **kwargs,
+    )
+
+
+def test_model_add_vllm_is_saved_and_announced_once_compose_up_succeeded(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    on_disk: list[str] = []
+    machine = _vllm_box(FakeResponse())
+    # `compose stop` of the inactive profiles, which runs right after `up`.
+    machine.while_running = lambda cmd: (
+        on_disk.append(config.load().model) if "stop" in cmd else None
+    )
+    result = _add_vllm_model(monkeypatch, machine)
+    assert result.exit_code == 0, result.output
+    assert on_disk == ["qwen3:8b"]
+    assert config.load().model == REPO
+    out = " ".join(result.output.split())
+    assert out.index(f"✓ Set: {REPO} — starting vLLM…") < out.index("vLLM is loading")
+
+
+def test_model_add_vllm_whose_readiness_wait_times_out_stays_saved(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """vLLM is downloading tens of GB: the next `lepika up` must keep it going."""
+    result = _add_vllm_model(monkeypatch, _vllm_box(OSError("connection refused")))
+    assert isinstance(result.exception, FriendlyError)
+    assert "vLLM did not become ready" in result.exception.problem
+    assert config.load().model == REPO
+
+
+def test_model_add_vllm_whose_compose_up_fails_leaves_the_config(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    result = _add_vllm_model(monkeypatch, _vllm_box(FakeResponse(), codes={"docker compose": 1}))
+    assert isinstance(result.exception, FriendlyError)
+    assert result.exception.problem == "`docker compose up` failed."
+    assert config.load() == config.Config(mode="server", model="qwen3:8b")
+    assert "✓ Set" not in result.output
+
+
+def test_model_add_vllm_refused_before_compose_up_leaves_the_config(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    machine = FakeSystem(stdout={"docker info": "{}"}, which=DOCKER, urls=routes(PORT_FREE))
+    result = _add_vllm_model(monkeypatch, machine)
+    assert isinstance(result.exception, FriendlyError)
+    assert "Container Toolkit" in result.exception.fix
+    assert machine.called == []
+    assert config.load() == config.Config(mode="server", model="qwen3:8b")

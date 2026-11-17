@@ -15,6 +15,8 @@ from lepika import (
     engine,
     gguf,
     health,
+    hf,
+    mlx,
     models,
     ollama,
     openwebui,
@@ -279,10 +281,47 @@ def test_wizard_acquires_the_model_through_acquire(
     monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
     monkeypatch.setattr(health, "webui_up", lambda port, **k: True)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
-    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref, **k: "Qwen/Qwen3.5-2B")
+    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref, **k: (cfg, "Qwen/Qwen3.5-2B"))
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     assert config.load().model == "Qwen/Qwen3.5-2B"
+
+
+def test_wizard_keeps_a_token_typed_during_the_import_in_the_config_it_saves(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """The import saves the token as it is typed; the wizard's model save must keep it."""
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(system, "REAL", FakeSystem())  # no Docker: Express, unasked
+    monkeypatch.setattr(
+        ui,
+        "REAL",
+        FakeUI(
+            reader=lambda prompt, **k: "hf_new" if "token" in prompt else "Qwen/Qwen3.5-2B",
+            confirm_reader=lambda q, **k: True,
+        ),
+    )
+    monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
+    monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: None)
+    monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
+    monkeypatch.setattr(health, "webui_up", lambda port, **k: True)
+    monkeypatch.setattr(cli, "_open_browser", lambda url: None)
+    monkeypatch.setattr(engine, "list_models", lambda url, **k: [])
+    monkeypatch.setattr(mlx, "ensure_mlx", lambda info, **k: None)
+    monkeypatch.setattr(hf, "fetch_config", lambda repo, dest, token="", **k: {})
+    monkeypatch.setattr(hf, "download", lambda repo, dest, token="", **k: None)
+    monkeypatch.setattr(engine, "import_model", lambda url, name, source, **k: None)
+
+    def preflight(repo: str, token: str = "", **k: Any) -> hf.Preflight:
+        if not token:
+            raise hf.GatedRepo("'x/y' is gated or private on Hugging Face.", "Accept its licence.")
+        return hf.Preflight(files=("model.safetensors",), total_bytes=1, download_bytes=1)
+
+    monkeypatch.setattr(hf, "preflight", preflight)
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code == 0, result.output
+    saved = config.load()
+    assert (saved.model, saved.hf_token) == ("Qwen/Qwen3.5-2B", "hf_new")
 
 
 def test_wizard_declined_download_keeps_the_old_model(
@@ -298,7 +337,7 @@ def test_wizard_declined_download_keeps_the_old_model(
     monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: None)
     monkeypatch.setattr(health, "webui_up", lambda port, **k: True)
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
-    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref, **k: None)
+    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref, **k: (cfg, None))
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0, result.output
     assert config.load().model == "previous:model"
@@ -382,8 +421,7 @@ def test_choose_quant_sends_the_saved_token(monkeypatch: pytest.MonkeyPatch) -> 
         return BUILDS
 
     monkeypatch.setattr(gguf, "list_builds", fake)
-    cfg = config.Config()
-    cfg.hf_token = "hf_saved"
+    cfg = config.Config(hf_token="hf_saved")
     wizard.choose_quant(GGUF_REF, cfg, INFO, ui=FakeUI(reader=lambda *a, **k: ""), sys=FakeSystem())
     assert seen["token"] == "hf_saved"
 
@@ -481,8 +519,7 @@ def test_choose_quant_budgets_no_gpu_for_a_container_on_apple_silicon(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(gguf, "list_builds", _listing([gguf.Build("Q4_K_M", int(4e9))]))
-    cfg = config.Config()
-    cfg.mode = "server"
+    cfg = config.Config(mode="server")
 
     sys = FakeSystem(stdout={"docker info": ""})  # Docker's memory unknown: the Mac's RAM
     wizard.choose_quant(GGUF_REF, cfg, INFO, sys=sys, ui=FakeUI(reader=lambda *a, **k: ""))
@@ -495,9 +532,7 @@ def test_choose_quant_says_a_remote_engine_is_sized_against_this_machine(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(gguf, "list_builds", _listing(BUILDS))
-    cfg = config.Config()
-    cfg.engine_managed = False
-    cfg.engine_url = "http://box:11434"
+    cfg = config.Config(engine_managed=False, engine_url="http://box:11434")
     ref = wizard.choose_quant(
         GGUF_REF, cfg, INFO, ui=FakeUI(reader=lambda *a, **k: ""), sys=FakeSystem()
     )
@@ -581,9 +616,7 @@ DOCKER_INFO = ["docker", "info", "--format", "{{.MemTotal}}"]
 
 
 def _server() -> config.Config:
-    cfg = config.Config()
-    cfg.mode = "server"
-    return cfg
+    return config.Config(mode="server")
 
 
 def test_choose_quant_sizes_a_server_engine_against_dockers_memory(
@@ -707,7 +740,7 @@ def test_the_cli_announces_the_wizards_stack_once_it_is_up_then_opens_it(
     monkeypatch.setattr(face, "say", lambda text, **k: events.append(f"say:{text}"))
     monkeypatch.setattr(ui, "REAL", face)
     monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: events.append("engine"))
-    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref, **k: served)
+    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref, **k: (cfg, served))
     monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: events.append("ui"))
     monkeypatch.setattr(cli, "_open_browser", lambda url: events.append(f"browser:{url}"))
     result = runner.invoke(cli.app, [])

@@ -6,7 +6,7 @@ import pytest
 from fakes import Backends, FakeBackend
 from typer.testing import CliRunner
 
-from lepika import backend, cli, config, detect, paths, server, stack_env
+from lepika import backend, cli, config, detect, log, paths, server, stack_env
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
@@ -224,3 +224,73 @@ def test_expose_says_so_when_no_address_resolves(
     assert result.exit_code == 0, result.output
     assert server.NO_ROUTE in result.output
     assert "Also reachable on" not in result.output
+
+
+def _logged(event: str) -> bool:
+    written = paths.logs_dir() / log.LOG_FILE
+    return written.exists() and event in written.read_text()
+
+
+@pytest.mark.parametrize("args", [["expose"], ["expose", "--rotate"]])
+def test_exposed_is_saved_once_the_stack_started_with_the_proxy(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path, args: list[str]
+) -> None:
+    seen: list[tuple[bool, bool, bool]] = []
+    config.save(config.Config(mode="server"))
+    monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
+    monkeypatch.setattr(server, "lan_ips", lambda **k: ["192.168.1.20"])
+
+    def start(info: detect.Machine, cfg: config.Config, **k: object) -> str:
+        seen.append((cfg.exposed, config.load().exposed, _logged("expose.on")))
+        return "u"
+
+    monkeypatch.setattr(backend, "backend_for", Backends(server=FakeBackend(on_start=start)))
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 0, result.output
+    # Started with the proxy while the file still said it was off.
+    assert seen == [(True, False, False)]
+    assert config.load().exposed is True
+    assert _logged("expose.on")
+
+
+@pytest.mark.parametrize("args", [["expose"], ["expose", "--rotate"]])
+def test_a_failed_expose_leaves_the_machine_saved_as_not_exposed(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path, args: list[str]
+) -> None:
+    """A proxy that never started must not be what the next `lepika up` starts."""
+    config.save(config.Config(mode="server"))
+    monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
+
+    def compose_fails(info: detect.Machine, cfg: config.Config, **k: object) -> str:
+        raise FriendlyError("`docker compose up` failed.", "Run `lepika logs`.")
+
+    monkeypatch.setattr(
+        backend, "backend_for", Backends(server=FakeBackend(on_start=compose_fails))
+    )
+    result = runner.invoke(cli.app, args)
+    assert isinstance(result.exception, FriendlyError)
+    assert config.load() == config.Config(mode="server")
+    assert not _logged("expose.on")
+    assert "Exposed" not in result.output
+
+
+def test_expose_off_is_saved_even_when_the_restart_fails(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """Closing the port is a withdrawal: a failed restart must not reopen it next `up`."""
+    config.save(config.Config(mode="server", exposed=True))
+    monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
+    seen: list[bool] = []
+
+    def compose_fails(info: detect.Machine, cfg: config.Config, **k: object) -> str:
+        seen.append(config.load().exposed)
+        raise FriendlyError("`docker compose up` failed.", "Run `lepika logs`.")
+
+    monkeypatch.setattr(
+        backend, "backend_for", Backends(server=FakeBackend(on_start=compose_fails))
+    )
+    result = runner.invoke(cli.app, ["expose", "--off"])
+    assert isinstance(result.exception, FriendlyError)
+    assert seen == [False]
+    assert config.load().exposed is False
+    assert not _logged("expose.off")

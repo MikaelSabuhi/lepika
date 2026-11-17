@@ -36,6 +36,15 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and a `docker compose down` that fails is reported instead of read as "Nothing was
   running". Switching modes in the wizard now says so too when the Server stack
   could not be stopped.
+- A command that fails part-way no longer leaves `config.toml` describing a machine
+  that does not exist, for the next `lepika up` to act on. `lepika connect <url>`
+  saves the engine only once the running stack has switched to it, and `lepika
+  expose` (or `--rotate`) saves the exposure only once the proxy has started. A
+  full-weight (vLLM) model, from `lepika model add` or the wizard, is saved once
+  `docker compose up` succeeds: a refused or failed start keeps the previous model,
+  while a first download that outlasts the wait still resumes on `lepika up`. A
+  wizard switch to Server mode with such a model that fails before then no longer
+  leaves Server mode saved, and the containers it created are removed.
 
 ### Changed
 

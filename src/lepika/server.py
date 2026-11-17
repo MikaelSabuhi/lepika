@@ -291,7 +291,8 @@ class ServerBackend:
         """Reconcile the stack with config and return the URL to open.
 
         Always runs `compose up -d`: it is idempotent, takes about a second when nothing
-        changed, and is what makes `connect`/`expose` edits take effect.
+        changed, and is what makes `connect`/`expose` edits take effect. `after_engine`
+        runs once the engine answers — for vLLM, as soon as `compose up` has succeeded.
         """
         ensure_docker(sys=self.sys)
         stack = install_stack()
@@ -349,6 +350,11 @@ class ServerBackend:
                 timeout=60,
             )
         if "vllm" in active:
+            # Before the readiness wait, not after: vLLM serves the model from here on,
+            # and that wait can outlast a half-hour download. Nothing is pulled into
+            # vLLM, so the hook needs no answering engine.
+            if after_engine is not None:
+                after_engine()
             # The first start downloads the full weights — tens of GB. A silent wait
             # that long is indistinguishable from a hang, so say what is happening.
             self.ui.say(
@@ -361,17 +367,19 @@ class ServerBackend:
                 "vLLM",
                 sys=self.sys,
             )
-        elif cfg.engine_managed:
-            health.wait_for(
-                lambda: health.api_up(cfg.engine_url, sys=self.sys),
-                120,
-                "Ollama (container)",
-                sys=self.sys,
-            )
         else:
-            health.check_remote_engine(cfg, sys=self.sys)
-        if after_engine is not None:
-            after_engine()
+            if cfg.engine_managed:
+                health.wait_for(
+                    lambda: health.api_up(cfg.engine_url, sys=self.sys),
+                    120,
+                    "Ollama (container)",
+                    sys=self.sys,
+                )
+            else:
+                health.check_remote_engine(cfg, sys=self.sys)
+            # After the engine answers: the wizard pulls a model inside the hook.
+            if after_engine is not None:
+                after_engine()
         health.wait_for(
             lambda: health.webui_up(cfg.webui_port, sys=self.sys), 180, "OpenWebUI", sys=self.sys
         )

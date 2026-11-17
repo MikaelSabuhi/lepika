@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from fakes import FakeResponse, FakeSystem, FakeUI, routes
 
-from lepika import config, hf, paths
+from lepika import acquire, config, hf, paths
 from lepika.errors import FriendlyError
 from lepika.system import Response
 
@@ -418,22 +418,58 @@ def test_token_for_prefers_the_environment_then_the_config() -> None:
     assert hf.token_for(config.Config(), sys=FakeSystem()) == ""
 
 
-def test_ask_token_saves_a_non_empty_answer_privately(isolated_home: Path) -> None:
+def test_ask_token_returns_the_stripped_answer_and_saves_nothing(isolated_home: Path) -> None:
     prompts: list[dict[str, Any]] = []
 
     def ask(prompt: str, **kwargs: Any) -> str:
         prompts.append(kwargs)
         return " hf_new "
 
-    cfg = config.Config()
-    assert hf.ask_token(cfg, ui=FakeUI(reader=ask)) == "hf_new"
+    assert hf.ask_token(ui=FakeUI(reader=ask)) == "hf_new"
     assert prompts[0]["password"] is True
-    assert config.load().hf_token == "hf_new"
+    assert not config.config_path().exists()
 
 
-def test_ask_token_empty_answer_saves_nothing(isolated_home: Path) -> None:
-    cfg = config.Config()
-    assert hf.ask_token(cfg, ui=FakeUI(reader=lambda *a, **k: "")) == ""
+def _gated_until_a_token(
+    monkeypatch: pytest.MonkeyPatch, calls: list[str] | None = None
+) -> hf.Preflight:
+    listed = hf.Preflight(files=("model.safetensors",), total_bytes=1, download_bytes=1)
+
+    def preflight(repo: str, token: str = "", **k: Any) -> hf.Preflight:
+        if calls is not None:
+            calls.append(token)
+        if not token:
+            raise hf.GatedRepo("'x/y' is gated or private on Hugging Face.", "Accept its licence.")
+        return listed
+
+    monkeypatch.setattr(hf, "preflight", preflight)
+    return listed
+
+
+def test_preflight_with_token_saves_a_typed_token_at_once(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """A credential, saved the moment it is typed — and handed back with the rest kept."""
+    calls: list[str] = []
+    listed = _gated_until_a_token(monkeypatch, calls)
+    cfg = config.Config(model="kept:model")
+    pre, token, now = acquire.preflight_with_token(
+        "x/y", cfg, sys=FakeSystem(), ui=FakeUI(reader=lambda *a, **k: " hf_new ")
+    )
+    assert (pre, token, calls) == (listed, "hf_new", ["", "hf_new"])
+    assert now == config.Config(model="kept:model", hf_token="hf_new")
+    assert config.load() == now
+
+
+def test_ask_token_empty_answer_saves_nothing(
+    monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    assert hf.ask_token(ui=FakeUI(reader=lambda *a, **k: "")) == ""
+    _gated_until_a_token(monkeypatch)
+    with pytest.raises(hf.GatedRepo):
+        acquire.preflight_with_token(
+            "x/y", config.Config(), sys=FakeSystem(), ui=FakeUI(reader=lambda *a, **k: "")
+        )
     assert not config.config_path().exists()
 
 
@@ -441,5 +477,5 @@ def test_token_prompt_without_a_terminal_skips(isolated_home: Path) -> None:
     def no_terminal(*a: Any, **k: Any) -> str:
         raise EOFError
 
-    assert hf.ask_token(config.Config(), ui=FakeUI(reader=no_terminal)) == ""
+    assert hf.ask_token(ui=FakeUI(reader=no_terminal)) == ""
     assert not config.config_path().exists()

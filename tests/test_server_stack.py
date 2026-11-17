@@ -474,3 +474,79 @@ def test_start_stack_names_the_mode_in_the_stack_up_line(isolated_home: Path) ->
     text = (paths.logs_dir() / log.LOG_FILE).read_text(encoding="utf-8")
     line = next(json.loads(x) for x in text.splitlines() if json.loads(x)["event"] == "stack.up")
     assert line["mode"] == "server"
+
+
+_VLLM = "http://127.0.0.1:8000/health"
+
+
+def _vllm_box(vllm: Any = _UP, **kwargs: Any) -> FakeSystem:
+    """A Docker host with the GPU in Docker and port 11434 free; vLLM answers `vllm`."""
+    return FakeSystem(
+        stdout={"docker info": '{"nvidia": {}}'},
+        which=DOCKER,
+        urls=routes({_ENGINE: OSError("connection refused"), _VLLM: vllm, _UI: _UP}),
+        **kwargs,
+    )
+
+
+def test_vllm_runs_the_hook_once_compose_up_succeeded_before_its_long_wait(
+    isolated_home: Path,
+) -> None:
+    """The model is served from that moment on; a half-hour download must not unsave it."""
+    machine = _vllm_box()
+    face = FakeUI()
+    said: list[str] = []
+    face.say = lambda text, **k: said.append(str(text))  # type: ignore[method-assign]
+    at_hook: list[tuple[int, bool, list[str]]] = []
+
+    def hook() -> None:
+        stopped = any("stop" in c for c in machine.ran)
+        at_hook.append((len(machine.called), stopped, _probed(machine)))
+        said.append("hook")
+
+    cfg = config.Config(mode="server", model="org/repo")
+    ServerBackend(sys=machine, ui=face).start(LINUX_NVIDIA, cfg, after_engine=hook)
+    # `compose up` and the stop of the inactive profiles have run; vLLM was not yet asked.
+    assert machine.called[0][-3:] == ["up", "-d", "--remove-orphans"]
+    assert at_hook == [(1, True, [_ENGINE])]
+    assert _probed(machine) == [_ENGINE, _VLLM, _UI]
+    loading = next(i for i, line in enumerate(said) if "vLLM is loading" in line)
+    assert said.index("hook") < loading
+
+
+def test_a_vllm_readiness_timeout_comes_after_the_hook(isolated_home: Path) -> None:
+    hooked: list[str] = []
+    machine = _vllm_box(vllm=OSError("connection refused"))
+    with pytest.raises(FriendlyError) as exc:
+        ServerBackend(sys=machine, ui=FakeUI()).start(
+            LINUX_NVIDIA,
+            config.Config(mode="server", model="org/repo"),
+            after_engine=lambda: hooked.append("hook"),
+        )
+    assert "vLLM did not become ready" in exc.value.problem
+    assert hooked == ["hook"]
+
+
+def test_a_failed_vllm_compose_up_never_runs_the_hook(isolated_home: Path) -> None:
+    machine = _vllm_box(codes={"docker compose": 1})
+    with pytest.raises(FriendlyError) as exc:
+        ServerBackend(sys=machine, ui=FakeUI()).start(
+            LINUX_NVIDIA,
+            config.Config(mode="server", model="org/repo"),
+            after_engine=lambda: pytest.fail("hook after a failed compose up"),
+        )
+    assert "lepika logs" in exc.value.fix
+
+
+def test_a_remote_engine_runs_the_hook_after_it_answered(isolated_home: Path) -> None:
+    remote = "http://gpu-box:11435/api/version"
+    machine = FakeSystem(
+        stdout={"docker info": "{}"}, which=DOCKER, urls=routes({remote: _UP, _UI: _UP})
+    )
+    at_hook: list[list[str]] = []
+    cfg = config.Config(mode="server", engine_managed=False, engine_url="http://gpu-box:11435")
+    ServerBackend(sys=machine, ui=FakeUI()).start(
+        LINUX_NVIDIA, cfg, after_engine=lambda: at_hook.append(_probed(machine))
+    )
+    assert at_hook == [[remote]]
+    assert _probed(machine) == [remote, _UI]

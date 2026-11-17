@@ -531,7 +531,7 @@ def test_servers_port_check_asks_again_after_the_switch_stopped_the_ollama(
             ServerBackend(sys=sys, ui=ui) if cfg.mode == "server" else backends(cfg, sys=sys, ui=ui)
         ),
     )
-    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref, **k: ref.raw)
+    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref, **k: (cfg, ref.raw))
     answers = iter(["2", "1"])  # Server, then the model
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])
@@ -682,3 +682,69 @@ def test_an_engine_that_will_not_stop_still_reports_the_ui_stop(
     assert result.exit_code == 0, result.output
     assert switching == ["express"]
     assert "still answering" in result.output
+
+
+REPO = "meta-llama/Llama-3.1-8B-Instruct"
+
+
+def _switch_to_server_with(
+    model: str, start: Callable[..., str], backends: Backends, monkeypatch: pytest.MonkeyPatch
+) -> Any:
+    """Express → Server, picking `model`, over a Server backend whose start is `start`."""
+    config.save(config.Config(mode="express", model="previous:model"))
+    monkeypatch.setattr(server, "hf_token_prompt", lambda env, **k: None)
+    monkeypatch.setattr(backends.by_mode["server"], "on_start", start)
+    answers = iter(["2", model])
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
+    return runner.invoke(cli.app, [])
+
+
+def test_a_vllm_switch_refused_before_compose_up_saves_nothing_and_sweeps(
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither the mode nor the model may claim a stack that never came up — and what
+    the failed start created is removed, as it is for an Ollama model."""
+
+    def no_toolkit(*a: Any, **k: Any) -> str:
+        raise FriendlyError("vLLM needs the GPU inside Docker, and Docker can't see it.", "x")
+
+    result = _switch_to_server_with(REPO, no_toolkit, backends, monkeypatch)
+    assert isinstance(result.exception, FriendlyError)
+    assert config.load() == config.Config(mode="express", model="previous:model")
+    assert switching == ["express", "server"]
+
+
+def test_a_vllm_switch_whose_readiness_wait_fails_keeps_server_and_the_model(
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`compose up` succeeded, so vLLM is downloading: the next `up` must keep it going."""
+
+    def up_then_timeout(
+        info: detect.Machine,
+        cfg: config.Config,
+        after_engine: Callable[[], None] | None = None,
+        **k: Any,
+    ) -> str:
+        if after_engine is not None:
+            after_engine()
+        raise FriendlyError("vLLM did not become ready within 1800s.", "Run `lepika logs`.")
+
+    result = _switch_to_server_with(REPO, up_then_timeout, backends, monkeypatch)
+    assert isinstance(result.exception, FriendlyError)
+    assert config.load() == config.Config(mode="server", model=REPO)
+    assert switching == ["express"]
+
+
+def test_a_switch_whose_pull_fails_keeps_server_and_the_old_model(
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine came up and the mode was saved; only the model never arrived."""
+
+    def refuse(url: str, ref: Any, **k: Any) -> None:
+        raise FriendlyError("Pull failed.", "Try again.")
+
+    monkeypatch.setattr(engine, "pull_model", refuse)
+    result = _switch_to_server_with("1", started, backends, monkeypatch)
+    assert isinstance(result.exception, FriendlyError)
+    assert config.load() == config.Config(mode="server", model="previous:model")
+    assert switching == ["express"]

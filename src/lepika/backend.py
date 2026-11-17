@@ -19,7 +19,12 @@ class Backend(Protocol):
 
     def start(
         self, info: Machine, cfg: Config, after_engine: Callable[[], None] | None = None
-    ) -> str: ...
+    ) -> str:
+        """Bring the stack up for `cfg`; the URL to open.
+
+        `after_engine` runs once the engine answers — for vLLM, once `compose up` succeeded.
+        """
+        ...
 
     def stop(self, info: Machine, cfg: Config) -> bool: ...
 

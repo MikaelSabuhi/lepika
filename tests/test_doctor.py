@@ -4,11 +4,12 @@ import urllib.error
 from pathlib import Path
 from typing import Any
 
+import fakes
 import pytest
 from fakes import FakeResponse, FakeSystem, routes
 from typer.testing import CliRunner
 
-from lepika import cli, detect, doctor
+from lepika import cli, doctor
 from lepika.detect import Machine
 
 runner = CliRunner()
@@ -125,13 +126,12 @@ def test_the_openwebui_hint_points_at_the_log_that_holds_the_cause(isolated_home
 
 
 def test_doctor_command_exits_zero_when_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(detect, "detect", lambda **k: info())
     monkeypatch.setattr(
         doctor,
         "run_checks",
         lambda i, **k: [doctor.CheckResult("uv installed", True, "install uv")],
     )
-    result = runner.invoke(cli.app, ["doctor"])
+    result = runner.invoke(cli.app, ["doctor"], obj=fakes.deps(machine=info()))
     assert result.exit_code == 0
     assert "uv installed" in result.output
 
@@ -139,25 +139,23 @@ def test_doctor_command_exits_zero_when_healthy(monkeypatch: pytest.MonkeyPatch)
 def test_doctor_command_fails_on_core_check_and_prints_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(detect, "detect", lambda **k: info())
     monkeypatch.setattr(
         doctor,
         "run_checks",
         lambda i, **k: [doctor.CheckResult("Engine responding", False, "Run `lepika up`")],
     )
-    result = runner.invoke(cli.app, ["doctor"])
+    result = runner.invoke(cli.app, ["doctor"], obj=fakes.deps(machine=info()))
     assert result.exit_code == 1
     assert "Run `lepika up`" in result.output
 
 
 def test_doctor_command_ram_warning_does_not_fail(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(detect, "detect", lambda **k: info(ram=4.0))
     monkeypatch.setattr(
         doctor,
         "run_checks",
         lambda i, **k: [doctor.CheckResult(doctor.RAM_CHECK, False, "4 GB detected")],
     )
-    result = runner.invoke(cli.app, ["doctor"])
+    result = runner.invoke(cli.app, ["doctor"], obj=fakes.deps(machine=info(ram=4.0)))
     assert result.exit_code == 0
     assert "4 GB detected" in result.output
 

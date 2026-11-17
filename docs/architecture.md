@@ -19,6 +19,7 @@ LePika CLI (Python: Typer + Rich, structlog for the log)
  ├─ openwebui.py native OpenWebUI via uv: install, secret, start, find, stop, restart
  ├─ mlx.py      Ollama's MLX bundle + where Ollama keeps its files
  ├─ health.py   is it answering (Ollama API, vLLM, OpenWebUI), and waiting until it is
+ ├─ pids.py     the pid files we wrote, and asking a process to stop
  ├─ ports.py    can a server bind a port
  ├─ serving.py  which engine serves a ref, and its name
  ├─ server.py   ServerBackend: docker compose (profiles engine · vllm · expose)

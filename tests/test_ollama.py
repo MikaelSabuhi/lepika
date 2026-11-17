@@ -372,6 +372,37 @@ def test_wait_for_raises_after_timeout() -> None:
         health.wait_for(lambda: False, seconds=3, what="Ollama API", sys=FakeSystem())
 
 
+def test_wait_until_true_at_once_does_not_sleep() -> None:
+    fake = FakeSystem()
+    checks: list[int] = []
+
+    def ready() -> bool:
+        checks.append(1)
+        return True
+
+    assert health.wait_until(ready, 5, sys=fake) is True
+    assert (len(checks), fake.slept) == (1, [])
+
+
+def test_wait_until_true_on_the_third_check_sleeps_twice() -> None:
+    fake = FakeSystem()
+    answers = iter([False, False, True])
+    assert health.wait_until(lambda: next(answers), 5, sys=fake) is True
+    assert fake.slept == [1, 1]
+
+
+def test_wait_until_never_sleeps_after_every_check_and_is_false() -> None:
+    fake = FakeSystem()
+    checks: list[int] = []
+
+    def ready() -> bool:
+        checks.append(1)
+        return False
+
+    assert health.wait_until(ready, 4, sys=fake) is False
+    assert (len(checks), fake.slept) == (4, [1, 1, 1, 1])
+
+
 def _info(os_name: str, arch: str, gpu: str) -> Machine:
     return Machine(os_name, arch, gpu, 32.0)  # type: ignore[arg-type]
 

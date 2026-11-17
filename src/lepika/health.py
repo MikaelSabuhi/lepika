@@ -32,11 +32,18 @@ def vllm_up(url: str, *, sys: System) -> bool:
     return True
 
 
-def wait_for(predicate: Callable[[], bool], seconds: int, what: str, *, sys: System) -> None:
-    for _ in range(seconds):
+def wait_until(predicate: Callable[[], bool], attempts: int, *, sys: System) -> bool:
+    """Check up to `attempts` times, a second apart; did it become true?"""
+    for _ in range(attempts):
         if predicate():
-            return
+            return True
         sys.sleep(1)
+    return False
+
+
+def wait_for(predicate: Callable[[], bool], seconds: int, what: str, *, sys: System) -> None:
+    if wait_until(predicate, seconds, sys=sys):
+        return
     raise FriendlyError(
         f"{what} did not become ready within {seconds}s.",
         # `lepika logs`, not a raw path: in Server mode the cause is in the

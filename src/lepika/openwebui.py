@@ -232,10 +232,8 @@ def wait_until_down(port: int, attempts: int = 30, *, sys: System) -> None:
     Counted in probes, not seconds: each pass also pays `webui_up`'s own connection
     timeout, so a run of 30 is up to about a minute of wall time rather than 30s.
     """
-    for _ in range(attempts):
-        if not health.webui_up(port, sys=sys):
-            return
-        sys.sleep(1)
+    if health.wait_until(lambda: not health.webui_up(port, sys=sys), attempts, sys=sys):
+        return
     raise FriendlyError(
         f"OpenWebUI on port {port} is still answering after {attempts} shutdown checks.",
         # `lepika connect` restarts the UI too, so the hint names no single caller.

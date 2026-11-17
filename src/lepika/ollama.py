@@ -210,11 +210,9 @@ def stop_ollama(
     # Signalled is not stopped: Ollama unloads its models on the way out, and the
     # caller's next move is a Server stack that wants port 11434. Counted in probes
     # like `wait_until_down`, because each pass also pays `api_up`'s own timeout.
-    for _ in range(attempts):
-        if not answering():
-            pids.forget("ollama")
-            return True
-        sys.sleep(1)
+    if health.wait_until(lambda: not answering(), attempts, sys=sys):
+        pids.forget("ollama")
+        return True
     # The pid file stays: it is the only record of which engine was ours, and a
     # retry that has lost it can never stop this process at all.
     raise FriendlyError(

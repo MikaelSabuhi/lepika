@@ -3,11 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fakes import FakeSystem, FakeUI
+from fakes import Backends, FakeBackend, FakeSystem, FakeUI
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, express, health, log, ollama, openwebui, paths
+from lepika import backend, cli, config, detect, health, log, ollama, openwebui, paths
 from lepika.errors import FriendlyError
+from lepika.express import ExpressBackend
 
 runner = CliRunner()
 
@@ -153,7 +154,7 @@ def test_start_stack_never_installs_a_remote_engine(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         health, "api_up", lambda url, key="", **k: bool(probed.append((url, key))) or True
     )
-    express.start_stack(info, cfg, sys=FakeSystem(), ui=FakeUI())
+    ExpressBackend(sys=FakeSystem(), ui=FakeUI()).start(info, cfg)
     assert probed == [("http://gpu-box:11435", "k")]
 
 
@@ -162,7 +163,7 @@ def test_start_stack_explains_an_unreachable_remote_engine(monkeypatch: pytest.M
     cfg = config.Config(engine_managed=False, engine_url="http://gpu-box:11435")
     monkeypatch.setattr(health, "api_up", lambda url, **k: False)
     with pytest.raises(FriendlyError) as exc:
-        express.start_stack(info, cfg, sys=FakeSystem(), ui=FakeUI())
+        ExpressBackend(sys=FakeSystem(), ui=FakeUI()).start(info, cfg)
     assert "gpu-box" in exc.value.problem
     assert "lepika connect --local" in exc.value.fix
 
@@ -171,14 +172,16 @@ def test_connect_in_server_mode_reconciles_the_stack_instead_of_restarting_expre
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     """`compose up -d` is the Server-mode reconciler; the Express restart has no stack to touch."""
-    from lepika import server
-
     config.save(config.Config(mode="server"))
     monkeypatch.setattr(health, "api_up", lambda url, **k: True)
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
     started: list[str] = []
     monkeypatch.setattr(
-        server, "start_stack", lambda info, cfg, **k: started.append(cfg.engine_url) or ""
+        backend,
+        "backend_for",
+        Backends(
+            server=FakeBackend(on_start=lambda info, cfg, **k: started.append(cfg.engine_url) or "")
+        ),
     )
     monkeypatch.setattr(
         openwebui,
@@ -208,12 +211,12 @@ def test_connect_without_a_key_is_fine_while_exposed(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
     """Only a keyed remote is the problem: the proxy relays an open engine happily."""
-    from lepika import server
-
     config.save(config.Config(mode="server", exposed=True))
     monkeypatch.setattr(health, "api_up", lambda url, **k: True)
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
-    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "")
+    monkeypatch.setattr(
+        backend, "backend_for", Backends(server=FakeBackend(on_start=lambda info, cfg, **k: ""))
+    )
     result = runner.invoke(cli.app, ["connect", "http://gpu-box:11435"])
     assert result.exit_code == 0, result.output
     assert config.load().engine_url == "http://gpu-box:11435"
@@ -222,11 +225,11 @@ def test_connect_without_a_key_is_fine_while_exposed(
 def test_connect_local_is_unaffected_by_exposure(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
-    from lepika import server
-
     config.save(config.Config(mode="server", exposed=True, engine_managed=False, engine_key="k"))
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
-    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "")
+    monkeypatch.setattr(
+        backend, "backend_for", Backends(server=FakeBackend(on_start=lambda info, cfg, **k: ""))
+    )
     result = runner.invoke(cli.app, ["connect", "--local"])
     assert result.exit_code == 0, result.output
     assert config.load().engine_managed is True

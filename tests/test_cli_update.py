@@ -5,9 +5,10 @@ import subprocess
 from typing import Any
 
 import pytest
+from fakes import Backends, FakeBackend
 from typer.testing import CliRunner
 
-from lepika import cli, detect, express, health, ollama, openwebui, proc
+from lepika import backend, cli, detect, health, ollama, openwebui, proc
 from lepika.updates import UpdateStep
 
 runner = CliRunner()
@@ -95,7 +96,11 @@ def test_update_prints_what_happened(monkeypatch: pytest.MonkeyPatch) -> None:
         UpdateStep("Ollama service", "note", "could not put ollama.service back as it was"),
     ]
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX)
-    monkeypatch.setattr(express, "update", lambda info, cfg, **k: steps)
+    monkeypatch.setattr(
+        backend,
+        "backend_for",
+        Backends(express=FakeBackend(on_update=lambda info, cfg, **k: steps)),
+    )
     result = runner.invoke(cli.app, ["update"])
     assert result.exit_code == 0, result.output
     assert "✓ Ollama: upgraded (0.33.2 → 0.34.0)" in result.output

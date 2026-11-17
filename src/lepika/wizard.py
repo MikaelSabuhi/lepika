@@ -9,10 +9,10 @@ from rich.table import Table
 
 from lepika import (
     acquire,
+    backend,
     config,
     detect,
     engine,
-    express,
     gguf,
     health,
     hf,
@@ -333,12 +333,11 @@ def leave_mode(info: Machine, previous: str, cfg: config.Config, *, ui: UI) -> N
     )
     # The config as it was loaded: `stop` reads the old mode's ports, not the new mode's.
     old_cfg = dataclasses.replace(cfg, mode=previous)
-    backend = server if previous == "server" else express
     # A try each, not one around both: a UI that will not die would otherwise take
     # the engine stop down with it, and the port 11434 the next mode needs stays held.
     try:
         # The bool is "was anything running", which is not a reason to stop switching.
-        backend.stop(info, old_cfg, sys=system.REAL)
+        backend.backend_for(old_cfg, sys=system.REAL, ui=ui).stop(info, old_cfg)
     except FriendlyError as exc:
         _report_stop_failure(exc, ui=ui)
     # `lepika down` leaves Ollama up on purpose, but Server's pre-flight refuses a
@@ -362,7 +361,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     cfg.mode = mode if mode is not None else choose_mode(cfg.mode, sys=system.REAL, ui=ui.REAL)
     if cfg.mode == "server" and system.REAL.which("docker") is None:
         # Only reachable via `--mode server`: a clear error naming Express, never an
-        # install prompt. Whether a present Docker is *running* is start_stack's
+        # install prompt. Whether a present Docker is *running* is the start's
         # business — asking here would make --dry-run shell out.
         server.ensure_docker(sys=system.REAL)
     if cfg.mode != previous and not dry_run:
@@ -401,7 +400,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     def pull_then_save() -> None:
         if models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info):
             return  # vLLM downloads its own weights while starting; nothing to pull
-        # The mode is saved here, not before `start_stack`: this hook runs only once
+        # The mode is saved here, not before the start: this hook runs only once
         # the engine is up, so a pre-flight that refuses can no longer leave a config
         # claiming a mode that never started.
         config.save(cfg)
@@ -420,12 +419,10 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     # in Server mode the profile follows the ref, so an old full-weight repo would
     # bring up vLLM and leave nothing to pull into. Only the pull saves it (above).
     try:
-        url = cli._backend(cfg).start_stack(
+        url = backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(
             info,
             dataclasses.replace(cfg, model=ref.raw),
             after_engine=pull_then_save,
-            sys=system.REAL,
-            ui=ui.REAL,
         )
     except FriendlyError:
         # A switch into Server that fails before the engine came up never saved the
@@ -436,7 +433,7 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         # must not tear down what was already running — hence the reload.
         if cfg.mode == "server" and previous != "server" and config.load().mode != "server":
             try:
-                if server.stop(info, cfg, sys=system.REAL):
+                if backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).stop(info, cfg):
                     ui.REAL.say("Removed the containers the failed switch had created.")
             except FriendlyError as exc:
                 _report_stop_failure(exc, ui=ui.REAL)

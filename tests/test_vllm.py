@@ -7,10 +7,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import FakeResponse, FakeSystem, FakeUI, routes
+from fakes import Backends, FakeBackend, FakeResponse, FakeSystem, FakeUI, routes
 from typer.testing import CliRunner
 
 from lepika import (
+    backend,
     cli,
     config,
     detect,
@@ -27,6 +28,7 @@ from lepika import (
     wizard,
 )
 from lepika.errors import FriendlyError
+from lepika.server import ServerBackend
 
 runner = CliRunner()
 LINUX_NVIDIA = detect.Machine("linux", "x86_64", "nvidia", 64.0)
@@ -124,19 +126,17 @@ def test_start_stack_waits_for_vllm_not_ollama(isolated_home: Path) -> None:
         which=DOCKER,
         urls=routes({**PORT_FREE, vllm: FakeResponse(), webui: FakeResponse()}),
     )
-    server.start_stack(LINUX_NVIDIA, cfg, sys=machine, ui=FakeUI())
+    ServerBackend(sys=machine, ui=FakeUI()).start(LINUX_NVIDIA, cfg)
     # After the pre-flight's look at port 11434, Ollama is never waited for.
     assert [r.full_url for r in machine.requested] == [port, vllm, webui]
 
 
 def test_start_stack_vllm_without_toolkit_is_friendly(isolated_home: Path) -> None:
     with pytest.raises(FriendlyError) as exc:
-        server.start_stack(
-            LINUX_NVIDIA,
-            config.Config(mode="server", model=REPO),
+        ServerBackend(
             sys=FakeSystem(stdout={"docker info": "{}"}, which=DOCKER, urls=routes(PORT_FREE)),
             ui=FakeUI(),
-        )
+        ).start(LINUX_NVIDIA, config.Config(mode="server", model=REPO))
     assert "Container Toolkit" in exc.value.fix
 
 
@@ -179,7 +179,9 @@ def test_model_add_hf_repo_in_server_mode_saves_without_pulling(
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
     monkeypatch.setattr(engine, "pull_model", lambda *a, **k: pytest.fail("no pull for vLLM"))
     monkeypatch.setattr(server, "hf_token_prompt", lambda env, **k: None)
-    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
+    monkeypatch.setattr(
+        backend, "backend_for", Backends(server=FakeBackend(on_start=lambda info, cfg, **k: "u"))
+    )
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
     result = runner.invoke(cli.app, ["model", "add", REPO])
     assert result.exit_code == 0, result.output
@@ -207,7 +209,7 @@ def test_wizard_saves_the_vllm_model_before_starting_the_stack(
             after_engine()
         return "http://localhost:3000"
 
-    monkeypatch.setattr(server, "start_stack", fake_start)
+    monkeypatch.setattr(backend, "backend_for", Backends(server=FakeBackend(on_start=fake_start)))
     wizard.run_wizard(mode="server")
     assert seen == ["token", f"start:{REPO}"]
     assert config.load().model == REPO
@@ -288,7 +290,9 @@ def test_expose_on_a_vllm_box_prints_an_openai_url_not_a_connect_line(
     """`lepika connect` probes Ollama's /api/version; Caddy in front of vLLM never answers it."""
     config.save(config.Config(mode="server", model=REPO))
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
-    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
+    monkeypatch.setattr(
+        backend, "backend_for", Backends(server=FakeBackend(on_start=lambda info, cfg, **k: "u"))
+    )
     monkeypatch.setattr(server, "lan_ips", lambda **k: ["192.168.1.20"])
     result = runner.invoke(cli.app, ["expose"])
     assert result.exit_code == 0, result.output
@@ -309,7 +313,11 @@ def test_model_add_starts_the_stack_for_the_model_it_is_about_to_pull(
     config.save(config.Config(mode="server", model=REPO))
     started: list[str] = []
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
-    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: started.append(cfg.model))
+    monkeypatch.setattr(
+        backend,
+        "backend_for",
+        Backends(server=FakeBackend(on_start=lambda info, cfg, **k: started.append(cfg.model))),
+    )
     monkeypatch.setattr(engine, "pull_model", lambda *a, **k: None)
     result = runner.invoke(cli.app, ["model", "add", "qwen3:8b"])
     assert result.exit_code == 0, result.output
@@ -323,7 +331,9 @@ def test_model_add_keeps_the_old_model_when_the_pull_fails(
     """The target model reaches the stack, but only a successful pull reaches the config."""
     config.save(config.Config(mode="server", model=REPO))
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
-    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
+    monkeypatch.setattr(
+        backend, "backend_for", Backends(server=FakeBackend(on_start=lambda info, cfg, **k: "u"))
+    )
 
     def boom(*a: Any, **k: Any) -> None:
         raise FriendlyError("no", "fix")
@@ -352,7 +362,7 @@ def test_wizard_starts_the_stack_for_the_ollama_model_it_is_about_to_pull(
             after_engine()
         return "http://localhost:3000"
 
-    monkeypatch.setattr(server, "start_stack", fake_start)
+    monkeypatch.setattr(backend, "backend_for", Backends(server=FakeBackend(on_start=fake_start)))
     wizard.run_wizard(mode="server")
     assert started == ["qwen3:8b"]
     assert config.load().model == "qwen3:8b"
@@ -364,7 +374,9 @@ def test_rotate_on_a_vllm_box_stays_off_the_ollama_connect_line(
     """`lepika connect` rejects a vLLM engine, so the reconnect hint must not name it."""
     config.save(config.Config(mode="server", model=REPO))
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
-    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "u")
+    monkeypatch.setattr(
+        backend, "backend_for", Backends(server=FakeBackend(on_start=lambda info, cfg, **k: "u"))
+    )
     monkeypatch.setattr(server, "lan_ips", lambda **k: ["192.168.1.20"])
     runner.invoke(cli.app, ["expose"])
     result = runner.invoke(cli.app, ["expose", "--rotate"])
@@ -386,7 +398,11 @@ def test_up_says_vllm_in_the_plan_sentence(
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
     monkeypatch.setattr(system, "REAL", FakeSystem(which=DOCKER))
     monkeypatch.setattr(server, "gpu_note", lambda info, **k: None)
-    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: "http://localhost:3000")
+    monkeypatch.setattr(
+        backend,
+        "backend_for",
+        Backends(server=FakeBackend(on_start=lambda info, cfg, **k: "http://localhost:3000")),
+    )
     monkeypatch.setattr(cli, "_open_browser", lambda url: None)
     result = runner.invoke(cli.app, ["up"])
     assert result.exit_code == 0, result.output

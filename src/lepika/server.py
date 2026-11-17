@@ -259,137 +259,6 @@ def gpu_note(info: Machine, *, sys: System) -> str | None:
     return None
 
 
-def start_stack(
-    info: Machine,
-    cfg: Config,
-    after_engine: Callable[[], None] | None = None,
-    *,
-    sys: System,
-    ui: UI,
-) -> str:
-    """Reconcile the stack with config and return the URL to open.
-
-    Always runs `compose up -d`: it is idempotent, takes about a second when nothing
-    changed, and is what makes `connect`/`expose` edits take effect.
-    """
-    ensure_docker(sys=sys)
-    stack = install_stack()
-    # Asked now, not taken from detection: the wizard may have just stopped the Ollama
-    # that held the port. Cheapest first; no key, as it is a managed engine's port.
-    if (
-        cfg.engine_managed
-        and health.api_up(HOST_ENGINE_URL, sys=sys)
-        and not _our_ollama(stack, sys=sys)
-    ):
-        raise FriendlyError(
-            "Ollama is already running natively on port 11434, so the Docker engine can't bind it.",
-            "Stop it first: `brew services stop ollama` (macOS), `systemctl stop ollama` "
-            "(Linux), or quit it from the tray (Windows); if LePika started it, "
-            '`pkill -f "ollama serve"`.',
-        )
-    env_path = stack / stack_env.ENV_FILE
-    values = env_values(cfg, stack_env.read_env(env_path), sys.environ)
-    active = profiles(cfg)
-    gpu = nvidia_in_docker(info, sys=sys)
-    # Both refusals come before anything is written or started.
-    # Caddy matches `Authorization: Bearer {$LEPIKA_API_KEY}`; an empty key makes a
-    # bare `Bearer ` header match, which is an open proxy on the network.
-    if "expose" in active and not values["LEPIKA_API_KEY"]:
-        raise FriendlyError(
-            "Network exposure is on, but there is no API key to protect it.",
-            "Run `lepika expose` to generate one, or `lepika expose --off`.",
-        )
-    # vLLM has no CPU fallback worth offering: without the GPU the container starts
-    # and then dies, which is a far worse way to learn the toolkit is missing.
-    if "vllm" in active and not gpu:
-        raise FriendlyError(
-            "vLLM needs the GPU inside Docker, and Docker can't see it.",
-            f"Install the NVIDIA Container Toolkit: {_TOOLKIT_URL}",
-        )
-    stack_env.write_env(env_path, values)
-    base = compose_cmd(stack, active, gpu_overlay=gpu)
-    log.get_logger().info("stack.up", mode="server", profiles=active, gpu=info.gpu)
-    # Streamed, not captured: the first run pulls gigabytes of images and a silent
-    # terminal for minutes looks like a hang.
-    if sys.call([*base, "up", "-d", "--remove-orphans"]) != 0:
-        raise _compose_failed("up")
-    # Compose does not stop services whose profile just went inactive; we do —
-    # in one call, since compose takes several profiles and several services.
-    inactive = [profile for profile in INACTIVE if profile not in active]
-    if inactive:
-        sys.run(
-            [
-                *compose_cmd(stack, inactive, gpu_overlay=False),
-                "stop",
-                *(INACTIVE[profile] for profile in inactive),
-            ],
-            check=False,
-            timeout=60,
-        )
-    if "vllm" in active:
-        # The first start downloads the full weights — tens of GB. A silent wait
-        # that long is indistinguishable from a hang, so say what is happening.
-        ui.say(
-            "vLLM is loading the model — the first time this downloads the full "
-            "weights; watch with `lepika logs`."
-        )
-        health.wait_for(
-            lambda: health.vllm_up(VLLM_URL, sys=sys), _VLLM_READY_SECONDS, "vLLM", sys=sys
-        )
-    elif cfg.engine_managed:
-        health.wait_for(
-            lambda: health.api_up(cfg.engine_url, sys=sys), 120, "Ollama (container)", sys=sys
-        )
-    else:
-        health.check_remote_engine(cfg, sys=sys)
-    if after_engine is not None:
-        after_engine()
-    health.wait_for(lambda: health.webui_up(cfg.webui_port, sys=sys), 180, "OpenWebUI", sys=sys)
-    return health.webui_url(cfg.webui_port)
-
-
-def stop(info: Machine, cfg: Config, *, sys: System) -> bool:
-    """`lepika down` in Server mode: stop and remove the containers; volumes stay."""
-    ensure_docker(retry="lepika down", sys=sys)
-    stack = install_stack()
-    every = list(INACTIVE)  # every profile, so nothing is left behind
-    result = sys.run(
-        [*compose_cmd(stack, every, gpu_overlay=False), "down"], check=False, timeout=120
-    )
-    log.get_logger().info("stack.down", exit=result.returncode)
-    return bool(result.returncode == 0)
-
-
-def update(
-    info: Machine,
-    cfg: Config,
-    *,
-    sys: System,
-    ui: UI,
-) -> list[UpdateStep]:
-    """`lepika update` in Server mode: pull newer images, then reconcile."""
-    ensure_docker(retry="lepika update", sys=sys)
-    stack = install_stack()
-    log.get_logger().info("stack.update")
-    base = compose_cmd(stack, profiles(cfg), gpu_overlay=False)
-    before = _image_ids(base, sys=sys)
-    if sys.call([*base, "pull"]) != 0:
-        raise _compose_failed("pull")
-    after = _image_ids(base, sys=sys)
-    start_stack(info, cfg, sys=sys, ui=ui)
-    if not after:
-        # Nothing to compare: "up to date" would be a claim nobody checked. Unreadable
-        # before but readable after is different: the pull certainly fetched something.
-        return [
-            UpdateStep(
-                "Container images",
-                "note",
-                "pulled the latest images; could not tell whether anything changed",
-            )
-        ]
-    return [UpdateStep("Container images", "current" if before == after else "upgraded")]
-
-
 def _image_ids(base: list[str], *, sys: System) -> str:
     """The local image ids behind the stack's images: what a pull that changed nothing keeps.
 
@@ -409,25 +278,160 @@ def _image_ids(base: list[str], *, sys: System) -> str:
     return f"{ids.returncode}\n{ids.stdout}"
 
 
-def logs(lines: int, *, sys: System) -> list[tuple[str, str]]:
-    """`lepika logs` in Server mode: compose logs, then LePika's own log."""
-    stack = stack_dir()
-    result = sys.run(
-        [
-            *compose_cmd(stack, list(INACTIVE), gpu_overlay=False),
-            "logs",
-            "--no-color",
-            "--tail",
-            str(lines),
-        ],
-        check=False,
-        timeout=30,
-        log=False,
-    )
-    compose_output = result.stdout if result.returncode == 0 else "(docker compose is not running)"
-    sections = [("docker compose", compose_output)]
-    lepika_log = logs_dir() / log.LOG_FILE
-    if lepika_log.exists():
-        text = lepika_log.read_text(encoding="utf-8", errors="replace").splitlines()
-        sections.append((log.LOG_FILE, "\n".join(text[-lines:])))
-    return sections
+class ServerBackend:
+    """Server mode's lifecycle: the docker compose stack."""
+
+    def __init__(self, *, sys: System, ui: UI) -> None:
+        self.sys = sys
+        self.ui = ui
+
+    def start(
+        self, info: Machine, cfg: Config, after_engine: Callable[[], None] | None = None
+    ) -> str:
+        """Reconcile the stack with config and return the URL to open.
+
+        Always runs `compose up -d`: it is idempotent, takes about a second when nothing
+        changed, and is what makes `connect`/`expose` edits take effect.
+        """
+        ensure_docker(sys=self.sys)
+        stack = install_stack()
+        # Asked now, not taken from detection: the wizard may have just stopped the Ollama
+        # that held the port. Cheapest first; no key, as it is a managed engine's port.
+        if (
+            cfg.engine_managed
+            and health.api_up(HOST_ENGINE_URL, sys=self.sys)
+            and not _our_ollama(stack, sys=self.sys)
+        ):
+            raise FriendlyError(
+                "Ollama is already running natively on port 11434, "
+                "so the Docker engine can't bind it.",
+                "Stop it first: `brew services stop ollama` (macOS), `systemctl stop ollama` "
+                "(Linux), or quit it from the tray (Windows); if LePika started it, "
+                '`pkill -f "ollama serve"`.',
+            )
+        env_path = stack / stack_env.ENV_FILE
+        values = env_values(cfg, stack_env.read_env(env_path), self.sys.environ)
+        active = profiles(cfg)
+        gpu = nvidia_in_docker(info, sys=self.sys)
+        # Both refusals come before anything is written or started.
+        # Caddy matches `Authorization: Bearer {$LEPIKA_API_KEY}`; an empty key makes a
+        # bare `Bearer ` header match, which is an open proxy on the network.
+        if "expose" in active and not values["LEPIKA_API_KEY"]:
+            raise FriendlyError(
+                "Network exposure is on, but there is no API key to protect it.",
+                "Run `lepika expose` to generate one, or `lepika expose --off`.",
+            )
+        # vLLM has no CPU fallback worth offering: without the GPU the container starts
+        # and then dies, which is a far worse way to learn the toolkit is missing.
+        if "vllm" in active and not gpu:
+            raise FriendlyError(
+                "vLLM needs the GPU inside Docker, and Docker can't see it.",
+                f"Install the NVIDIA Container Toolkit: {_TOOLKIT_URL}",
+            )
+        stack_env.write_env(env_path, values)
+        base = compose_cmd(stack, active, gpu_overlay=gpu)
+        log.get_logger().info("stack.up", mode="server", profiles=active, gpu=info.gpu)
+        # Streamed, not captured: the first run pulls gigabytes of images and a silent
+        # terminal for minutes looks like a hang.
+        if self.sys.call([*base, "up", "-d", "--remove-orphans"]) != 0:
+            raise _compose_failed("up")
+        # Compose does not stop services whose profile just went inactive; we do —
+        # in one call, since compose takes several profiles and several services.
+        inactive = [profile for profile in INACTIVE if profile not in active]
+        if inactive:
+            self.sys.run(
+                [
+                    *compose_cmd(stack, inactive, gpu_overlay=False),
+                    "stop",
+                    *(INACTIVE[profile] for profile in inactive),
+                ],
+                check=False,
+                timeout=60,
+            )
+        if "vllm" in active:
+            # The first start downloads the full weights — tens of GB. A silent wait
+            # that long is indistinguishable from a hang, so say what is happening.
+            self.ui.say(
+                "vLLM is loading the model — the first time this downloads the full "
+                "weights; watch with `lepika logs`."
+            )
+            health.wait_for(
+                lambda: health.vllm_up(VLLM_URL, sys=self.sys),
+                _VLLM_READY_SECONDS,
+                "vLLM",
+                sys=self.sys,
+            )
+        elif cfg.engine_managed:
+            health.wait_for(
+                lambda: health.api_up(cfg.engine_url, sys=self.sys),
+                120,
+                "Ollama (container)",
+                sys=self.sys,
+            )
+        else:
+            health.check_remote_engine(cfg, sys=self.sys)
+        if after_engine is not None:
+            after_engine()
+        health.wait_for(
+            lambda: health.webui_up(cfg.webui_port, sys=self.sys), 180, "OpenWebUI", sys=self.sys
+        )
+        return health.webui_url(cfg.webui_port)
+
+    def stop(self, info: Machine, cfg: Config) -> bool:
+        """`lepika down` in Server mode: stop and remove the containers; volumes stay."""
+        ensure_docker(retry="lepika down", sys=self.sys)
+        stack = install_stack()
+        every = list(INACTIVE)  # every profile, so nothing is left behind
+        result = self.sys.run(
+            [*compose_cmd(stack, every, gpu_overlay=False), "down"], check=False, timeout=120
+        )
+        log.get_logger().info("stack.down", exit=result.returncode)
+        return bool(result.returncode == 0)
+
+    def update(self, info: Machine, cfg: Config) -> list[UpdateStep]:
+        """`lepika update` in Server mode: pull newer images, then reconcile."""
+        ensure_docker(retry="lepika update", sys=self.sys)
+        stack = install_stack()
+        log.get_logger().info("stack.update")
+        base = compose_cmd(stack, profiles(cfg), gpu_overlay=False)
+        before = _image_ids(base, sys=self.sys)
+        if self.sys.call([*base, "pull"]) != 0:
+            raise _compose_failed("pull")
+        after = _image_ids(base, sys=self.sys)
+        self.start(info, cfg)
+        if not after:
+            # Nothing to compare: "up to date" would be a claim nobody checked. Unreadable
+            # before but readable after is different: the pull certainly fetched something.
+            return [
+                UpdateStep(
+                    "Container images",
+                    "note",
+                    "pulled the latest images; could not tell whether anything changed",
+                )
+            ]
+        return [UpdateStep("Container images", "current" if before == after else "upgraded")]
+
+    def logs(self, lines: int) -> list[tuple[str, str]]:
+        """`lepika logs` in Server mode: compose logs, then LePika's own log."""
+        stack = stack_dir()
+        result = self.sys.run(
+            [
+                *compose_cmd(stack, list(INACTIVE), gpu_overlay=False),
+                "logs",
+                "--no-color",
+                "--tail",
+                str(lines),
+            ],
+            check=False,
+            timeout=30,
+            log=False,
+        )
+        compose_output = (
+            result.stdout if result.returncode == 0 else "(docker compose is not running)"
+        )
+        sections = [("docker compose", compose_output)]
+        lepika_log = logs_dir() / log.LOG_FILE
+        if lepika_log.exists():
+            text = lepika_log.read_text(encoding="utf-8", errors="replace").splitlines()
+            sections.append((log.LOG_FILE, "\n".join(text[-lines:])))
+        return sections

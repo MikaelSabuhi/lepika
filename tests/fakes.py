@@ -1,4 +1,4 @@
-"""Shared test doubles: `FakeSystem` and its HTTP answers, and `FakeUI`."""
+"""Shared test doubles: `FakeSystem` and its HTTP answers, `FakeUI`, and `FakeBackend`."""
 
 from __future__ import annotations
 
@@ -11,8 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from lepika import proc, ui
+from lepika.config import Config
+from lepika.detect import Machine
 from lepika.errors import CommandNotFound, FriendlyError
-from lepika.system import Response
+from lepika.system import Response, System
+from lepika.updates import UpdateStep
 
 
 def _leading(table: Mapping[str, Any], cmd: Sequence[str], default: Any) -> Any:
@@ -388,3 +391,94 @@ class FakeUI(ui.UI):
             self.reports.append((completed, total))
 
         yield report
+
+
+class UnprovidedBackend(BaseException):
+    """Code selected a backend for a mode the test gave `Backends` none for.
+
+    A BaseException, like the other refusals here: falling back to a real backend
+    would run it over whatever `system.REAL` happens to be.
+    """
+
+
+class FakeBackend:
+    """Implements `lepika.backend.Backend` without starting anything; records every call.
+
+    `url`, `was_running`, `steps` and `sections` are what `start`, `stop`, `update`
+    and `logs` return. `on_start`, `on_stop`, `on_update` and `on_logs` replace that:
+    each is handed the call's arguments and its result is returned, so a test's own
+    fake — and the assertions inside it — keeps running. Without `on_start`, the
+    hook runs before the URL is returned, as it does in both real backends.
+    Each call is recorded in `started`, `stopped`, `updated` or `logged`.
+    """
+
+    def __init__(
+        self,
+        *,
+        url: str = "http://localhost:3000",
+        was_running: bool = True,
+        steps: Sequence[UpdateStep] = (),
+        sections: Sequence[tuple[str, str]] = (),
+        on_start: Callable[..., str] | None = None,
+        on_stop: Callable[[Machine, Config], bool] | None = None,
+        on_update: Callable[[Machine, Config], list[UpdateStep]] | None = None,
+        on_logs: Callable[[int], list[tuple[str, str]]] | None = None,
+    ) -> None:
+        self.url = url
+        self.was_running = was_running
+        self.steps = list(steps)
+        self.sections = list(sections)
+        self.on_start = on_start
+        self.on_stop = on_stop
+        self.on_update = on_update
+        self.on_logs = on_logs
+        self.started: list[tuple[Machine, Config, Callable[[], None] | None]] = []
+        self.stopped: list[tuple[Machine, Config]] = []
+        self.updated: list[tuple[Machine, Config]] = []
+        self.logged: list[int] = []
+
+    def start(
+        self, info: Machine, cfg: Config, after_engine: Callable[[], None] | None = None
+    ) -> str:
+        self.started.append((info, cfg, after_engine))
+        if self.on_start is not None:
+            return self.on_start(info, cfg, after_engine=after_engine)
+        if after_engine is not None:
+            after_engine()
+        return self.url
+
+    def stop(self, info: Machine, cfg: Config) -> bool:
+        self.stopped.append((info, cfg))
+        if self.on_stop is not None:
+            return self.on_stop(info, cfg)
+        return self.was_running
+
+    def update(self, info: Machine, cfg: Config) -> list[UpdateStep]:
+        self.updated.append((info, cfg))
+        if self.on_update is not None:
+            return self.on_update(info, cfg)
+        return list(self.steps)
+
+    def logs(self, lines: int) -> list[tuple[str, str]]:
+        self.logged.append(lines)
+        if self.on_logs is not None:
+            return self.on_logs(lines)
+        return list(self.sections)
+
+
+class Backends:
+    """A stand-in for `backend.backend_for`: the backend the test gave for the config's mode.
+
+    Every selection is recorded in `selected`, by mode. A mode with no backend raises
+    `UnprovidedBackend` rather than reaching a real one.
+    """
+
+    def __init__(self, **by_mode: Any) -> None:
+        self.by_mode: dict[str, Any] = dict(by_mode)
+        self.selected: list[str] = []
+
+    def __call__(self, cfg: Config, *, sys: System, ui: ui.UI) -> Any:
+        self.selected.append(cfg.mode)
+        if cfg.mode not in self.by_mode:
+            raise UnprovidedBackend(f"the test gave no backend for {cfg.mode} mode")
+        return self.by_mode[cfg.mode]

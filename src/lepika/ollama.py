@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import re
-import signal
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
-from lepika import engine, health, log
+from lepika import engine, health, log, pids
 from lepika.config import DEFAULT_CONTEXT_LENGTH, DEFAULT_ENGINE_URL, Config
 from lepika.detect import Machine
 from lepika.errors import CommandNotFound, FriendlyError
-from lepika.paths import lepika_home, logs_dir, pid_file
+from lepika.paths import lepika_home, logs_dir
 from lepika.system import System
 from lepika.updates import UpdateStep, changed
 
@@ -141,7 +140,7 @@ def start_ollama(context_length: int = DEFAULT_CONTEXT_LENGTH, *, sys: System) -
         ) from exc
     # Recorded so a mode switch can tell the engine LePika started from one the
     # machine already ran: only a pid we wrote down is ever ours to stop.
-    pid_file("ollama").write_text(str(pid))
+    pids.record("ollama", pid)
     # And what it was started with: Ollama has no way to ask an idle engine its
     # context length, and `lepika down` leaves this one running, so the next `up`
     # can only tell a changed setting from this record.
@@ -193,44 +192,26 @@ def stop_ollama(
     def answering() -> bool:
         return health.api_up(url, key=key, sys=sys)
 
-    pf = pid_file("ollama")
-    if not pf.exists():
-        # Homebrew, systemd, or the tray app started it: not ours, not our business.
-        return False
-    try:
-        pid = int(pf.read_text().strip())
-    except ValueError:
-        # Truncated or garbage pid file: nothing to stop, just clear the stale file.
-        pf.unlink(missing_ok=True)
-        return False
-    if pid <= 0:
-        # `os.kill(0, SIGTERM)` signals our whole process group, and negatives
-        # signal a group too — neither is ever what a stale pid file meant.
-        pf.unlink(missing_ok=True)
+    pid = pids.recorded("ollama")
+    if pid is None:
+        # No file: Homebrew, systemd, or the tray app started it — not ours, not our
+        # business. A garbage or non-positive one is stale: clear it, stop nothing.
+        pids.forget("ollama")
         return False
     if not answering() or not _is_ollama_process(pid, os_name, sys=sys):
         # Nothing is answering, or the pid is not an Ollama: either way the recorded
         # number is not our engine, and a stale pid file is never a licence to signal
         # it (rule 7).
-        pf.unlink(missing_ok=True)
+        pids.forget("ollama")
         return False
-    try:
-        if os_name == "windows":
-            sys.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
-        else:
-            sys.signal(pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        # Gone, or recycled into a process we don't own (a truncated pid can
-        # parse to a live foreign pid) — the wait below decides what that meant.
-        pass
+    # The answer is not used: the wait below decides whether the engine stopped.
+    pids.terminate(pid, os_name, sys=sys)
     # Signalled is not stopped: Ollama unloads its models on the way out, and the
     # caller's next move is a Server stack that wants port 11434. Counted in probes
     # like `wait_until_down`, because each pass also pays `api_up`'s own timeout.
-    for _ in range(attempts):
-        if not answering():
-            pf.unlink(missing_ok=True)
-            return True
-        sys.sleep(1)
+    if health.wait_until(lambda: not answering(), attempts, sys=sys):
+        pids.forget("ollama")
+        return True
     # The pid file stays: it is the only record of which engine was ours, and a
     # retry that has lost it can never stop this process at all.
     raise FriendlyError(
@@ -273,14 +254,8 @@ def _launched_context() -> str | None:
 
 def _ours(os_name: str, *, sys: System) -> bool:
     """Did LePika start the Ollama that is running? A pid we wrote, still an Ollama."""
-    pf = pid_file("ollama")
-    if not pf.exists():
-        return False
-    try:
-        pid = int(pf.read_text().strip())
-    except ValueError:
-        return False
-    return pid > 0 and _is_ollama_process(pid, os_name, sys=sys)
+    pid = pids.recorded("ollama")
+    return pid is not None and _is_ollama_process(pid, os_name, sys=sys)
 
 
 def context_note(info: Machine, cfg: Config, *, sys: System) -> str | None:

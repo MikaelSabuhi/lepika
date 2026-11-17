@@ -5,14 +5,13 @@ from __future__ import annotations
 import json
 import re
 import secrets
-import signal
 from itertools import pairwise
 from pathlib import Path
 
-from lepika import fsio, health, ports
+from lepika import fsio, health, pids, ports
 from lepika.config import Config, config_path
 from lepika.errors import CommandNotFound, FriendlyError
-from lepika.paths import logs_dir, openwebui_data_dir, pid_file
+from lepika.paths import logs_dir, openwebui_data_dir
 from lepika.system import System
 
 # The interpreter OpenWebUI is installed on AND run on — both, or `uv tool run`
@@ -98,7 +97,7 @@ def start_openwebui(port: int, engine_url: str, engine_key: str = "", *, sys: Sy
             "uv is required to run OpenWebUI but was not found.",
             "Install uv: https://docs.astral.sh/uv/getting-started/installation/",
         ) from exc
-    pid_file("openwebui").write_text(str(pid))
+    pids.record("openwebui", pid)
     return pid
 
 
@@ -156,19 +155,11 @@ def _find_openwebui(port: int, os_name: str, *, sys: System) -> list[int]:
 
 def _stop_recorded_openwebui(os_name: str, port: int | None, *, sys: System) -> bool:
     """Stop the OpenWebUI named by the pid file, if that pid is vouched for."""
-    pf = pid_file("openwebui")
-    if not pf.exists():
-        return False
-    try:
-        pid = int(pf.read_text().strip())
-    except ValueError:
-        # Truncated or garbage pid file: nothing to stop, just clear the stale file.
-        pf.unlink(missing_ok=True)
-        return False
-    if pid <= 0:
-        # `os.kill(0, SIGTERM)` signals our whole process group, and negatives
-        # signal a group too — neither is ever what a stale pid file meant.
-        pf.unlink(missing_ok=True)
+    pid = pids.recorded("openwebui")
+    if pid is None:
+        # Nothing recorded, or a garbage or non-positive record: nothing to stop,
+        # just clear the stale file.
+        pids.forget("openwebui")
         return False
     if (
         port is not None
@@ -179,18 +170,12 @@ def _stop_recorded_openwebui(os_name: str, port: int | None, *, sys: System) -> 
         # open-webui, so the recorded pid is not our UI — after a reboot the OS
         # will have handed that number to an unrelated process. A stale pid file
         # is never a licence to signal it (rule 7).
-        pf.unlink(missing_ok=True)
+        pids.forget("openwebui")
         return False
-    try:
-        if os_name == "windows":
-            sys.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
-        else:
-            sys.signal(pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        # Gone, or recycled into a process we don't own (a truncated pid can
-        # parse to a live foreign pid) — either way, drop the stale file.
-        pass
-    pf.unlink(missing_ok=True)
+    # The answer is not used: stopped, already gone, or recycled into a process we
+    # don't own, the file is stale either way, so drop it.
+    pids.terminate(pid, os_name, sys=sys)
+    pids.forget("openwebui")
     return True
 
 
@@ -212,13 +197,10 @@ def stop_openwebui(os_name: str, port: int | None = None, *, sys: System) -> boo
         return False
     stopped = False
     for pid in _find_openwebui(port, os_name, sys=sys):
-        try:
-            sys.signal(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            # Listed a moment ago, but gone — or another user's — by the time we
-            # signalled it. Neither is a process this run managed to stop.
-            continue
-        stopped = True
+        # False: listed a moment ago, but gone — or another user's — by the time we
+        # signalled it. Neither is a process this run managed to stop.
+        if pids.terminate(pid, os_name, sys=sys):
+            stopped = True
     return stopped
 
 
@@ -250,10 +232,8 @@ def wait_until_down(port: int, attempts: int = 30, *, sys: System) -> None:
     Counted in probes, not seconds: each pass also pays `webui_up`'s own connection
     timeout, so a run of 30 is up to about a minute of wall time rather than 30s.
     """
-    for _ in range(attempts):
-        if not health.webui_up(port, sys=sys):
-            return
-        sys.sleep(1)
+    if health.wait_until(lambda: not health.webui_up(port, sys=sys), attempts, sys=sys):
+        return
     raise FriendlyError(
         f"OpenWebUI on port {port} is still answering after {attempts} shutdown checks.",
         # `lepika connect` restarts the UI too, so the hint names no single caller.

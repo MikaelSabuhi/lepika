@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import typer.main
 from fakes import Backends, FakeBackend, FakeResponse, FakeSystem, FakeUI, routes
 from typer.testing import CliRunner
 
@@ -395,41 +396,47 @@ def test_run_hands_the_app_its_deps_and_reports_through_their_ui(
     assert errors == [("[red]✗ It broke.[/red]",), ("[yellow]→ Fix it.[/yellow]",)]
 
 
-def _help_words(output: str) -> str:
-    """Help text without colour, borders or wrapping: what a reader sees, in order."""
-    plain = re.sub(r"\x1b\[[0-9;]*m", "", output)
-    return " ".join(re.sub(r"[│╭╮╰╯─]", " ", plain).split())
+# What each command takes on the command line, by name only: the Click context every
+# command now receives must not add to it. Help wording is deliberately not pinned.
+PARAMETERS: dict[tuple[str, ...], list[str]] = {
+    (): ["version", "dry_run", "mode"],
+    ("up",): [],
+    ("down",): [],
+    ("status",): [],
+    ("logs",): ["lines"],
+    ("doctor",): [],
+    ("update",): [],
+    ("connect",): ["url", "key", "local"],
+    ("expose",): ["off", "show", "rotate"],
+    ("model",): [],
+    ("model", "add"): ["ref", "quant"],
+    ("model", "import"): ["path", "name", "quant"],
+    ("model", "list"): [],
+    ("model", "rm"): ["name"],
+}
 
 
-@pytest.mark.parametrize(
-    ("args", "expected"),
-    [
-        (
-            ["--help"],
-            "Usage: root [OPTIONS] COMMAND [ARGS]... One command → local AI chat in your "
-            "browser. Options --version Show version and exit. --dry-run Show what the "
-            "wizard would do without doing it. --mode <str> express (default, no Docker) "
-            "or server (docker compose). --help Show this message and exit. Commands up "
-            "Start the local AI stack and open the browser. down Stop the stack (Express: "
-            "OpenWebUI only; Server: every container, models kept). status Show what's "
-            "running. logs Print the tail of LePika's logs (Server mode: the container "
-            "logs too). doctor Diagnose the local setup. update Upgrade the engine and "
-            "OpenWebUI to their latest versions. connect Use an engine running on another "
-            "machine (or --local to stop doing so). expose Share the engine (and the chat "
-            "UI) with your network behind a generated API key. model Add, list, or remove "
-            "local models.",
-        ),
-        (
-            ["model", "--help"],
-            "Usage: root model [OPTIONS] COMMAND [ARGS]... Add, list, or remove local "
-            "models. Options --help Show this message and exit. Commands add Download a "
-            "model and make it the default. import Import safetensors weights already on "
-            "disk into Ollama. list List downloaded models. rm Remove a downloaded model.",
-        ),
-    ],
-)
-def test_help_shows_no_context_parameter(args: list[str], expected: str) -> None:
-    """Every command takes a `typer.Context`; none of that may surface as an option."""
-    result = runner.invoke(cli.app, args)
-    assert result.exit_code == 0
-    assert _help_words(result.output) == expected
+def _commands(command: Any, path: tuple[str, ...] = ()) -> dict[tuple[str, ...], Any]:
+    """Every command reachable from `command`, the nested `model` group's included."""
+    found = {path: command}
+    for name, sub in (getattr(command, "commands", None) or {}).items():
+        found.update(_commands(sub, (*path, name)))
+    return found
+
+
+def test_every_command_takes_exactly_its_own_parameters() -> None:
+    commands = _commands(typer.main.get_command(cli.app))
+    assert {path: [p.name for p in c.params] for path, c in commands.items()} == PARAMETERS
+
+
+def _help_text(output: str) -> str:
+    """Help with colour and every box-drawing character (U+2500-U+257F) removed: the
+    border style differs between terminals, legacy Windows consoles included."""
+    return re.sub(r"[\u2500-\u257f]", " ", re.sub(r"\x1b\[[0-9;]*m", "", output))
+
+
+@pytest.mark.parametrize("path", list(PARAMETERS), ids=lambda path: " ".join(path) or "root")
+def test_help_never_mentions_the_context(path: tuple[str, ...]) -> None:
+    result = runner.invoke(cli.app, [*path, "--help"])
+    assert result.exit_code == 0, result.output
+    assert re.search(r"\b(ctx|CTX)\b", _help_text(result.output)) is None

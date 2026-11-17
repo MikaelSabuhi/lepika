@@ -315,7 +315,7 @@ def download(
 
 
 def token_for(cfg: Config, *, sys: System) -> str:
-    """HF_TOKEN from the environment wins; the one saved by `ask_token` is the fallback.
+    """HF_TOKEN from the environment wins; the one saved in config.toml is the fallback.
 
     Both are stripped: `export HF_TOKEN=$(cat token.txt)` carries a trailing newline,
     which the Hub rejects as a malformed bearer token.

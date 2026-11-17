@@ -416,6 +416,8 @@ def test_model_add_keeps_a_typed_token_in_the_config_it_saves(
 ) -> None:
     """The token is saved when typed; the model's save after the import must not drop it."""
     config.save(config.Config(context_length=8192))
+    # No HF_TOKEN in this environment, and room on every disk the import asks about.
+    monkeypatch.setattr(system, "REAL", FakeSystem())
 
     def preflight(repo: str, token: str = "", **k: Any) -> hf.Preflight:
         if not token:

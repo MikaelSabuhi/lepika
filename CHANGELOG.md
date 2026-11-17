@@ -44,8 +44,7 @@ LePika follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `docker compose up` succeeds: a refused or failed start keeps the previous model,
   while a first download that outlasts the wait still resumes on `lepika up`. A
   wizard switch to Server mode with such a model that fails before then no longer
-  leaves Server mode saved, and the containers it created are removed. `lepika
-  expose --off` and `lepika connect --local` still hold when their restart fails.
+  leaves Server mode saved, and the containers it created are removed.
 
 ### Changed
 

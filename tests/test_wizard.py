@@ -195,9 +195,9 @@ def test_wizard_keeps_the_old_model_when_the_pull_fails(
     """Saving before the pull recorded a model the machine does not have."""
     config.save(config.Config(model="previous:model"))
     monkeypatch.setattr(detect, "detect", lambda **k: INFO)
-    monkeypatch.setattr(system, "REAL", FakeSystem())  # no Docker: Express, unasked
+    machine = FakeSystem()  # no Docker: Express, unasked
     monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
-    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: "1"))
+    face = FakeUI(reader=lambda *a, **k: "1")
     monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: None)
 
     def boom(url: str, ref: Any, **k: Any) -> None:
@@ -209,7 +209,7 @@ def test_wizard_keeps_the_old_model_when_the_pull_fails(
     )
 
     with pytest.raises(FriendlyError):
-        wizard.run_wizard()
+        wizard.run_wizard(sys=machine, ui=face)
     assert config.load().model == "previous:model"
 
 
@@ -688,3 +688,32 @@ def test_choose_model_carries_its_system_into_the_quant_picker(
     )
     assert sys.ran == [["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]]
     assert ref.raw == "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_M"
+
+
+@pytest.mark.parametrize(
+    ("served", "said_last"),
+    [("llama3.2:3b", "Ready"), (None, "No model yet")],
+    ids=["pulled", "declined"],
+)
+def test_the_cli_announces_the_wizards_stack_once_it_is_up_then_opens_it(
+    served: str | None, said_last: str, monkeypatch: pytest.MonkeyPatch, isolated_home: Path
+) -> None:
+    """The wizard hands back what it started; "Ready" and the browser come after the UI."""
+    events: list[str] = []
+    monkeypatch.setattr(detect, "detect", lambda **k: INFO)
+    monkeypatch.setattr(system, "REAL", FakeSystem())  # no Docker: Express, unasked
+    monkeypatch.setattr(models, "load_curated", lambda **k: CURATED)
+    face = FakeUI(reader=lambda *a, **k: "1")
+    monkeypatch.setattr(face, "say", lambda text, **k: events.append(f"say:{text}"))
+    monkeypatch.setattr(ui, "REAL", face)
+    monkeypatch.setattr(ollama, "ensure_ollama", lambda info, **k: events.append("engine"))
+    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref, **k: served)
+    monkeypatch.setattr(openwebui, "ensure_openwebui", lambda cfg, **k: events.append("ui"))
+    monkeypatch.setattr(cli, "_open_browser", lambda url: events.append(f"browser:{url}"))
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code == 0, result.output
+    after_ui = events[events.index("ui") + 1 :]
+    assert after_ui[0] == "say:[green]✓ Ready:[/green] http://localhost:3000"
+    assert said_last in after_ui[-2]
+    assert after_ui[-1] == "browser:http://localhost:3000"
+    assert len(after_ui) == (2 if served else 3)

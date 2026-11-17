@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fakes import FakeSystem
+from fakes import Backends, FakeBackend, FakeSystem
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, express, health, server, system
+from lepika import backend, cli, config, detect, health, server, system
 
 runner = CliRunner()
 DOCKER = detect.Machine("linux", "x86_64", "nvidia", 64.0)
@@ -19,19 +19,15 @@ def server_mode(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> list[st
     config.save(config.Config(mode="server", model="qwen3:8b"))
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
     monkeypatch.setattr(system, "REAL", FakeSystem(which={"docker": "/usr/bin/docker"}))
-    monkeypatch.setattr(
-        server,
-        "start_stack",
-        lambda info, cfg, **k: calls.append("start") or "http://localhost:3000",
+    docker_stack = FakeBackend(
+        on_start=lambda info, cfg, **k: calls.append("start") or "http://localhost:3000",
+        on_stop=lambda info, cfg, **k: calls.append("stop") or True,
+        on_update=lambda info, cfg, **k: calls.append("update") or [],
+        on_logs=lambda lines, **k: [("docker compose", "ollama-1 | ready")],
     )
-    monkeypatch.setattr(server, "stop", lambda info, cfg, **k: calls.append("stop") or True)
-    monkeypatch.setattr(server, "update", lambda info, cfg, **k: calls.append("update") or [])
-    monkeypatch.setattr(server, "logs", lambda lines, **k: [("docker compose", "ollama-1 | ready")])
     monkeypatch.setattr(server, "gpu_note", lambda info, **k: None)
-    for name in ("start_stack", "stop", "update", "logs"):
-        monkeypatch.setattr(
-            express, name, lambda *a, **k: pytest.fail("express backend used in server mode")
-        )
+    # No Express backend at all: selecting one fails the test (`UnprovidedBackend`).
+    monkeypatch.setattr(backend, "backend_for", Backends(server=docker_stack))
     monkeypatch.setattr(cli, "_open_browser", lambda url: calls.append("browser"))
     return calls
 

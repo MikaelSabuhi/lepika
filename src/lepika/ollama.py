@@ -8,12 +8,12 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
 from lepika import engine, health, log
-from lepika.backend import UpdateStep, changed
 from lepika.config import DEFAULT_CONTEXT_LENGTH, DEFAULT_ENGINE_URL, Config
 from lepika.detect import Machine
 from lepika.errors import CommandNotFound, FriendlyError
 from lepika.paths import lepika_home, logs_dir, pid_file
 from lepika.system import System
+from lepika.updates import UpdateStep, changed
 
 # The official Linux installer, which both installs and upgrades in place.
 OLLAMA_INSTALL_SCRIPT = "curl -fsSL https://ollama.com/install.sh | sh"

@@ -9,10 +9,10 @@ from rich.table import Table
 
 from lepika import (
     acquire,
+    backend,
     config,
     detect,
     engine,
-    express,
     gguf,
     health,
     hf,
@@ -22,8 +22,6 @@ from lepika import (
     server,
     serving,
     stack_env,
-    system,
-    ui,
 )
 from lepika.detect import Machine
 from lepika.errors import FriendlyError
@@ -320,7 +318,7 @@ def _report_stop_failure(exc: FriendlyError, *, ui: UI) -> None:
     ui.say(f"[yellow]Could not stop it cleanly: {escape(exc.problem)}[/yellow]")
 
 
-def leave_mode(info: Machine, previous: str, cfg: config.Config, *, ui: UI) -> None:
+def leave_mode(info: Machine, previous: str, cfg: config.Config, *, sys: System, ui: UI) -> None:
     """Stop the stack we are switching away from, best effort.
 
     Both modes serve OpenWebUI on the same host port, so an abandoned stack does not
@@ -333,12 +331,11 @@ def leave_mode(info: Machine, previous: str, cfg: config.Config, *, ui: UI) -> N
     )
     # The config as it was loaded: `stop` reads the old mode's ports, not the new mode's.
     old_cfg = dataclasses.replace(cfg, mode=previous)
-    backend = server if previous == "server" else express
     # A try each, not one around both: a UI that will not die would otherwise take
     # the engine stop down with it, and the port 11434 the next mode needs stays held.
     try:
         # The bool is "was anything running", which is not a reason to stop switching.
-        backend.stop(info, old_cfg, sys=system.REAL)
+        backend.backend_for(old_cfg, sys=sys, ui=ui).stop(info, old_cfg)
     except FriendlyError as exc:
         _report_stop_failure(exc, ui=ui)
     # `lepika down` leaves Ollama up on purpose, but Server's pre-flight refuses a
@@ -347,51 +344,52 @@ def leave_mode(info: Machine, previous: str, cfg: config.Config, *, ui: UI) -> N
     # which is what `engine_managed` short-circuits before the call.
     if previous == "express" and old_cfg.engine_managed:
         try:
-            if ollama.stop_ollama(
-                info.os, old_cfg.engine_url, key=old_cfg.engine_key, sys=system.REAL
-            ):
+            if ollama.stop_ollama(info.os, old_cfg.engine_url, key=old_cfg.engine_key, sys=sys):
                 ui.say("Stopped the Ollama LePika had started.")
         except FriendlyError as exc:
             _report_stop_failure(exc, ui=ui)
 
 
-def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
-    info = detect.detect(sys=system.REAL)
+def run_wizard(
+    dry_run: bool = False, mode: str | None = None, *, sys: System, ui: UI
+) -> tuple[config.Config, str] | None:
+    """None after a dry run; otherwise the config as saved and the URL to open."""
+    info = detect.detect(sys=sys)
     cfg = config.load()
     previous = cfg.mode
-    cfg.mode = mode if mode is not None else choose_mode(cfg.mode, sys=system.REAL, ui=ui.REAL)
-    if cfg.mode == "server" and system.REAL.which("docker") is None:
+    cfg.mode = mode if mode is not None else choose_mode(cfg.mode, sys=sys, ui=ui)
+    if cfg.mode == "server" and sys.which("docker") is None:
         # Only reachable via `--mode server`: a clear error naming Express, never an
-        # install prompt. Whether a present Docker is *running* is start_stack's
+        # install prompt. Whether a present Docker is *running* is the start's
         # business — asking here would make --dry-run shell out.
-        server.ensure_docker(sys=system.REAL)
+        server.ensure_docker(sys=sys)
     if cfg.mode != previous and not dry_run:
-        leave_mode(info, previous, cfg, ui=ui.REAL)
-    ui.REAL.say(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))
+        leave_mode(info, previous, cfg, sys=sys, ui=ui)
+    ui.say(detect.plan_sentence(info, cfg.mode, engine=serving.engine_label(cfg)))
     # The quant picker may read the Hub and ask nvidia-smi here, dry run or not: both are
     # reads, and the dry-run report then names the tag it would pull.
-    ref = choose_model(info, cfg, sys=system.REAL, ui=ui.REAL)
+    ref = choose_model(info, cfg, sys=sys, ui=ui)
     if dry_run:
         # Nothing is written: a dry run that saved the config would leave the machine
         # in a state the run said it would only describe.
         if cfg.mode == "server":
             # Built from lepika_home(), not stack_dir(): a dry run creates nothing.
             env_path = paths.lepika_home() / "stack" / stack_env.ENV_FILE
-            ui.REAL.say(f"would: write {escape(str(env_path))}")
-            ui.REAL.say("would: run docker compose up -d")
+            ui.say(f"would: write {escape(str(env_path))}")
+            ui.say("would: run docker compose up -d")
         else:
-            ui.REAL.say("would: ensure Ollama is installed and running")
+            ui.say("would: ensure Ollama is installed and running")
         if models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info):
-            ui.REAL.say(f"would: start vLLM with {escape(ref.raw)}")
+            ui.say(f"would: start vLLM with {escape(ref.raw)}")
         elif ref.kind == "hf_repo":
-            ui.REAL.say(f"would: import {escape(ref.raw)} into Ollama ({engine.IMPORT_QUANT})")
+            ui.say(f"would: import {escape(ref.raw)} into Ollama ({engine.IMPORT_QUANT})")
         else:
-            ui.REAL.say(f"would: pull model {escape(ref.raw)}")
-        ui.REAL.say(f"would: start OpenWebUI on port {cfg.webui_port}")
-        ui.REAL.say(f"would: open {health.webui_url(cfg.webui_port)}")
-        return
+            ui.say(f"would: pull model {escape(ref.raw)}")
+        ui.say(f"would: start OpenWebUI on port {cfg.webui_port}")
+        ui.say(f"would: open {health.webui_url(cfg.webui_port)}")
+        return None
     if models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info):
-        server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE, sys=system.REAL, ui=ui.REAL)
+        server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE, sys=sys, ui=ui)
         # compose interpolates VLLM_MODEL from the config, so this one has to be
         # saved before the stack starts rather than after. A start that then fails
         # is fixed by `lepika model add`, not by a stale config.
@@ -401,31 +399,27 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
     def pull_then_save() -> None:
         if models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info):
             return  # vLLM downloads its own weights while starting; nothing to pull
-        # The mode is saved here, not before `start_stack`: this hook runs only once
+        # The mode is saved here, not before the start: this hook runs only once
         # the engine is up, so a pre-flight that refuses can no longer leave a config
         # claiming a mode that never started.
         config.save(cfg)
         # The model is saved only once it is actually there: recording a model the
         # machine failed to download or import leaves the config pointing at
         # something that isn't.
-        served = acquire.acquire(info, cfg, ref, sys=system.REAL, ui=ui.REAL)
+        served = acquire.acquire(info, cfg, ref, sys=sys, ui=ui)
         if served is None:
             return  # declined: the stack is up, the model is chosen next time
         cfg.model = served
         config.save(cfg)
 
-    from lepika import cli
-
     # The stack is started for the model about to be pulled, not the one still saved:
     # in Server mode the profile follows the ref, so an old full-weight repo would
     # bring up vLLM and leave nothing to pull into. Only the pull saves it (above).
     try:
-        url = cli._backend(cfg).start_stack(
+        url = backend.backend_for(cfg, sys=sys, ui=ui).start(
             info,
             dataclasses.replace(cfg, model=ref.raw),
             after_engine=pull_then_save,
-            sys=system.REAL,
-            ui=ui.REAL,
         )
     except FriendlyError:
         # A switch into Server that fails before the engine came up never saved the
@@ -436,9 +430,9 @@ def run_wizard(dry_run: bool = False, mode: str | None = None) -> None:
         # must not tear down what was already running — hence the reload.
         if cfg.mode == "server" and previous != "server" and config.load().mode != "server":
             try:
-                if server.stop(info, cfg, sys=system.REAL):
-                    ui.REAL.say("Removed the containers the failed switch had created.")
+                if backend.backend_for(cfg, sys=sys, ui=ui).stop(info, cfg):
+                    ui.say("Removed the containers the failed switch had created.")
             except FriendlyError as exc:
-                _report_stop_failure(exc, ui=ui.REAL)
+                _report_stop_failure(exc, ui=ui)
         raise
-    cli._ready(cfg, url)
+    return cfg, url

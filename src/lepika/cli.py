@@ -12,7 +12,6 @@ import traceback
 import webbrowser
 from collections.abc import Iterable
 from pathlib import Path
-from types import ModuleType
 from typing import NoReturn, TextIO
 
 import typer
@@ -22,10 +21,10 @@ from rich.table import Table
 
 from lepika import (
     acquire,
+    backend,
     config,
     detect,
     engine,
-    express,
     health,
     log,
     models,
@@ -37,23 +36,15 @@ from lepika import (
     stack_env,
     system,
     ui,
+    wizard,
 )
-from lepika.backend import UpdateStep
 from lepika.errors import ISSUES_URL, CommandNotFound, FriendlyError
+from lepika.updates import UpdateStep
 
 app = typer.Typer(
     help="One command → local AI chat in your browser.",
     add_completion=False,
 )
-
-
-def _backend(cfg: config.Config) -> ModuleType:
-    """The module that runs the stack in this mode — the only place the two differ.
-
-    `express` and `server` deliberately expose the same start_stack/stop/update/logs
-    surface, so every lifecycle command is written once against whichever is in play.
-    """
-    return server if cfg.mode == "server" else express
 
 
 def _version_string() -> str:
@@ -84,10 +75,9 @@ def main(
                 "--mode applies to the wizard only; run `lepika --mode server` (no subcommand)."
             )
     if ctx.invoked_subcommand is None:
-        # Imported here, not at module scope: `wizard` imports `cli._open_browser`.
-        from lepika import wizard
-
-        wizard.run_wizard(dry_run=dry_run, mode=mode)
+        result = wizard.run_wizard(dry_run=dry_run, mode=mode, sys=system.REAL, ui=ui.REAL)
+        if result is not None:
+            _ready(*result)
 
 
 def _open_browser(url: str) -> None:
@@ -118,18 +108,20 @@ def up() -> None:
         and (note := server.gpu_note(info, sys=system.REAL)) is not None
     ):
         ui.REAL.say(f"[yellow]{escape(note)}[/yellow]")
-    # Asked before `start_stack`, and that order is the point: an engine answering
+    # Asked before the start, and that order is the point: an engine answering
     # now is one the start will adopt, so config.toml's context length cannot reach it.
     if (note := ollama.context_note(info, cfg, sys=system.REAL)) is not None:
         ui.REAL.say(f"[yellow]{escape(note)}[/yellow]")
-    _ready(cfg, _backend(cfg).start_stack(info, cfg, sys=system.REAL, ui=ui.REAL))
+    _ready(cfg, backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(info, cfg))
 
 
 @app.command()
 def down() -> None:
     """Stop the stack (Express: OpenWebUI only; Server: every container, models kept)."""
     cfg = config.load()
-    if _backend(cfg).stop(detect.detect(sys=system.REAL), cfg, sys=system.REAL):
+    if backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).stop(
+        detect.detect(sys=system.REAL), cfg
+    ):
         ui.REAL.say("[green]✓ Stopped.[/green]")
     else:
         ui.REAL.say("Nothing was running.")
@@ -174,7 +166,7 @@ def status() -> None:
 @app.command()
 def logs(lines: int = typer.Option(50, min=1, help="Lines per log file.")) -> None:
     """Print the tail of LePika's logs (Server mode: the container logs too)."""
-    sections = _backend(config.load()).logs(lines, sys=system.REAL)
+    sections = backend.backend_for(config.load(), sys=system.REAL, ui=ui.REAL).logs(lines)
     if not sections:
         # Silence is indistinguishable from a broken command.
         ui.REAL.say("(no logs yet)")
@@ -209,8 +201,8 @@ def update() -> None:
     """Upgrade the engine and OpenWebUI to their latest versions."""
     ui.REAL.say("Upgrading…")
     cfg = config.load()
-    steps: list[UpdateStep] = _backend(cfg).update(
-        detect.detect(sys=system.REAL), cfg, sys=system.REAL, ui=ui.REAL
+    steps: list[UpdateStep] = backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).update(
+        detect.detect(sys=system.REAL), cfg
     )
     for step in steps:
         detail = escape(step.detail)
@@ -233,7 +225,9 @@ def _apply_engine_change(cfg: config.Config) -> bool:
     if cfg.mode == "server":
         # `compose up -d` is the Server-mode reconciler: it rewrites .env and
         # recreates whatever the new engine URL changed, so it needs no probe.
-        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL, ui=ui.REAL)
+        backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(
+            detect.detect(sys=system.REAL), cfg
+        )
         return True
     if not health.webui_up(cfg.webui_port, sys=system.REAL):
         return False
@@ -306,7 +300,9 @@ def expose(
     if off:
         cfg.exposed = False
         config.save(cfg)
-        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL, ui=ui.REAL)
+        backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(
+            detect.detect(sys=system.REAL), cfg
+        )
         log.get_logger().info("expose.off")
         ui.REAL.say("[green]✓ Back to localhost only.[/green]")
         return
@@ -320,7 +316,7 @@ def expose(
             "Point other machines at that engine directly (`lepika expose --show` there), "
             "or `lepika connect --local` first and expose an engine this machine runs.",
         )
-    # Written before the stack starts: `start_stack` refuses to run the `expose`
+    # Written before the stack starts: the start refuses to run the `expose`
     # profile with an empty key, because Caddy would then match a bare `Bearer `.
     key = stack_env.api_key(paths.stack_dir() / stack_env.ENV_FILE, rotate=rotate)
     # A rotation always restarts, --show or not: Caddy reads the key once, at
@@ -328,7 +324,9 @@ def expose(
     if not show or rotate:
         cfg.exposed = True
         config.save(cfg)
-        server.start_stack(detect.detect(sys=system.REAL), cfg, sys=system.REAL, ui=ui.REAL)
+        backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(
+            detect.detect(sys=system.REAL), cfg
+        )
         log.get_logger().info("expose.on", api_port=cfg.api_port)
     ips = server.lan_ips(sys=system.REAL)
     # Nothing resolved at all (offline, or a locked-down host): say so in words
@@ -441,9 +439,6 @@ def model_add(
     # an `hf.co/…` ref can still fall through to an import, so the flag is not wrong
     # there — it is simply ignored when the pull succeeds.
     quant = _checked_quant(quant)
-    # Imported here, not at module scope: `wizard` imports `cli._open_browser`.
-    from lepika import wizard
-
     info = detect.detect(sys=system.REAL)
     cfg = config.load()
     if ref is None:
@@ -460,15 +455,15 @@ def model_add(
         cfg.model = model_ref.raw
         config.save(cfg)
         ui.REAL.say(f"[green]✓ Set:[/green] {escape(model_ref.raw)} — starting vLLM…")
-        _ready(cfg, server.start_stack(info, cfg, sys=system.REAL, ui=ui.REAL))
+        _ready(cfg, backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(info, cfg))
         return
     if cfg.engine_managed and cfg.mode == "server":
         # In Server mode the engine is a container: it has to be up before there is
         # anything to pull into — and it has to be the engine the *new* model needs.
         # Switching away from a full-weight repo with the old ref still in the config
         # would bring up vLLM, leave ollama stopped, and fail the pull.
-        server.start_stack(
-            info, dataclasses.replace(cfg, model=model_ref.raw), sys=system.REAL, ui=ui.REAL
+        backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(
+            info, dataclasses.replace(cfg, model=model_ref.raw)
         )
     elif cfg.engine_managed:
         ollama.ensure_ollama(

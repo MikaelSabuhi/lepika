@@ -1,22 +1,35 @@
-"""What the two backends report back to the CLI: one step per upgraded component."""
+"""The two backends' one contract, and the one place a mode picks its backend."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
+from collections.abc import Callable
+from typing import Protocol
 
-# "stale": the newer build is installed but the running process still serves the old
-# one, and it is not LePika's to restart. "note": something the user should read that
-# is not a version mismatch.
-Outcome = Literal["upgraded", "current", "stale", "note"]
-
-
-@dataclass(frozen=True)
-class UpdateStep:
-    component: str
-    outcome: Outcome
-    detail: str = ""
+from lepika.config import Config
+from lepika.detect import Machine
+from lepika.express import ExpressBackend
+from lepika.server import ServerBackend
+from lepika.system import System
+from lepika.ui import UI
+from lepika.updates import UpdateStep
 
 
-def changed(before: str | None, after: str | None) -> str:
-    return f"{before} → {after}" if before and after else after or ""
+class Backend(Protocol):
+    """What every lifecycle command needs from a mode, so each is written once."""
+
+    def start(
+        self, info: Machine, cfg: Config, after_engine: Callable[[], None] | None = None
+    ) -> str: ...
+
+    def stop(self, info: Machine, cfg: Config) -> bool: ...
+
+    def update(self, info: Machine, cfg: Config) -> list[UpdateStep]: ...
+
+    def logs(self, lines: int) -> list[tuple[str, str]]: ...
+
+
+def backend_for(cfg: Config, *, sys: System, ui: UI) -> Backend:
+    """The backend for this config's mode — the only place the two modes are told apart."""
+    if cfg.mode == "server":
+        return ServerBackend(sys=sys, ui=ui)
+    return ExpressBackend(sys=sys, ui=ui)

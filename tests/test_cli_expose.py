@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fakes import Backends, FakeBackend
 from typer.testing import CliRunner
 
-from lepika import cli, config, detect, paths, server, stack_env
+from lepika import backend, cli, config, detect, paths, server, stack_env
 from lepika.errors import FriendlyError
 
 runner = CliRunner()
@@ -17,7 +18,11 @@ def exposed_box(monkeypatch: pytest.MonkeyPatch, isolated_home: Path) -> list[st
     starts: list[str] = []
     config.save(config.Config(mode="server", model="qwen3:8b"))
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
-    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: starts.append("start") or "u")
+    monkeypatch.setattr(
+        backend,
+        "backend_for",
+        Backends(server=FakeBackend(on_start=lambda info, cfg, **k: starts.append("start") or "u")),
+    )
     monkeypatch.setattr(server, "lan_ips", lambda **k: ["192.168.1.20"])
     return starts
 
@@ -97,7 +102,7 @@ def test_show_with_rotate_restarts_so_caddy_gets_the_new_key(exposed_box: list[s
 def test_the_key_is_in_the_env_before_the_stack_starts(
     monkeypatch: pytest.MonkeyPatch, isolated_home: Path
 ) -> None:
-    # `server.start_stack` refuses to start the `expose` profile with an empty key,
+    # The Server start refuses to start the `expose` profile with an empty key,
     # so `expose` must write the key first — this records what it would have seen.
     seen: list[str] = []
     config.save(config.Config(mode="server"))
@@ -110,7 +115,7 @@ def test_the_key_is_in_the_env_before_the_stack_starts(
         )
         return "u"
 
-    monkeypatch.setattr(server, "start_stack", record_start)
+    monkeypatch.setattr(backend, "backend_for", Backends(server=FakeBackend(on_start=record_start)))
     result = runner.invoke(cli.app, ["expose"])
     assert result.exit_code == 0, result.output
     assert seen == [stack_env.read_env(paths.stack_dir() / stack_env.ENV_FILE)["LEPIKA_API_KEY"]]
@@ -152,7 +157,11 @@ def test_expose_refuses_an_engine_that_needs_its_own_key(
             mode="server", engine_managed=False, engine_url="http://gpu-box:11435", engine_key="k"
         )
     )
-    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: starts.append("start"))
+    monkeypatch.setattr(
+        backend,
+        "backend_for",
+        Backends(server=FakeBackend(on_start=lambda info, cfg, **k: starts.append("start"))),
+    )
     result = runner.invoke(cli.app, ["expose"])
     assert result.exit_code != 0
     exc = result.exception
@@ -177,7 +186,11 @@ def test_expose_off_still_works_with_a_keyed_remote_engine(
         )
     )
     monkeypatch.setattr(detect, "detect", lambda **k: DOCKER)
-    monkeypatch.setattr(server, "start_stack", lambda info, cfg, **k: starts.append("start"))
+    monkeypatch.setattr(
+        backend,
+        "backend_for",
+        Backends(server=FakeBackend(on_start=lambda info, cfg, **k: starts.append("start"))),
+    )
     result = runner.invoke(cli.app, ["expose", "--off"])
     assert result.exit_code == 0, result.output
     assert config.load().exposed is False

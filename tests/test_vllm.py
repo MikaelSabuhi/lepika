@@ -397,7 +397,6 @@ def test_up_says_vllm_in_the_plan_sentence(
     config.save(config.Config(mode="server", model=REPO))
     monkeypatch.setattr(detect, "detect", lambda **k: LINUX_NVIDIA)
     monkeypatch.setattr(system, "REAL", FakeSystem(which=DOCKER))
-    monkeypatch.setattr(server, "gpu_note", lambda info, **k: None)
     monkeypatch.setattr(
         backend,
         "backend_for",

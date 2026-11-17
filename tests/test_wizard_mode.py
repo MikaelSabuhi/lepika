@@ -417,6 +417,59 @@ def test_failure_after_the_mode_was_saved_keeps_the_visible_stack(
     assert config.load().mode == "server"
 
 
+def _failed_switch_into_server(
+    containers: str, backends: Backends, monkeypatch: pytest.MonkeyPatch
+) -> tuple[FakeSystem, Any]:
+    """Express → Server over the real `ServerBackend`, whose `compose up` fails.
+
+    The sweep that follows asks compose which containers the stack has: `containers`.
+    """
+    stack = paths.stack_dir()
+    every = server.compose_cmd(stack, list(server.INACTIVE), gpu_overlay=False)
+    up = server.compose_cmd(stack, ["engine"], gpu_overlay=False)
+    machine = FakeSystem(
+        which={"docker": "/usr/bin/docker"},
+        # Port 11434 is free, so the pre-flight lets the start reach `compose up`.
+        urls=routes({"http://127.0.0.1:11434/api/version": OSError("connection refused")}),
+        stdout={" ".join([*every, "ps"]): containers},
+        codes={" ".join([*up, "up"]): 1},
+    )
+    monkeypatch.setattr(system, "REAL", machine)
+    monkeypatch.setattr(
+        backend,
+        "backend_for",
+        lambda cfg, *, sys, ui: (
+            ServerBackend(sys=sys, ui=ui) if cfg.mode == "server" else backends(cfg, sys=sys, ui=ui)
+        ),
+    )
+    answers = iter(["2", "1"])  # Server, then the model
+    monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
+    return machine, runner.invoke(cli.app, [])
+
+
+def test_a_failed_switch_that_created_no_containers_does_not_claim_to_remove_any(
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    machine, result = _failed_switch_into_server("", backends, monkeypatch)
+    assert isinstance(result.exception, FriendlyError)
+    assert result.exception.problem == "`docker compose up` failed."
+    # Swept all the same: `down` also removes the network the failed `up` made.
+    assert any(c[-1] == "down" for c in machine.ran)
+    assert "Removed the containers" not in result.output
+    assert config.load().mode == "express"
+
+
+def test_a_failed_switch_that_created_containers_says_it_removed_them(
+    switching: list[str], backends: Backends, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    machine, result = _failed_switch_into_server("3f2a9c\n", backends, monkeypatch)
+    assert isinstance(result.exception, FriendlyError)
+    assert result.exception.problem == "`docker compose up` failed."
+    assert any(c[-1] == "down" for c in machine.ran)
+    assert "Removed the containers the failed switch had created." in result.output
+    assert config.load().mode == "express"
+
+
 def test_leaving_express_mode_stops_the_ollama_lepika_started(
     switching: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.metadata
 import io
 import json
+import re
 import sys
 import urllib.error
 from email.message import Message
@@ -10,11 +11,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import FakeSystem, FakeUI
+from fakes import Backends, FakeBackend, FakeResponse, FakeSystem, FakeUI, routes
 from typer.testing import CliRunner
 
-from lepika import cli, detect, health, models, system, ui
+from lepika import backend, cli, config, detect, health, models, system, ui
 from lepika.cli import app
+from lepika.errors import FriendlyError
 
 runner = CliRunner()
 
@@ -74,7 +76,7 @@ def test_run_prints_a_check_mark_to_a_cp1252_stdout(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(sys, "stdout", stream)
     # Rich's Console reads sys.stdout at write time, which is what makes an in-place
     # reconfigure in run() reach every command's output.
-    monkeypatch.setattr(cli, "app", lambda: ui.REAL.say("✓ Ready"))
+    monkeypatch.setattr(cli, "app", lambda **k: ui.REAL.say("✓ Ready"))
     cli.run()
     stream.flush()
     assert "✓ Ready".encode() in stream.buffer.getvalue()
@@ -87,14 +89,14 @@ def test_run_reconfigures_a_cp1252_stderr_too(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(sys, "stdout", _cp1252_stream())
     # No trailing newline: the wrapper translates "\n" to os.linesep, which is "\r\n" on
     # the Windows runner this test is really about.
-    monkeypatch.setattr(cli, "app", lambda: sys.stderr.write("✗ nope"))
+    monkeypatch.setattr(cli, "app", lambda **k: sys.stderr.write("✗ nope"))
     cli.run()
     stream.flush()
     assert stream.buffer.getvalue() == "✗ nope".encode()
 
 
 def _raise(exc: BaseException) -> Any:
-    def app() -> None:
+    def app(**k: Any) -> None:
         raise exc
 
     return app
@@ -239,3 +241,195 @@ def test_run_without_a_terminal_is_two_lines_not_a_traceback(
     err = _flat(capsys.readouterr().err)
     assert "✗ Choosing a model needs an answer, and there is no terminal to ask." in err
     assert "Traceback" not in err
+
+
+class _ReachedGlobal(BaseException):
+    """A command reached a module global although it was handed its own `Deps`.
+
+    A BaseException, like the suite's other refusals: no `except Exception` in `src/`
+    may read it as a failed probe and carry on.
+    """
+
+
+class _Forbidden:
+    """Stands in for a global no command may touch: any use of it raises."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def __getattr__(self, attr: str) -> Any:
+        raise _ReachedGlobal(f"{self._name}.{attr}")
+
+    def __call__(self, *a: Any, **k: Any) -> Any:
+        raise _ReachedGlobal(self._name)
+
+
+def _forbid_the_globals(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(system, "REAL", _Forbidden("system.REAL"))
+    monkeypatch.setattr(ui, "REAL", _Forbidden("ui.REAL"))
+    monkeypatch.setattr(detect, "detect", _Forbidden("detect.detect"))
+    monkeypatch.setattr(backend, "backend_for", _Forbidden("backend.backend_for"))
+
+
+MAC = detect.Machine("macos", "arm64", "apple", 16.0)
+
+
+def test_a_command_works_through_the_deps_it_is_handed(monkeypatch: pytest.MonkeyPatch) -> None:
+    chosen = FakeBackend(url="http://localhost:3000")
+    detected: list[detect.Machine] = []
+    picked: list[str] = []
+
+    def machine() -> detect.Machine:
+        detected.append(MAC)
+        return MAC
+
+    def backends(cfg: config.Config) -> Any:
+        picked.append(cfg.mode)
+        return chosen
+
+    deps = cli.Deps(sys=FakeSystem(), ui=FakeUI(), machine=machine, backends=backends)
+    opened: list[str] = []
+    monkeypatch.setattr(cli, "_open_browser", opened.append)
+    _forbid_the_globals(monkeypatch)
+    result = runner.invoke(cli.app, ["up"], obj=deps)
+    assert result.exit_code == 0, result.output
+    assert detected == [MAC]
+    assert picked == ["express"]
+    assert [(info, cfg.mode) for info, cfg, _ in chosen.started] == [(MAC, "express")]
+    assert "Ready: http://localhost:3000" in result.output
+    assert opened == ["http://localhost:3000"]
+
+
+def test_a_model_command_is_handed_the_same_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The `model` group is nested: what the root was handed must reach its commands."""
+    tags = f"{config.DEFAULT_ENGINE_URL}/api/tags"
+    machine = FakeSystem(
+        urls=routes({tags: FakeResponse(b'{"models": [{"name": "qwen3:8b", "size": 5}]}')})
+    )
+    deps = cli.Deps(
+        sys=machine,
+        ui=FakeUI(),
+        machine=_Forbidden("machine"),
+        backends=_Forbidden("backends"),
+    )
+    _forbid_the_globals(monkeypatch)
+    result = runner.invoke(cli.app, ["model", "list"], obj=deps)
+    assert result.exit_code == 0, result.output
+    assert [r.full_url for r in machine.requested] == [tags]
+    assert "qwen3:8b" in result.output
+
+
+def test_without_deps_the_root_builds_the_real_ones(monkeypatch: pytest.MonkeyPatch) -> None:
+    built: list[cli.Deps] = []
+    real = cli.Deps.real
+
+    def spy() -> cli.Deps:
+        built.append(real())
+        return built[-1]
+
+    monkeypatch.setattr(cli.Deps, "real", spy)
+    fake_sys, fake_ui = FakeSystem(), FakeUI()
+    monkeypatch.setattr(system, "REAL", fake_sys)
+    monkeypatch.setattr(ui, "REAL", fake_ui)
+    monkeypatch.setattr(detect, "detect", lambda **k: MAC)
+    seen: list[tuple[Any, Any]] = []
+
+    def backend_for(cfg: config.Config, *, sys: Any, ui: Any) -> Any:
+        seen.append((sys, ui))
+        return FakeBackend()
+
+    monkeypatch.setattr(backend, "backend_for", backend_for)
+    monkeypatch.setattr(cli, "_open_browser", lambda url: None)
+    result = runner.invoke(cli.app, ["up"])
+    assert result.exit_code == 0, result.output
+    assert len(built) == 1
+    assert built[0].sys is fake_sys
+    assert built[0].ui is fake_ui
+    assert seen == [(fake_sys, fake_ui)]
+
+
+def test_real_deps_look_their_globals_up_when_called(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Built before a test replaces a global, the real `Deps` still reaches the new one."""
+    deps = cli.Deps.real()
+    fake_sys, fake_ui = FakeSystem(), FakeUI()
+    monkeypatch.setattr(system, "REAL", fake_sys)
+    monkeypatch.setattr(ui, "REAL", fake_ui)
+    asked: list[Any] = []
+
+    def detect_fake(*, sys: Any) -> detect.Machine:
+        asked.append(sys)
+        return MAC
+
+    chosen = FakeBackend()
+    backends = Backends(express=chosen)
+    monkeypatch.setattr(detect, "detect", detect_fake)
+    monkeypatch.setattr(backend, "backend_for", backends)
+    assert deps.machine() is MAC
+    assert asked == [fake_sys]
+    assert deps.backends(config.Config()) is chosen
+    assert backends.selected == ["express"]
+
+
+def test_run_hands_the_app_its_deps_and_reports_through_their_ui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    face = FakeUI()
+    deps = cli.Deps(
+        sys=FakeSystem(), ui=face, machine=_Forbidden("machine"), backends=_Forbidden("backends")
+    )
+    monkeypatch.setattr(cli.Deps, "real", lambda: deps)
+    handed: list[Any] = []
+
+    def app(**kwargs: Any) -> None:
+        handed.append(kwargs.get("obj"))
+        raise FriendlyError("It broke.", "Fix it.")
+
+    monkeypatch.setattr(cli, "app", app)
+    errors: list[Any] = []
+    monkeypatch.setattr(face, "say_error", lambda *objects: errors.append(objects))
+    monkeypatch.setattr(ui, "REAL", _Forbidden("ui.REAL"))
+    with pytest.raises(SystemExit) as exit_info:
+        cli.run()
+    assert exit_info.value.code == 1
+    assert handed == [deps]
+    assert errors == [("[red]✗ It broke.[/red]",), ("[yellow]→ Fix it.[/yellow]",)]
+
+
+def _help_words(output: str) -> str:
+    """Help text without colour, borders or wrapping: what a reader sees, in order."""
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    return " ".join(re.sub(r"[│╭╮╰╯─]", " ", plain).split())
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (
+            ["--help"],
+            "Usage: root [OPTIONS] COMMAND [ARGS]... One command → local AI chat in your "
+            "browser. Options --version Show version and exit. --dry-run Show what the "
+            "wizard would do without doing it. --mode <str> express (default, no Docker) "
+            "or server (docker compose). --help Show this message and exit. Commands up "
+            "Start the local AI stack and open the browser. down Stop the stack (Express: "
+            "OpenWebUI only; Server: every container, models kept). status Show what's "
+            "running. logs Print the tail of LePika's logs (Server mode: the container "
+            "logs too). doctor Diagnose the local setup. update Upgrade the engine and "
+            "OpenWebUI to their latest versions. connect Use an engine running on another "
+            "machine (or --local to stop doing so). expose Share the engine (and the chat "
+            "UI) with your network behind a generated API key. model Add, list, or remove "
+            "local models.",
+        ),
+        (
+            ["model", "--help"],
+            "Usage: root model [OPTIONS] COMMAND [ARGS]... Add, list, or remove local "
+            "models. Options --help Show this message and exit. Commands add Download a "
+            "model and make it the default. import Import safetensors weights already on "
+            "disk into Ollama. list List downloaded models. rm Remove a downloaded model.",
+        ),
+    ],
+)
+def test_help_shows_no_context_parameter(args: list[str], expected: str) -> None:
+    """Every command takes a `typer.Context`; none of that may surface as an option."""
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 0
+    assert _help_words(result.output) == expected

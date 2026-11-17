@@ -10,6 +10,7 @@ they get the same name, disk and RAM checks before Ollama is asked to build.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import re
 import shutil
 from pathlib import Path
@@ -41,16 +42,23 @@ def _confirm(question: str, *, ui: UI) -> bool:
 
 def preflight_with_token(
     repo: str, cfg: config.Config, *, sys: System, ui: UI
-) -> tuple[hf.Preflight, str]:
-    """List the repo; on a gated answer ask for a token once and try again."""
+) -> tuple[hf.Preflight, str, config.Config]:
+    """List the repo; on a gated answer ask for a token once and try again.
+
+    Also the config as it now is on disk. A typed token is a credential, saved the
+    moment it is given (0600, like every config write), so a download that fails
+    later never makes the user type it again.
+    """
     token = hf.token_for(cfg, sys=sys)
     try:
-        return hf.preflight(repo, token, sys=sys), token
+        return hf.preflight(repo, token, sys=sys), token, cfg
     except hf.GatedRepo:
-        token = hf.ask_token(cfg, ui=ui)
+        token = hf.ask_token(ui=ui)
         if not token:
             raise
-        return hf.preflight(repo, token, sys=sys), token
+        cfg = dataclasses.replace(cfg, hf_token=token)
+        config.save(cfg)
+        return hf.preflight(repo, token, sys=sys), token, cfg
 
 
 def _ram_advisory(label: str, quantized: int, info: Machine, *, ui: UI) -> None:
@@ -70,8 +78,12 @@ def import_repo(
     *,
     sys: System,
     ui: UI,
-) -> str | None:
-    """Download a full-weight repo and import it into Ollama; the name it now serves."""
+) -> tuple[config.Config, str | None]:
+    """Download a full-weight repo and import it into Ollama.
+
+    The config as it now is on disk (a typed token is saved on the way), and the name
+    Ollama now serves — None when the user declined the download.
+    """
     repo = ref.raw
     installed = engine.list_models(
         cfg.engine_url, key=cfg.engine_key, managed=cfg.engine_managed, sys=sys
@@ -80,8 +92,8 @@ def import_repo(
         # Ollama already serves it: downloading the weights again to rebuild the same
         # model is minutes and gigabytes for nothing.
         ui.say(f"{escape(repo)} is already imported.")
-        return repo
-    pre, token = preflight_with_token(repo, cfg, sys=sys, ui=ui)
+        return cfg, repo
+    pre, token, cfg = preflight_with_token(repo, cfg, sys=sys, ui=ui)
     if pre.has_gguf and not pre.has_safetensors:
         # A GGUF build typed without `hf.co/`: Ollama pulls those itself.
         gguf = models.parse_model_ref(f"hf.co/{repo}")
@@ -93,7 +105,7 @@ def import_repo(
             sys=sys,
             ui=ui,
         )
-        return gguf.raw
+        return cfg, gguf.raw
     if not pre.has_safetensors:
         raise FriendlyError(
             f"'{repo}' has no safetensors or GGUF weights.",
@@ -131,7 +143,7 @@ def import_repo(
         else f"import as {quant} (~{engine.human_size(store_bytes)})"
     )
     if not _confirm(f"Fetch {engine.human_size(pre.download_bytes)} onto disk and {how}?", ui=ui):
-        return None
+        return cfg, None
     if info.os != "macos":
         ui.say("Checking Ollama's MLX engine (installs a ~1 GB bundle if it is missing)…")
     mlx.ensure_mlx(info, sys=sys)
@@ -150,7 +162,7 @@ def import_repo(
         # `<org>/` is left behind by the repo directory above it. `rmdir` refuses a
         # non-empty directory, so another repo from the same org is never touched.
         dest.parent.rmdir()
-    return repo
+    return cfg, repo
 
 
 # Ollama's name charset, with an optional `org/` in front. Each part starts alphanumeric,
@@ -255,10 +267,12 @@ def acquire(
     *,
     sys: System,
     ui: UI,
-) -> str | None:
+) -> tuple[config.Config, str | None]:
     """Get `ref` into Ollama — pulled or imported — and return the name it serves.
 
-    None means the user declined the download. Ollama decides the format of an
+    Returned with the config as it now is on disk: an import may have saved a typed
+    token, which the caller's own later save must keep. None means the user
+    declined the download. Ollama decides the format of an
     `hf.co/…` ref (NotGGUF falls through to an import); the file list decides a
     bare `org/repo` (rule 10). `quant` only reaches an import — a pull is a build
     someone else already quantized.
@@ -287,7 +301,7 @@ def acquire(
         # request that carries tools into a 400. A managed engine only: `ollama
         # create` cannot send a remote engine's key (rule 9: not ours to fix).
         _ensure_tools(cfg, ref.raw, sys=sys, ui=ui)
-    return ref.raw
+    return cfg, ref.raw
 
 
 def _ensure_tools(cfg: config.Config, name: str, *, sys: System, ui: UI) -> None:

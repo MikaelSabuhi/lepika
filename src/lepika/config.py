@@ -25,7 +25,7 @@ DEFAULT_ENGINE_URL = "http://127.0.0.1:11434"
 DEFAULT_CONTEXT_LENGTH = 16384
 
 
-@dataclass
+@dataclass(frozen=True)
 class Config:
     schema_version: int = SCHEMA_VERSION
     mode: str = "express"

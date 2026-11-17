@@ -405,10 +405,32 @@ def test_model_add_gated_repo_asks_for_a_token_once_then_retries(
         return SAFETENSORS
 
     monkeypatch.setattr(hf, "preflight", preflight)
-    monkeypatch.setattr(hf, "ask_token", lambda cfg, **k: "hf_new")
+    monkeypatch.setattr(hf, "ask_token", lambda **k: "hf_new")
     result = runner.invoke(cli.app, ["model", "add", "x/y"])
     assert result.exit_code == 0, result.output
     assert calls == ["", "hf_new"]
+
+
+def test_model_add_keeps_a_typed_token_in_the_config_it_saves(
+    fake_import: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The token is saved when typed; the model's save after the import must not drop it."""
+    config.save(config.Config(context_length=8192))
+
+    def preflight(repo: str, token: str = "", **k: Any) -> hf.Preflight:
+        if not token:
+            raise hf.GatedRepo("'x/y' is gated or private on Hugging Face.", "Accept its licence.")
+        return SAFETENSORS
+
+    monkeypatch.setattr(hf, "preflight", preflight)
+    monkeypatch.setattr(
+        ui,
+        "REAL",
+        FakeUI(reader=lambda *a, **k: "hf_new", confirm_reader=lambda q, **k: True),
+    )
+    result = runner.invoke(cli.app, ["model", "add", "x/y"])
+    assert result.exit_code == 0, result.output
+    assert config.load() == config.Config(model="x/y", hf_token="hf_new", context_length=8192)
 
 
 def test_model_add_gated_repo_without_a_token_is_the_licence_hint(
@@ -418,7 +440,7 @@ def test_model_add_gated_repo_without_a_token_is_the_licence_hint(
         raise hf.GatedRepo("'x/y' is gated or private on Hugging Face.", "Accept its licence.")
 
     monkeypatch.setattr(hf, "preflight", gated)
-    monkeypatch.setattr(hf, "ask_token", lambda cfg, **k: "")
+    monkeypatch.setattr(hf, "ask_token", lambda **k: "")
     result = runner.invoke(cli.app, ["model", "add", "x/y"])
     assert result.exit_code != 0
     assert isinstance(result.exception, hf.GatedRepo)

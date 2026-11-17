@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import stat
 import sys
@@ -17,6 +18,15 @@ def test_load_returns_defaults_when_no_file(isolated_home: Path) -> None:
     assert cfg.mode == "express"
     assert cfg.webui_port == 3000
     assert cfg.schema_version == config.SCHEMA_VERSION
+
+
+def test_a_config_is_never_edited_in_place() -> None:
+    """A change is a new value; the one that was loaded keeps describing the file."""
+    cfg = config.Config()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.model = "qwen3:8b"  # type: ignore[misc]
+    assert dataclasses.replace(cfg, model="qwen3:8b").model == "qwen3:8b"
+    assert cfg.model == ""
 
 
 def test_save_then_load_round_trips(isolated_home: Path) -> None:

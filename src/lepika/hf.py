@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from lepika import config, gguf, log, paths
+from lepika import gguf, log, paths
 from lepika.config import Config
 from lepika.errors import FriendlyError
 from lepika.system import System
@@ -323,20 +323,15 @@ def token_for(cfg: Config, *, sys: System) -> str:
     return sys.environ.get("HF_TOKEN", "").strip() or cfg.hf_token.strip()
 
 
-def ask_token(cfg: Config, *, ui: UI) -> str:
+def ask_token(*, ui: UI) -> str:
     """Ask once — only after a gated pre-flight, so public repos never see a prompt.
 
-    A non-empty answer is saved to config.toml (0600 from creation). Empty means the
-    user has no token; the caller turns that into the licence hint. `config.save`
-    writes every field, so pass the loaded Config, never a fresh one.
+    Saves nothing: `acquire.preflight_with_token` saves a non-empty answer. Empty
+    means the user has no token; the caller turns that into the licence hint.
     """
     # No terminal skips, as Enter does.
-    token = ui.ask(
+    return ui.ask(
         "Hugging Face token (this repo is gated; Enter to cancel)",
         password=True,
         default="",
     ).strip()
-    if token:
-        cfg.hf_token = token
-        config.save(cfg)
-    return token

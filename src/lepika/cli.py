@@ -215,7 +215,9 @@ def connect(
     """Use an engine running on another machine (or --local to stop doing so)."""
     cfg = config.load()
     if local:
-        cfg.engine_managed, cfg.engine_url, cfg.engine_key = True, config.DEFAULT_ENGINE_URL, ""
+        cfg = dataclasses.replace(
+            cfg, engine_managed=True, engine_url=config.DEFAULT_ENGINE_URL, engine_key=""
+        )
         config.save(cfg)
         log.get_logger().info("engine.connect", url=cfg.engine_url, local=True)
         if backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).apply_engine_change(
@@ -248,7 +250,7 @@ def connect(
             "Check the address and that `lepika expose` is on over there "
             "(add --key if it printed one).",
         )
-    cfg.engine_managed, cfg.engine_url, cfg.engine_key = False, url, key
+    cfg = dataclasses.replace(cfg, engine_managed=False, engine_url=url, engine_key=key)
     config.save(cfg)
     log.get_logger().info("engine.connect", url=url, key=key)
     if backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).apply_engine_change(
@@ -273,7 +275,7 @@ def expose(
             "Run `lepika --mode server` on this machine first.",
         )
     if off:
-        cfg.exposed = False
+        cfg = dataclasses.replace(cfg, exposed=False)
         config.save(cfg)
         backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(
             detect.detect(sys=system.REAL), cfg
@@ -297,7 +299,7 @@ def expose(
     # A rotation always restarts, --show or not: Caddy reads the key once, at
     # startup, so skipping the restart would leave the old key the working one.
     if not show or rotate:
-        cfg.exposed = True
+        cfg = dataclasses.replace(cfg, exposed=True)
         config.save(cfg)
         backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(
             detect.detect(sys=system.REAL), cfg
@@ -427,7 +429,7 @@ def model_add(
         # Nothing to pull: vLLM downloads the weights itself when it starts, and it
         # only starts once the config names the model compose interpolates.
         server.hf_token_prompt(paths.stack_dir() / stack_env.ENV_FILE, sys=system.REAL, ui=ui.REAL)
-        cfg.model = model_ref.raw
+        cfg = dataclasses.replace(cfg, model=model_ref.raw)
         config.save(cfg)
         ui.REAL.say(f"[green]✓ Set:[/green] {escape(model_ref.raw)} — starting vLLM…")
         _ready(cfg, backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).start(info, cfg))
@@ -438,11 +440,11 @@ def model_add(
     backend.backend_for(cfg, sys=system.REAL, ui=ui.REAL).ensure_engine(
         info, dataclasses.replace(cfg, model=model_ref.raw)
     )
-    served = acquire.acquire(info, cfg, model_ref, quant=quant, sys=system.REAL, ui=ui.REAL)
+    cfg, served = acquire.acquire(info, cfg, model_ref, quant=quant, sys=system.REAL, ui=ui.REAL)
     if served is None:
         ui.REAL.say("Nothing added.")
         return
-    cfg.model = served
+    cfg = dataclasses.replace(cfg, model=served)
     config.save(cfg)
     ui.REAL.say(f"[green]✓ Added:[/green] {escape(served)}")
 
@@ -480,7 +482,7 @@ def model_import(
     served = acquire.import_local(
         info, cfg, path.resolve(), name, quant, sys=system.REAL, ui=ui.REAL
     )
-    cfg.model = served
+    cfg = dataclasses.replace(cfg, model=served)
     config.save(cfg)
     ui.REAL.say(f"[green]✓ Imported:[/green] {escape(served)}")
 
@@ -520,7 +522,7 @@ def model_rm(
         # A config still naming a model the engine no longer has makes `status`
         # and `up` claim a default that cannot answer. `_ready` says "No model
         # yet" once the field is empty.
-        cfg.model = ""
+        cfg = dataclasses.replace(cfg, model="")
         config.save(cfg)
         ui.REAL.say("That was the default model — run `lepika model add` to pick another.")
 

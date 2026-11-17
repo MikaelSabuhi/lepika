@@ -354,7 +354,9 @@ def run_wizard(
     info = detect.detect(sys=sys)
     cfg = config.load()
     previous = cfg.mode
-    cfg.mode = mode if mode is not None else choose_mode(cfg.mode, sys=sys, ui=ui)
+    cfg = dataclasses.replace(
+        cfg, mode=mode if mode is not None else choose_mode(cfg.mode, sys=sys, ui=ui)
+    )
     if cfg.mode == "server" and sys.which("docker") is None:
         # Only reachable via `--mode server`: a clear error naming Express, never an
         # install prompt. Whether a present Docker is *running* is the start's
@@ -390,10 +392,12 @@ def run_wizard(
         # compose interpolates VLLM_MODEL from the config, so this one has to be
         # saved before the stack starts rather than after. A start that then fails
         # is fixed by `lepika model add`, not by a stale config.
-        cfg.model = ref.raw
+        cfg = dataclasses.replace(cfg, model=ref.raw)
         config.save(cfg)
 
     def pull_then_save() -> None:
+        # Rebinds the run's config, which is what `run_wizard` returns.
+        nonlocal cfg
         if models.uses_vllm(ref.raw) and serving.vllm_allowed(cfg, info):
             return  # vLLM downloads its own weights while starting; nothing to pull
         # The mode is saved here, not before the start: this hook runs only once
@@ -403,10 +407,11 @@ def run_wizard(
         # The model is saved only once it is actually there: recording a model the
         # machine failed to download or import leaves the config pointing at
         # something that isn't.
-        served = acquire.acquire(info, cfg, ref, sys=sys, ui=ui)
+        # Continued from what `acquire` hands back: it may have saved a typed token.
+        cfg, served = acquire.acquire(info, cfg, ref, sys=sys, ui=ui)
         if served is None:
             return  # declined: the stack is up, the model is chosen next time
-        cfg.model = served
+        cfg = dataclasses.replace(cfg, model=served)
         config.save(cfg)
 
     # The stack is started for the model about to be pulled, not the one still saved:

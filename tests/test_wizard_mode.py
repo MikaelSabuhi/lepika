@@ -531,7 +531,7 @@ def test_servers_port_check_asks_again_after_the_switch_stopped_the_ollama(
             ServerBackend(sys=sys, ui=ui) if cfg.mode == "server" else backends(cfg, sys=sys, ui=ui)
         ),
     )
-    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref, **k: ref.raw)
+    monkeypatch.setattr(acquire, "acquire", lambda info, cfg, ref, **k: (cfg, ref.raw))
     answers = iter(["2", "1"])  # Server, then the model
     monkeypatch.setattr(ui, "REAL", FakeUI(reader=lambda *a, **k: next(answers)))
     result = runner.invoke(cli.app, [])

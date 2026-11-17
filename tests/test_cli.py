@@ -10,6 +10,7 @@ from email.message import Message
 from pathlib import Path
 from typing import Any
 
+import fakes
 import pytest
 import typer.main
 from fakes import Backends, FakeBackend, FakeResponse, FakeSystem, FakeUI, routes
@@ -23,7 +24,7 @@ runner = CliRunner()
 
 
 def test_version_flag_prints_name_and_version() -> None:
-    result = runner.invoke(app, ["--version"])
+    result = runner.invoke(app, ["--version"], obj=fakes.deps())
     assert result.exit_code == 0
     # pyproject.toml is the only place the version lives, so read it back from the
     # installed metadata rather than pinning a literal that every release must edit.
@@ -437,6 +438,6 @@ def _help_text(output: str) -> str:
 
 @pytest.mark.parametrize("path", list(PARAMETERS), ids=lambda path: " ".join(path) or "root")
 def test_help_never_mentions_the_context(path: tuple[str, ...]) -> None:
-    result = runner.invoke(cli.app, [*path, "--help"])
+    result = runner.invoke(cli.app, [*path, "--help"], obj=fakes.deps())
     assert result.exit_code == 0, result.output
     assert re.search(r"\b(ctx|CTX)\b", _help_text(result.output)) is None

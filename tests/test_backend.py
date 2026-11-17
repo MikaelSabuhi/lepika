@@ -5,10 +5,11 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
+import fakes
 import pytest
 from fakes import Backends, FakeBackend, FakeSystem, FakeUI, UnprovidedBackend
 
-from lepika import backend, config, express, server
+from lepika import backend, config, detect, express, server
 from lepika.backend import Backend
 from lepika.express import ExpressBackend
 from lepika.server import ServerBackend
@@ -140,3 +141,34 @@ def test_a_mode_the_test_gave_no_backend_for_fails_loudly() -> None:
         pick(config.Config(mode="express"), sys=FakeSystem(), ui=FakeUI())
     assert not issubclass(UnprovidedBackend, Exception)
     assert pick.selected == ["server", "express"]
+
+
+def test_deps_defaults_to_fresh_fakes_and_the_real_backends_over_them() -> None:
+    """What an un-patched test used to reach: the real backends, here over fakes."""
+    deps = fakes.deps()
+    assert isinstance(deps.sys, FakeSystem) and isinstance(deps.ui, FakeUI)
+    assert fakes.deps().sys is not deps.sys and fakes.deps().ui is not deps.ui
+    for mode, kind in (("express", ExpressBackend), ("server", ServerBackend)):
+        chosen = deps.backends(config.Config(mode=mode))
+        assert isinstance(chosen, kind)
+        assert chosen.sys is deps.sys and chosen.ui is deps.ui
+
+
+def test_deps_refuses_to_detect_a_machine_the_test_did_not_choose() -> None:
+    """A BaseException, like the other refusals: no `except Exception` may hide it."""
+    with pytest.raises(fakes.UnprovidedMachine):
+        fakes.deps().machine()
+    assert not issubclass(fakes.UnprovidedMachine, Exception)
+    mac = detect.Machine("macos", "arm64", "apple", 16.0)
+    assert fakes.deps(machine=mac).machine() is mac
+
+
+def test_deps_hands_through_what_the_test_gave() -> None:
+    machine, face, chosen = FakeSystem(), FakeUI(), FakeBackend()
+    pick = Backends(express=chosen)
+    deps = fakes.deps(sys=machine, ui=face, backends=pick)
+    assert deps.sys is machine and deps.ui is face
+    assert deps.backends(config.Config()) is chosen
+    assert pick.selected == ["express"]
+    with pytest.raises(UnprovidedBackend):
+        deps.backends(config.Config(mode="server"))
